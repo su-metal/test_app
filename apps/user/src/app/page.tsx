@@ -1,9 +1,20 @@
 "use client";
 import React, { useEffect, useMemo, useRef, useState, startTransition, useCallback } from "react";
-import { createClient } from "@supabase/supabase-js";
+import { createClient } from '@supabase/supabase-js';
+import type { SupabaseClient } from '@supabase/supabase-js';
 
 
-
+let __sb__: SupabaseClient | null = null;
+function getSupabaseSingleton() {
+    if (!__sb__) {
+        __sb__ = createClient(
+            process.env.NEXT_PUBLIC_SUPABASE_URL!,
+            process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+            { auth: { storageKey: 'sb-user-app' } } // ← 警告回避のため固定
+        );
+    }
+    return __sb__;
+}
 
 /**
  * ユーザー向けフードロスアプリ（Pilot v2.6 / TS対応）
@@ -13,13 +24,9 @@ import { createClient } from "@supabase/supabase-js";
 
 // ---- ユーティリティ ----
 function useSupabase() {
-    const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-    const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
-    return React.useMemo(
-        () => (typeof window === "undefined" ? null : createClient(url, key)),
-        [url, key]
-    );
+    return useMemo(getSupabaseSingleton, []);
 }
+
 function pushLog(entry: unknown) {
     try {
         const key = "app_logs";
@@ -33,6 +40,12 @@ const fmt = new Intl.NumberFormat("ja-JP", { style: "currency", currency: "JPY" 
 const currency = (n: number) => fmt.format(n);
 const uid = () => Math.random().toString(36).slice(2, 10);
 const to6 = (s: string) => (Array.from(s).reduce((a, c) => a + c.charCodeAt(0), 0) % 1_000_000).toString().padStart(6, "0");
+
+// 入力正規化: トリム + 記号除去 + 大文字化（英数字のみ残す）
+const norm = (v: unknown): string => {
+    const s = (v ?? "").toString();
+    return s.trim().replace(/[\s_-]/g, "").replace(/[^0-9A-Za-z]/g, "").toUpperCase();
+};
 
 // ---- Toast（非同期通知） ----
 type ToastKind = "info" | "success" | "error";
@@ -107,6 +120,7 @@ interface Order { id: string; userEmail: string; shopId: string; amount: number;
 
 type ShopWithDistance = Shop & { distance: number };
 
+
 // ---- 初期データ ----
 const seedShops = (): Shop[] => ([
     {
@@ -156,6 +170,7 @@ class MinimalErrorBoundary extends React.Component<React.PropsWithChildren, { ha
 }
 
 export default function UserPilotApp() {
+
     // 永続化
     const [shops, setShops] = useLocalStorageState<Shop[]>(K.shops, seedShops);
     const [cart, setCart] = useLocalStorageState<CartLine[]>(K.cart, []);
@@ -165,6 +180,9 @@ export default function UserPilotApp() {
     const [tab, setTab] = useState<"home" | "cart" | "order" | "account">("home");
     const [focusedShop, setFocusedShop] = useState<string | undefined>(undefined);
     const supabase = useSupabase();
+    type DbProduct = { id: string; store_id?: string; name: string; price?: number; stock?: number; image_url?: string; updated_at?: string };
+    const [dbProducts, setDbProducts] = useState<DbProduct[]>([]);
+
 
 
     // --- Hydration対策（SSRとクライアント差異を回避） ---
@@ -178,6 +196,32 @@ export default function UserPilotApp() {
         const id = setInterval(tick, 30_000);
         return () => clearInterval(id);
     }, []);
+
+    // DBから products を読む（在庫あり／特定店舗のみ）
+    useEffect(() => {
+        if (!supabase) return;
+        (async () => {
+            const q = supabase
+                .from("products")
+                .select("id, store_id, name, price, stock, updated_at")
+                .gt("stock", 0);
+            // 店舗を環境変数で絞る（設定がある場合のみ）
+            const storeId = process.env.NEXT_PUBLIC_STORE_ID;
+            const { data, error } = storeId ? await q.eq("store_id", storeId).limit(50) : await q.limit(50);
+
+            console.log("[products:list]", { data, error });
+            console.log("[products:peek]", data?.slice(0, 3)?.map(p => ({ name: p.name, stock: p.stock, quantity: (p as any).quantity, stock_count: (p as any).stock_count })));
+
+            if (error) {
+                console.error("[products:list] error", error);
+                emitToast("error", `商品取得に失敗: ${error.message}`);
+                setDbProducts([]);
+            } else {
+                setDbProducts(data ?? []);
+            }
+        })();
+    }, [supabase]);
+
 
     // トースト購読
     const [toast, setToast] = useState<ToastPayload | null>(null);
@@ -209,17 +253,147 @@ export default function UserPilotApp() {
 
     // 距離はダミー
     const distKm = (i: number) => 0.4 + i * 0.3;
-    const shopsSorted = useMemo<ShopWithDistance[]>(() => shops.map((s, i) => ({ ...s, distance: distKm(i) })), [shops]);
+    const storeId = process.env.NEXT_PUBLIC_STORE_ID;
+
+    // 店舗側で orders.status が更新されたらローカルの注文を同期（未引換→履歴へ）
+    useEffect(() => {
+        if (!supabase) return;
+
+        // DB → ローカルのステータス変換
+        // DB → ローカルのステータス変換（PENDING/PAID 以外はすべて引換済み扱い）
+        const toLocalStatus = (dbStatus?: string): Order["status"] => {
+            const s = String(dbStatus || "").toUpperCase();
+            if (s === "FULFILLED" || s === "REDEEMED" || s === "COMPLETED") return "redeemed"; // ← ここに FULFILLED が含まれていること
+            if (s === "PAID" || s === "PENDING") return "paid";
+            return "paid";
+        };
+
+
+
+
+        // コードでひも付け（code は注文作成時に orderPayload.code として保存済み＝ local の code6）
+        const channel = supabase
+            .channel("orders-updates")
+            .on(
+                "postgres_changes",
+                { event: "UPDATE", schema: "public", table: "orders" },
+                (payload) => {
+                    console.log('[realtime:orders][UPDATE]', payload.new);
+                    const row: any = payload.new || {};
+                    // ★ 完全一致：トリム/大文字化/記号除去などは一切しない
+                    const codeDB = row?.code != null ? String(row.code) : "";
+                    const idDB = row?.id ? String(row.id) : "";
+                    const codeNorm = norm(codeDB);
+                    const idNorm = norm(idDB);
+
+                    const next: Order["status"] = (() => {
+                        const s = String(row?.status || '').toUpperCase();
+                        if (s === 'FULFILLED' || s === 'REDEEMED' || s === 'COMPLETED') return 'redeemed';
+                        if (s === 'PAID' || s === 'PENDING') return 'paid';
+                        return 'paid';
+                    })();
+
+                    let touched = false;
+                    setOrders(prev => {
+                        // 1) 更新：code(大文字) or id でヒットしたものを書き換え
+                        const mapped = prev.map(o => {
+                            const oc = norm(o.code6);  // ★ 差し替え
+                            const byCode = codeNorm ? (oc === codeNorm) : false;
+
+                            const byId = idNorm ? (o.id === idNorm) : false;
+                            return (byCode || byId) ? { ...o, status: next } : o;
+                        });
+
+                        // 2) 同一 code6 を重複除去（大文字キーで、redeemed を優先）
+                        const seen = new Map<string, Order>();
+                        for (const o of mapped) {
+                            const k = String(o.code6 ?? "");
+                            const ex = seen.get(k);
+                            if (!ex) {
+                                seen.set(k, o);
+                            } else {
+                                if (ex.status === 'redeemed' && o.status !== 'redeemed') {
+                                    // 既存(履歴)を優先
+                                } else if (o.status === 'redeemed' && ex.status !== 'redeemed') {
+                                    // 今回が履歴なら置換
+                                    seen.set(k, o);
+                                } else {
+                                    // 同格なら先勝ち
+                                }
+                            }
+                        }
+                        const dedup = Array.from(seen.values());
+
+                        touched = JSON.stringify(prev) !== JSON.stringify(dedup);
+                        return dedup;
+                    });
+
+                    if (touched && next === 'redeemed') {
+                        setTab('account');
+                        emitToast('success', '引換完了：チケットを履歴へ移動しました');
+                    }
+                }
+            )
+            .subscribe();
+
+        return () => { supabase.removeChannel(channel); };
+    }, [supabase, setOrders, setTab]);
+
+
+    // DBの商品が取れていて storeId が指定されていれば、その店舗の items を DB で差し替え
+    const shopsWithDb = useMemo(() => {
+        if (!Array.isArray(dbProducts) || dbProducts.length === 0 || !storeId) return shops;
+
+        const mapToItem = (p: any): Item => {
+            // stock / quantity / stock_count のどれかが入っている想定
+            const rawStock = (p?.stock ?? p?.quantity ?? p?.stock_count ?? 0);
+            const stock = Math.max(0, Number(rawStock) || 0);
+
+            return {
+                id: String(p.id),
+                name: String(p.name ?? "商品"),
+                price: Math.max(0, Number(p.price ?? 0) || 0),
+                stock,
+                pickup: "18:00-20:00",
+                note: "",
+                photo: "🛍️",
+            };
+        };
+
+
+        // shops[].id が UUID でない（ローカルID）場合のフォールバック：最初のショップに適用
+        const idx = shops.findIndex(s => String(s.id) === String(storeId));
+        const targetIndex = idx >= 0 ? idx : 0;
+
+        return shops.map((s, i) =>
+            i === targetIndex ? { ...s, items: dbProducts.map(mapToItem) } : s
+        );
+
+    }, [shops, dbProducts, storeId]);
+
+    const shopsSorted = useMemo<ShopWithDistance[]>(
+        () => shopsWithDb.map((s, i) => ({ ...s, distance: distKm(i) })),
+        [shopsWithDb]
+    );
+
 
     // 参照インデックス
     const shopsById = useMemo(() => {
-        const m = new Map<string, Shop>(); for (const s of shops) m.set(s.id, s); return m;
-    }, [shops]);
+        const m = new Map<string, Shop>();
+        for (const s of shopsWithDb) m.set(s.id, s);
+        return m;
+    }, [shopsWithDb]);
+
     const itemsById = useMemo(() => {
         const outer = new Map<string, Map<string, Item>>();
-        for (const s of shops) { const inner = new Map<string, Item>(); for (const it of s.items) inner.set(it.id, it); outer.set(s.id, inner); }
+        for (const s of shopsWithDb) {
+            const inner = new Map<string, Item>();
+            for (const it of s.items) inner.set(it.id, it);
+            outer.set(s.id, inner);
+        }
         return outer;
-    }, [shops]);
+    }, [shopsWithDb]);
+
 
     // 予約数量（カート数量）
     const reservedMap = useMemo(() => {
@@ -265,6 +439,9 @@ export default function UserPilotApp() {
     // 注文処理
     const [cardDigits, setCardDigits] = useState(""); // 数字のみ（最大16桁）
     const [orderTarget, setOrderTarget] = useState<string | undefined>(undefined);
+    const unredeemedOrders = useMemo(() => orders.filter(o => o.status === 'paid'), [orders]);
+    const redeemedOrders = useMemo(() => orders.filter(o => o.status === 'redeemed'), [orders]);
+
     const toOrder = (sid: string) => { setOrderTarget(sid); setTab("order"); };
 
     const confirmPay = useCallback(async () => {
@@ -297,13 +474,27 @@ export default function UserPilotApp() {
             const oid = uid();
 
             // Supabase用ペイロード（店舗側は PENDING で受け取り待ち）
+            // store_id は ENV（NEXT_PUBLIC_STORE_ID）の UUID を使用する
+            if (!storeId) {
+                emitToast("error", "STORE_ID が未設定です（.env.local の NEXT_PUBLIC_STORE_ID を確認）");
+                return;
+            }
+
             const orderPayload = {
+                store_id: storeId, // ★ 重要：DBの orders.store_id（uuid）
                 code: to6(oid),
                 customer: userEmail || "guest@example.com",
-                items: linesSnapshot.map(l => ({ id: l.item.id, name: l.item.name, qty: l.qty })), // JSONB
-                total: amount,
+                items: linesSnapshot.map(l => ({
+                    id: l.item.id,
+                    name: l.item.name,
+                    qty: l.qty,
+                    price: l.item.price,  // ★ 重要：価格もスナップショット保存
+                })), // JSONB
+                total: amount,          // number（文字列ではない）
                 status: "PENDING" as const,
+                // placed_at は DB 側に DEFAULT now() がある想定。なければ後で DB に追加。
             };
+
 
             // Supabaseが設定されていればDBへ作成
             // Supabaseが設定されていればDBへ作成
@@ -315,9 +506,16 @@ export default function UserPilotApp() {
                     .single();
 
                 if (error) {
-                    emitToast("error", "注文の作成に失敗しました");
+                    console.error("[orders.insert] error", {
+                        code: (error as any).code,
+                        message: error.message,
+                        details: (error as any).details,
+                        hint: (error as any).hint,
+                    });
+                    emitToast("error", `注文の作成に失敗: ${error.message}`);
                     return;
                 }
+
 
                 // ★ここを追加：DBに作成した注文と“同じコード”をローカル履歴にも保存する
                 const createdAt = Date.now();
@@ -381,6 +579,35 @@ export default function UserPilotApp() {
         }
     }, [orderTarget, isPaying, cardDigits, cartByShop, itemsById, shops, cart, userEmail, supabase]);
 
+    // --- 開発用：この店舗の注文をすべてリセット（削除） ---
+    const devResetOrders = useCallback(async () => {
+        // .env.local に NEXT_PUBLIC_STORE_ID が必要
+        if (!storeId) {
+            emitToast("error", "STORE_ID が未設定です（.env.local の NEXT_PUBLIC_STORE_ID を確認）");
+            return;
+        }
+        if (!confirm("この店舗の全注文を削除します。よろしいですか？")) return;
+
+        try {
+            const { error } = await supabase
+                .from("orders")
+                .delete()
+                .eq("store_id", storeId);   // 店舗単位で削除
+
+            if (error) {
+                console.error("[orders.reset] error", error);
+                emitToast("error", `リセット失敗: ${error.message}`);
+                return;
+            }
+
+            // 画面側も空に
+            setOrders([]);
+            emitToast("success", "注文をリセットしました");
+        } catch (e: any) {
+            console.error("[orders.reset] exception", e);
+            emitToast("error", `例外: ${e?.message ?? e}`);
+        }
+    }, [supabase, storeId, setOrders]);
 
     // UI 共通
     const Tab = ({ id, label, icon }: { id: "home" | "cart" | "order" | "account"; label: string; icon: string }) => (
@@ -571,8 +798,9 @@ export default function UserPilotApp() {
                     )}
 
                     {tab === "account" && (
-                        <AccountView orders={orders} shopsById={shopsById} />
+                        <AccountView orders={orders} shopsById={shopsById} onDevReset={devResetOrders} />
                     )}
+
                 </main>
 
                 <footer className="fixed bottom-0 left-0 right-0 border-t bg-white/90">
@@ -604,13 +832,52 @@ function TinyQR({ seed }: { seed: string }) {
     );
 }
 
-function AccountView({ orders, shopsById }: { orders: Order[]; shopsById: Map<string, Shop> }) {
+function AccountView({
+    orders,
+    shopsById,
+    onDevReset,
+}: {
+    orders: Order[];
+    shopsById: Map<string, Shop>;
+    onDevReset?: () => void;
+}) {
+
     const [refreshTick, setRefreshTick] = useState(0);
-    const pending = useMemo(() => orders.filter(o => o.status === "paid").sort((a, b) => b.createdAt - a.createdAt), [orders, refreshTick]);
+
+    // ▼▼ 重複除去：同じ code6 が複数ある場合は redeemed を優先して 1 件に正規化 ▼▼
+    const canonicalOrders = useMemo(() => {
+
+        const byCode = new Map<string, Order>();
+        for (const o of orders) {
+            const k = String(o.code6 ?? "");   // ★ 完全一致キー
+            const ex = byCode.get(k);
+            if (!ex) {
+                byCode.set(k, o);
+            } else {
+                // 片方が redeemed なら redeemed を優先して残す
+                if (ex.status !== "redeemed" && o.status === "redeemed") {
+                    byCode.set(k, o);
+                }
+                // それ以外（同格）は先勝ち
+            }
+        }
+        return Array.from(byCode.values());
+    }, [orders]);
+
+    // 未引換（paid）は canonical に対して切り出す
+    const pending = useMemo(
+        () => canonicalOrders.filter(o => o.status === "paid").sort((a, b) => b.createdAt - a.createdAt),
+        [canonicalOrders, refreshTick]
+    );
+
     const [openTicketId, setOpenTicketId] = useState<string | null>(null);
 
-    // 注文履歴のコンパクト表示
-    const sortedOrders = useMemo(() => [...orders].sort((a, b) => b.createdAt - a.createdAt), [orders]);
+    // 履歴も canonical を元に
+    const sortedOrders = useMemo(
+        () => [...canonicalOrders].sort((a, b) => b.createdAt - a.createdAt),
+        [canonicalOrders]
+    );
+
     const [showAllHistory, setShowAllHistory] = useState(false);
     const MAX_COMPACT = 5;
     const visibleOrders = showAllHistory ? sortedOrders : sortedOrders.slice(0, MAX_COMPACT);
@@ -626,10 +893,24 @@ function AccountView({ orders, shopsById }: { orders: Order[]; shopsById: Map<st
             )}
             {pending.length > 0 && (
                 <div className="space-y-3">
-                    <div className="text-sm font-semibold flex items-center justify-between">
-                        <span>未引換のチケット</span>
-                        <button type="button" className="text-[11px] px-2 py-1 rounded border cursor-pointer" onClick={() => { setRefreshTick(t => t + 1); emitToast('info', '最新状態に更新しました'); }}>最新状態に更新</button>
+                    {/* 未引換のチケット */}
+                    <div className="flex items-center justify-between">
+                        <div className="text-sm font-semibold">未引換のチケット</div>
+                        <div className="flex items-center gap-2">
+                            {process.env.NODE_ENV !== 'production' && onDevReset && (
+                                <button
+                                    type="button"
+                                    onClick={onDevReset}
+                                    className="text-[11px] px-2 py-1 rounded border bg-red-50 hover:bg-red-100 cursor-pointer"
+                                    title="この店舗の注文をすべて削除（開発専用）"
+                                >
+                                    リセット
+                                </button>
+                            )}
+                            <div className="text-[11px] text-zinc-500">{pending.length}件</div>
+                        </div>
                     </div>
+
                     {pending.map(o => {
                         const shopName = shopsById.get(o.shopId)?.name || o.shopId;
                         const isOpen = openTicketId === o.id;
@@ -644,7 +925,7 @@ function AccountView({ orders, shopsById }: { orders: Order[]; shopsById: Map<st
                                             <div className="text-[11px] text-zinc-500 truncate">注文番号 {o.id}</div>
                                         </div>
                                     </div>
-                                    <div className="text-xs px-2 py-1 rounded bg-amber-100 shrink-0">状態: paid</div>
+                                    <div className="text-xs px-2 py-1 rounded bg-amber-100 shrink-0">状態: {o.status}</div>
                                 </button>
 
                                 {/* オープン時のみ詳細描画（QRは常時1枚） */}
@@ -678,8 +959,21 @@ function AccountView({ orders, shopsById }: { orders: Order[]; shopsById: Map<st
             <div className="rounded-2xl border bg-white p-4">
                 <div className="flex items-center justify-between">
                     <div className="text-sm font-semibold">注文履歴</div>
-                    <div className="text-[11px] text-zinc-500">{sortedOrders.length}件</div>
+                    <div className="flex items-center gap-2">
+                        {process.env.NODE_ENV !== 'production' && onDevReset && (
+                            <button
+                                type="button"
+                                onClick={onDevReset}
+                                className="text-[11px] px-2 py-1 rounded border bg-red-50 hover:bg-red-100 cursor-pointer"
+                                title="この店舗の注文をすべて削除（開発専用）"
+                            >
+                                リセット
+                            </button>
+                        )}
+                        <div className="text-[11px] text-zinc-500">{sortedOrders.length}件</div>
+                    </div>
                 </div>
+
                 <ul className="mt-2 divide-y">
                     {visibleOrders.map(o => (
                         <li key={o.id} className="py-3 flex items-center justify-between text-sm">

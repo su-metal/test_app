@@ -47,6 +47,15 @@ const norm = (v: unknown): string => {
     return s.trim().replace(/[\s_-]/g, "").replace(/[^0-9A-Za-z]/g, "").toUpperCase();
 };
 
+// 6桁コード専用: 数字のみ抽出し、左ゼロ埋めで6桁に揃える
+const normalizeCode6 = (v: unknown): string => {
+    const digits = String(v ?? "").replace(/\D/g, "");
+    if (digits.length === 6) return digits;
+    if (digits.length < 6) return digits.padStart(6, '0');
+    // 6桁より長い場合は比較に使わない（不一致扱い）
+    return digits;
+};
+
 // ---- Toast（非同期通知） ----
 type ToastKind = "info" | "success" | "error";
 interface ToastPayload { kind: ToastKind; msg: string }
@@ -269,8 +278,6 @@ export default function UserPilotApp() {
         };
 
 
-
-
         // コードでひも付け（code は注文作成時に orderPayload.code として保存済み＝ local の code6）
         const channel = supabase
             .channel("orders-updates")
@@ -283,8 +290,7 @@ export default function UserPilotApp() {
                     // ★ 完全一致：トリム/大文字化/記号除去などは一切しない
                     const codeDB = row?.code != null ? String(row.code) : "";
                     const idDB = row?.id ? String(row.id) : "";
-                    const codeNorm = norm(codeDB);
-                    const idNorm = norm(idDB);
+                    const codeNorm6 = normalizeCode6(codeDB);
 
                     const next: Order["status"] = (() => {
                         const s = String(row?.status || '').toUpperCase();
@@ -297,10 +303,10 @@ export default function UserPilotApp() {
                     setOrders(prev => {
                         // 1) 更新：code(大文字) or id でヒットしたものを書き換え
                         const mapped = prev.map(o => {
-                            const oc = norm(o.code6);  // ★ 差し替え
-                            const byCode = codeNorm ? (oc === codeNorm) : false;
+                            const oc = normalizeCode6(o.code6);  // 6桁コードを正規化して比較
+                            const byCode = (codeNorm6.length === 6 && oc.length === 6) ? (oc === codeNorm6) : false;
 
-                            const byId = idNorm ? (o.id === idNorm) : false;
+                            const byId = idDB ? (String(o.id) === idDB) : false;
                             return (byCode || byId) ? { ...o, status: next } : o;
                         });
 
@@ -338,6 +344,52 @@ export default function UserPilotApp() {
 
         return () => { supabase.removeChannel(channel); };
     }, [supabase, setOrders, setTab]);
+
+    // 受け渡し済みになっても消えない場合のフェールセーフ: 定期ポーリングで同期
+    const pendingKey = useMemo(() => {
+        try { return JSON.stringify(orders.filter(o => o.status === 'paid').map(o => ({ id: o.id, code6: o.code6 }))); } catch { return ""; }
+    }, [orders]);
+
+    useEffect(() => {
+        if (!supabase) return;
+        // 未引換が無ければ停止
+        const targets = orders.filter(o => o.status === 'paid');
+        if (targets.length === 0) return;
+
+        let alive = true;
+        const toLocal = (dbStatus?: string): Order["status"] => {
+            const s = String(dbStatus || '').toUpperCase();
+            if (s === 'FULFILLED' || s === 'REDEEMED' || s === 'COMPLETED') return 'redeemed';
+            if (s === 'PAID' || s === 'PENDING') return 'paid';
+            return 'paid';
+        };
+
+        const tick = async () => {
+            try {
+                const ids = targets.map(o => String(o.id));
+                const { data, error } = await supabase.from('orders').select('id, code, status').in('id', ids);
+                if (!alive || error || !Array.isArray(data)) return;
+                const rows = data as Array<{ id: string; code: string | null; status?: string | null }>;
+                // id と 6桁コードでローカルを更新
+                setOrders(prev => {
+                    let changed = false;
+                    const next = prev.map(o => {
+                        const hit = rows.find(r => String(r.id) === String(o.id) || (normalizeCode6(r.code) === normalizeCode6(o.code6)));
+                        if (!hit) return o;
+                        const ns = toLocal(hit.status || undefined);
+                        if (ns !== o.status) { changed = true; return { ...o, status: ns }; }
+                        return o;
+                    });
+                    return changed ? next : prev;
+                });
+            } catch {/* noop */}
+        };
+
+        // 即時 + 周期的に確認（4秒毎）。画面操作や注文更新で依存キーが変わると自動で張り替え
+        tick();
+        const timer = window.setInterval(tick, 4000);
+        return () => { alive = false; window.clearInterval(timer); };
+    }, [supabase, pendingKey]);
 
 
     // DBの商品が取れていて storeId が指定されていれば、その店舗の items を DB で差し替え

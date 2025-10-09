@@ -21,8 +21,18 @@ export default function SupabaseBoot() {
         if (!window.NEXT_PUBLIC_SUPABASE_ANON_KEY && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) {
             window.NEXT_PUBLIC_SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY as string;
         }
-        if (!window.__STORE_ID__ && (process.env.NEXT_PUBLIC_STORE_ID || window.NEXT_PUBLIC_STORE_ID)) {
-            window.__STORE_ID__ = (process.env.NEXT_PUBLIC_STORE_ID || window.NEXT_PUBLIC_STORE_ID) as string;
+        // 優先順: localStorage("store:selected") > env
+        try {
+            const saved = typeof window !== 'undefined' ? localStorage.getItem('store:selected') : null;
+            if (saved) {
+                window.__STORE_ID__ = saved;
+            } else if (!window.__STORE_ID__ && (process.env.NEXT_PUBLIC_STORE_ID || window.NEXT_PUBLIC_STORE_ID)) {
+                window.__STORE_ID__ = (process.env.NEXT_PUBLIC_STORE_ID || window.NEXT_PUBLIC_STORE_ID) as string;
+            }
+        } catch {
+            if (!window.__STORE_ID__ && (process.env.NEXT_PUBLIC_STORE_ID || window.NEXT_PUBLIC_STORE_ID)) {
+                window.__STORE_ID__ = (process.env.NEXT_PUBLIC_STORE_ID || window.NEXT_PUBLIC_STORE_ID) as string;
+            }
         }
 
         // 2) Supabase クライアントを一度だけ生成して保持

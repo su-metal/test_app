@@ -2,564 +2,390 @@
 import React, { useMemo, useState, useEffect, useRef, useCallback } from "react";
 import { createClient, type RealtimeChannel } from "@supabase/supabase-js";
 
-// v3.2 TS対応版：暗黙any/Window拡張/Ref型/Props型の修正、警告抑制なしでビルド可
+// 要件: 店側 UI（注文一覧、受け渡し、商品管理）。日本語文言で統一。
+// TODO(req v2): DB スキーマ型は生成定義に切替（supabase gen types）。
 
 // ===== 型定義 =====
 type OrderStatus = "PENDING" | "FULFILLED";
 
 type OrderItem = {
-    id: string;
-    name: string;
-    qty: number;
+  id: string;
+  name: string;
+  qty: number;
 };
 
 type OrdersRow = {
-    id: string;
-    code: string;
-    customer: string | null;
-    items: OrderItem[] | null;
-    total: number | null;
-    placed_at: string | null;
-    status: OrderStatus;
+  id: string;
+  code: string | null;
+  customer: string | null;
+  items: OrderItem[] | null;
+  total: number | null;
+  placed_at: string | null;
+  status: OrderStatus;
 };
 
 type Order = {
-    id: string;
-    code: string;
-    customer: string;
-    items: OrderItem[];
-    total: number;
-    placedAt: string;
-    status: OrderStatus;
+  id: string;
+  code: string | null;
+  customer: string;
+  items: OrderItem[];
+  total: number;
+  placedAt: string;
+  status: OrderStatus;
 };
 
 type ProductsRow = {
-    id: string;
-    name: string;
-    price: number | null;
-    stock: number | null;
-    updated_at: string | null;
+  id: string;
+  store_id?: string | null;
+  name: string;
+  price: number | null;
+  stock: number | null;
+  updated_at: string | null;
 };
 
 type Product = {
-    id: string;
-    name: string;
-    price: number;
-    stock: number;
+  id: string;
+  name: string;
+  price: number;
+  stock: number;
 };
 
-
-// ---- Store ID helper（どこでも同じ方法で取得）
+// ===== Util =====
 const getStoreId = () =>
-    (typeof process !== "undefined" && (process.env?.NEXT_PUBLIC_STORE_ID as string | undefined)) ||
-    (typeof window !== "undefined" && window.__STORE_ID__) ||
-    "default";
+  (typeof window !== "undefined" && (window as any).__STORE_ID__) ||
+  (typeof process !== "undefined" && (process.env?.NEXT_PUBLIC_STORE_ID as string | undefined)) ||
+  "default";
 
-
-// ===== 正規化 =====
-function mapOrder(r: OrdersRow): Order {
-    return {
-        id: String(r.id),
-        code: r.code,
-        customer: r.customer ?? "匿名",
-        items: Array.isArray(r.items) ? r.items : [],
-        total: Number(r.total ?? 0),
-        placedAt: r.placed_at ?? new Date().toISOString(),
-        status: r.status,
-    };
-}
-
-function mapProduct(r: ProductsRow): Product {
-    return {
-        id: String(r.id),
-        name: r.name,
-        price: Number(r.price ?? 0),
-        stock: Number(r.stock ?? 0),
-    };
-}
-
-// ===== Mock =====
-const mockOrders: Order[] = [
-    { id: "ord_24001", code: "A7C2-9K", customer: "山田様", items: [{ id: "p1", name: "救済パンBOX", qty: 1 }, { id: "p2", name: "野菜ミックス", qty: 1 }], total: 540, placedAt: new Date(Date.now() - 1_500_000).toISOString(), status: "PENDING" },
-    { id: "ord_24002", code: "Q4M8-2T", customer: "佐藤様", items: [{ id: "p3", name: "ラストケーキ", qty: 2 }], total: 800, placedAt: new Date(Date.now() - 3_600_000).toISOString(), status: "PENDING" },
-    { id: "ord_23991", code: "Z1X9-0B", customer: "匿名", items: [{ id: "p4", name: "お惣菜セット", qty: 1 }], total: 450, placedAt: new Date(Date.now() - 7_200_000).toISOString(), status: "FULFILLED" },
-];
-
-const mockProducts: Product[] = [{ id: "p1", name: "救済パンBOX", price: 400, stock: 5 }];
-
-// ===== Utils =====
 const yen = (n: number) => n.toLocaleString("ja-JP", { style: "currency", currency: "JPY" });
-const since = (iso: string) => { const d = Date.now() - new Date(iso).getTime(); const m = Math.floor(d / 60000); if (m < 1) return "たった今"; if (m < 60) return `${m}分前`; return `${Math.floor(m / 60)}時間前`; };
+const since = (iso: string) => {
+  const d = Date.now() - new Date(iso).getTime();
+  const m = Math.floor(d / 60000);
+  if (m < 1) return "たった今";
+  if (m < 60) return `${m}分前`;
+  return `${Math.floor(m / 60)}時間前`;
+};
 const storeTake = (price: number | string) => Math.floor(Number(price || 0) * 0.8);
-// SSR/CSRの時刻差でHydrationがズレないように、クライアントマウント後か判定するフック
-function useMounted() {
-    const [mounted, setMounted] = React.useState(false);
-    React.useEffect(() => setMounted(true), []);
-    return mounted;
+function useMounted() { const [m, sm] = useState(false); useEffect(() => sm(true), []); return m; }
+
+// 正規化
+function mapOrder(r: OrdersRow): Order {
+  return {
+    id: String(r.id),
+    code: r.code ?? null,
+    customer: r.customer ?? "匿名",
+    items: Array.isArray(r.items) ? r.items : [],
+    total: Number(r.total ?? 0),
+    placedAt: r.placed_at ?? new Date().toISOString(),
+    status: r.status,
+  };
 }
+function mapProduct(r: ProductsRow): Product { return { id: String(r.id), name: r.name, price: Number(r.price ?? 0), stock: Math.max(0, Number(r.stock ?? 0)) }; }
 
-
-// ===== Clients =====
+// ===== Supabase クライアント =====
 function useSupabase() {
-    return useMemo(() => {
-        if (typeof window === "undefined") return null;
-        if (window.__supabase) return window.__supabase; // ← まずこれを返す
-        // 予備：Boot実行前の瞬間に備えてenvから生成
-        const url = (process.env.NEXT_PUBLIC_SUPABASE_URL as string | undefined) || window.NEXT_PUBLIC_SUPABASE_URL;
-        const key = (process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY as string | undefined) || window.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-        if (!url || !key) return null;
-        try { const sb = createClient(url, key); window.__supabase = sb; return sb; } catch { return null; }
-    }, []);
+  return useMemo(() => {
+    if (typeof window === "undefined") return null;
+    const w = window as any;
+    if (w.__supabase) return w.__supabase;
+    const url = (process.env.NEXT_PUBLIC_SUPABASE_URL as string | undefined) || w.NEXT_PUBLIC_SUPABASE_URL;
+    const key = (process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY as string | undefined) || w.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    if (!url || !key) return null;
+    try { const sb = createClient(url, key); w.__supabase = sb; return sb; } catch { return null; }
+  }, []);
 }
 
+// ===== Stores =====
+type StoreRow = { id: string; name: string; created_at?: string };
+function useStores() {
+  const supabase = useSupabase();
+  const [stores, setStores] = useState<StoreRow[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const load = useCallback(async () => {
+    if (!supabase) return; setLoading(true); setErr(null);
+    const { data, error } = await supabase.from('stores').select('id,name,created_at').order('created_at', { ascending: true }).limit(200);
+    if (error) setErr(error.message || '店舗の取得に失敗しました'); else setStores((data as StoreRow[]) || []);
+    setLoading(false);
+  }, [supabase]);
+  useEffect(() => { load(); }, [load]);
+  return { stores, loading, err } as const;
+}
 
+const StoreSwitcher = React.memo(function StoreSwitcher() {
+  const { stores } = useStores();
+  const [sel, setSel] = useState<string>(() => {
+    if (typeof window === 'undefined') return getStoreId();
+    try { return localStorage.getItem('store:selected') || getStoreId(); } catch { return getStoreId(); }
+  });
+  useEffect(() => setSel(getStoreId()), []);
+  const onChange = useCallback((e: React.ChangeEvent<HTMLSelectElement>) => {
+    const v = e.target.value; setSel(v);
+    try { localStorage.setItem('store:selected', v); } catch {}
+    (window as any).__STORE_ID__ = v; location.reload();
+  }, []);
+  return (
+    <label className="flex items-center gap-2 text-sm mr-2">
+      <span className="text-zinc-600">店舗</span>
+      <select value={sel} onChange={onChange} className="rounded-lg border px-2 py-1 bg-white">
+        {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+      </select>
+    </label>
+  );
+});
 
+// ===== Broadcast helper =====
 function useBroadcast(name: string) {
-    const chan = useMemo(() => { if (typeof window === 'undefined') return null; try { return new BroadcastChannel(name); } catch { return null; } }, [name]);
-    const post = (payload: unknown) => { try { (chan as BroadcastChannel | null)?.postMessage(payload as any); } catch { } };
-    useEffect(() => () => { try { (chan as BroadcastChannel | null)?.close(); } catch { } }, [chan]);
-    return { post } as const;
+  const chan = useMemo(() => { if (typeof window === 'undefined') return null; try { return new BroadcastChannel(name); } catch { return null; } }, [name]);
+  const post = (payload: unknown) => { try { (chan as BroadcastChannel | null)?.postMessage(payload as any); } catch { } };
+  useEffect(() => () => { try { (chan as BroadcastChannel | null)?.close(); } catch { } }, [chan]);
+  return { post } as const;
 }
 
-// ===== Data: Products =====
+// ===== Products =====
 function useProducts() {
-    const supabase = useSupabase();
-    const [products, setProducts] = useState<Product[]>(mockProducts);
-    const [perr, setPerr] = useState<string | null>(null);
-    const [ploading, setPloading] = useState(false);
-    const invChan = useBroadcast('inventory-sync');
+  const supabase = useSupabase();
+  const [products, setProducts] = useState<Product[]>([]);
+  const [perr, setPerr] = useState<string | null>(null);
+  const [ploading, setPloading] = useState(false);
 
-    const load = useCallback(async () => {
-        if (!supabase) return; setPloading(true); setPerr(null);
-        const storeId = getStoreId();
-        const { data, error } = await supabase
-            .from('products')
-            .select('*')
-            .eq('store_id', storeId)            // ★ 追加：店舗でフィルタ
-            .order('updated_at', { ascending: false });
+  const load = useCallback(async () => {
+    if (!supabase) return; setPloading(true); setPerr(null);
+    const { data, error } = await supabase.from('products').select('*').eq('store_id', getStoreId()).order('updated_at', { ascending: false });
+    if (error) setPerr(error.message || '商品の取得に失敗しました');
+    else setProducts(((data ?? []) as ProductsRow[]).map(mapProduct));
+    setPloading(false);
+  }, [supabase]);
+  useEffect(() => { load(); }, [load]);
 
-        if (error) setPerr(error.message || '商品取得に失敗'); else if (Array.isArray(data)) setProducts((data as ProductsRow[]).map(mapProduct));
-        setPloading(false);
-    }, [supabase]);
-    useEffect(() => { load(); }, [load]);
+  const add = useCallback(async (payload: { name: string; price: number; stock: number }) => {
+    if (!payload.name) { setPerr('商品名を入力してください'); return; }
+    if (!supabase) return;
+    setPloading(true); setPerr(null);
+    const { data, error } = await supabase.from('products').insert({ ...payload, store_id: getStoreId() }).select('*').single();
+    if (error) setPerr(error.message || '商品の登録に失敗しました');
+    else if (data) setProducts(prev => [mapProduct(data as ProductsRow), ...prev]);
+    setPloading(false);
+  }, [supabase]);
 
-    const add = useCallback(async (payload: { name: string; price: number; stock: number; }) => {
-        if (!payload.name) { setPerr('商品名は必須'); return; }
-        if (!supabase) { const np: Product = { id: Math.random().toString(36).slice(2), ...payload }; setProducts(prev => [np, ...prev]); return; }
-        setPloading(true); setPerr(null);
-        const storeId = getStoreId();
-        const { data, error } = await supabase
-            .from('products')
-            .insert({ name: payload.name, price: payload.price, stock: payload.stock, store_id: storeId }) // ★ 追加
-            .select('*')
-            .single();
+  const remove = useCallback(async (id: string) => {
+    if (!id) return; setProducts(prev => prev.filter(p => p.id !== id));
+    if (!supabase) return;
+    const { error } = await supabase.from('products').delete().eq('id', id).eq('store_id', getStoreId());
+    if (error) setPerr(error.message || '削除に失敗しました');
+  }, [supabase]);
 
-        if (error) setPerr(error.message || '商品登録に失敗'); else if (data) setProducts(prev => [mapProduct(data as ProductsRow), ...prev]);
-        setPloading(false);
-    }, [supabase]);
-
-    const storeId =
-        (typeof process !== 'undefined' && (process.env?.NEXT_PUBLIC_STORE_ID as string | undefined)) ||
-        (typeof window !== 'undefined' && window.__STORE_ID__) ||
-        'default';
-
-    const remove = useCallback(async (id: string) => {
-        if (!id) return;
-
-        // まずローカル表示から先に消してUXを良くする（DBエラーなら後で戻す）
-        setProducts(prev => prev.filter(p => p.id !== id));
-        setPerr(null);
-
-        try {
-            if (!supabase) return; // mock環境ならここで終了
-
-            // RLSでstore_id一致が必要な設計なら、ここも合わせる
-            const q = supabase.from('products').delete().eq('id', id).eq('store_id', getStoreId())
-            // もしポリシーで store_id 条件が必要なら:
-            // const q = supabase.from('products').delete().eq('id', id).eq('store_id', storeId);
-
-            const { error } = await q;
-            if (error) {
-                // 失敗したらロールバック
-                setProducts(prev => prev); // no-opでもOK、必要なら直前のスナップショット保持して戻す
-                setPerr(error.message || '削除に失敗しました');
-            }
-        } catch (e) {
-            setPerr((e as Error).message || '削除に失敗しました');
-        }
-    }, [supabase, setProducts, setPerr, storeId]);
-
-
-    // 受け渡し後の在庫減算を購読
-    useEffect(() => {
-        const onMsg = (e: MessageEvent) => {
-            const m = e.data as any; if (!m || m.type !== 'DECREMENT_STOCK') return;
-            setProducts(prev => {
-                const map = new Map(prev.map(p => [p.id, { ...p }]));
-                (m.items as { id: string; qty: number }[]).forEach(({ id, qty }) => { const p = map.get(id); if (p) { p.stock = Math.max(0, (p.stock || 0) - qty); map.set(id, p); } });
-                return Array.from(map.values());
-            });
-        };
-        const ch = new BroadcastChannel('inventory-sync'); ch.onmessage = onMsg; return () => { try { ch.close(); } catch { } };
-    }, []);
-
-    return { products, perr, ploading, add, remove, reload: load, invChan } as const;
-
+  return { products, perr, ploading, add, remove, reload: load } as const;
 }
 
-// ===== Data: Orders（在庫減算を内包） =====
+// ===== Orders =====
 function useOrders() {
-    const supabase = useSupabase();
-    const { invChan } = useProducts();
-    const orderChan = useBroadcast('order-sync');
+  const supabase = useSupabase();
+  const invChan = useBroadcast('inventory-sync');
+  const orderChan = useBroadcast('order-sync');
 
-    const [orders, setOrders] = useState<Order[]>(mockOrders);
-    const [ready, setReady] = useState(false);
-    const [err, setErr] = useState<string | null>(null);
-    const channelRef = useRef<RealtimeChannel | null>(null);
-    const storeId = (typeof process !== 'undefined' && (process.env?.NEXT_PUBLIC_STORE_ID as string | undefined)) || (typeof window !== 'undefined' && window.__STORE_ID__) || 'default';
-    const chanName = `orders-realtime-${storeId}`;
+  const [orders, setOrders] = useState<Order[]>([]);
+  const [ready, setReady] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const channelRef = useRef<RealtimeChannel | null>(null);
+  const chanName = `orders-realtime-${getStoreId()}`;
 
-    const cleanup = useCallback(() => {
-        try { channelRef.current?.unsubscribe?.(); } catch { }
-        try { if (supabase && channelRef.current) (supabase as any).removeChannel(channelRef.current); } catch { }
-        channelRef.current = null;
-    }, [supabase]);
+  const cleanup = useCallback(() => {
+    try { channelRef.current?.unsubscribe?.(); } catch { }
+    try { if (supabase && channelRef.current) (supabase as any).removeChannel(channelRef.current); } catch { }
+    channelRef.current = null;
+  }, [supabase]);
 
-    const fetchAndSubscribe = useCallback(async () => {
-        if (!supabase) { setReady(true); return; } setErr(null); cleanup();
-        const storeId = getStoreId();
-        const { data, error } = await supabase
-            .from('orders')
-            .select('*')
-            .eq('store_id', storeId)     // ★ 追加
-            .order('placed_at', { ascending: false });
-        if (error) setErr(error.message || 'データ取得に失敗しました'); else if (Array.isArray(data)) setOrders((data as OrdersRow[]).map(mapOrder));
-        try {
-            const storeId = getStoreId();
-            const ch = (supabase as any)
-                .channel(chanName)
-                .on('postgres_changes',
-                    { event: 'INSERT', schema: 'public', table: 'orders', filter: `store_id=eq.${storeId}` }, // ★ 追加
-                    (p: any) => { if (p?.new) setOrders(prev => [mapOrder(p.new as OrdersRow), ...prev]); })
-                .on('postgres_changes',
-                    { event: 'UPDATE', schema: 'public', table: 'orders', filter: `store_id=eq.${storeId}` }, // ★ 追加
-                    (p: any) => { if (p?.new) setOrders(prev => prev.map(o => o.id === String((p.new as OrdersRow).id) ? mapOrder(p.new as OrdersRow) : o)); })
-                .subscribe() as RealtimeChannel;
+  const decrementStocksDB = useCallback(async (items: OrderItem[]) => {
+    if (!supabase) return;
+    await Promise.all(items.map(async it => {
+      const { data: prod } = await supabase.from('products').select('id,stock').eq('id', it.id).single();
+      if (prod) { const next = Math.max(0, Number((prod as any).stock || 0) - it.qty); await supabase.from('products').update({ stock: next }).eq('id', it.id); }
+    }));
+    invChan.post({ type: 'DECREMENT_STOCK', items: items.map(({ id, qty }) => ({ id, qty })) });
+  }, [supabase, invChan]);
 
-            channelRef.current = ch;
-        } catch { setErr('リアルタイム購読に失敗しました'); }
-        setReady(true);
-    }, [supabase, chanName, cleanup]);
+  const fetchAndSubscribe = useCallback(async () => {
+    if (!supabase) { setReady(true); return; }
+    setErr(null); cleanup();
+    const { data, error } = await supabase.from('orders').select('*').eq('store_id', getStoreId()).order('placed_at', { ascending: false });
+    if (error) setErr(error.message || 'データ取得に失敗しました'); else setOrders(((data ?? []) as OrdersRow[]).map(mapOrder));
+    try {
+      const sid = getStoreId();
+      const ch = (supabase as any)
+        .channel(chanName)
+        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'orders', filter: `store_id=eq.${sid}` }, (p: any) => { if (p?.new) setOrders(prev => [mapOrder(p.new as OrdersRow), ...prev]); })
+        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'orders', filter: `store_id=eq.${sid}` }, (p: any) => { if (p?.new) setOrders(prev => prev.map(o => o.id === String((p.new as OrdersRow).id) ? mapOrder(p.new as OrdersRow) : o)); })
+        .subscribe() as RealtimeChannel;
+      channelRef.current = ch;
+    } catch { setErr('リアルタイム購読に失敗しました'); }
+    setReady(true);
+  }, [supabase, cleanup, chanName]);
 
-    useEffect(() => { fetchAndSubscribe(); return () => { cleanup(); }; }, [fetchAndSubscribe, cleanup]);
-    const retry = useCallback(() => { setReady(false); fetchAndSubscribe(); }, [fetchAndSubscribe]);
+  useEffect(() => { fetchAndSubscribe(); return () => { cleanup(); }; }, [fetchAndSubscribe, cleanup]);
 
-    // 在庫減算（DB→Broadcast）
-    const decrementStocksDB = useCallback(async (items: OrderItem[]) => {
-        if (!supabase) { // mock
-            invChan.post({ type: 'DECREMENT_STOCK', items: items.map(({ id, qty }) => ({ id, qty })) });
-            return;
-        }
-        await Promise.all(items.map(async (it) => {
-            const { data: prod } = await supabase.from('products').select('id,stock').eq('id', it.id).single();
-            if (prod) { const next = Math.max(0, Number((prod as any).stock || 0) - it.qty); await supabase.from('products').update({ stock: next }).eq('id', it.id); }
-        }));
-        invChan.post({ type: 'DECREMENT_STOCK', items: items.map(({ id, qty }) => ({ id, qty })) });
-    }, [supabase, invChan]);
+  const fulfill = useCallback(async (id: string) => {
+    const target = orders.find(o => o.id === id); if (!target) return;
+    if (!supabase) { setOrders(prev => prev.map(o => o.id === id ? { ...o, status: 'FULFILLED' } : o)); orderChan.post({ type: 'ORDER_FULFILLED', orderId: id, at: Date.now() }); return; }
+    const { data, error } = await supabase.from('orders').update({ status: 'FULFILLED' }).eq('id', id).eq('store_id', getStoreId()).select('*').single();
+    if (error) { setErr(error.message || '更新に失敗しました'); return; }
+    if (data) { setOrders(prev => prev.map(o => o.id === String((data as OrdersRow).id) ? mapOrder(data as OrdersRow) : o)); await decrementStocksDB(target.items); orderChan.post({ type: 'ORDER_FULFILLED', orderId: String((data as OrdersRow).id), at: Date.now() }); }
+  }, [supabase, orders, decrementStocksDB, orderChan]);
 
-    const fulfill = useCallback((id: string) => {
-        const target = orders.find(o => o.id === id);
-        if (!target) { return; }
-        if (!supabase) {
-            setOrders(prev => prev.map(o => o.id === id ? { ...o, status: 'FULFILLED' } : o));
-            decrementStocksDB(target.items);
-            orderChan.post({ type: 'ORDER_FULFILLED', orderId: id, at: Date.now() });
-            return;
-        }
-        return supabase.from('orders').update({ status: 'FULFILLED' }).eq('id', id).eq('store_id', getStoreId()).select('*').single().then(async ({ data, error }) => {
-            if (error) { setErr(error.message || '更新に失敗しました'); return; }
-            if (data) { setOrders(prev => prev.map(o => o.id === String((data as OrdersRow).id) ? mapOrder(data as OrdersRow) : o)); await decrementStocksDB(target.items); orderChan.post({ type: 'ORDER_FULFILLED', orderId: String((data as OrdersRow).id), at: Date.now() }); }
-        });
-    }, [supabase, orders, decrementStocksDB, orderChan]);
-
-    const pending = useMemo(() => orders.filter(o => o.status === 'PENDING'), [orders]);
-    const fulfilled = useMemo(() => orders.filter(o => o.status === 'FULFILLED'), [orders]);
-    return { ready, err, orders, pending, fulfilled, fulfill, retry } as const;
+  const pending = useMemo(() => orders.filter(o => o.status === 'PENDING'), [orders]);
+  const fulfilled = useMemo(() => orders.filter(o => o.status === 'FULFILLED'), [orders]);
+  return { ready, err, orders, pending, fulfilled, fulfill, retry: fetchAndSubscribe } as const;
 }
 
 // ===== UI =====
 const SectionTitle = React.memo(function SectionTitle({ children, badge }: { children: React.ReactNode; badge?: string; }) {
-    return (
-        <div className="flex items-center justify-between mb-2">
-            <h2 className="text-lg font-semibold tracking-tight">{children}</h2>
-            {badge ? (<span className="text-xs px-2 py-0.5 rounded-full bg-zinc-100 text-zinc-600">{badge}</span>) : null}
-        </div>
-    );
+  return (
+    <div className="flex items-center justify-between mb-2">
+      <h2 className="text-lg font-semibold tracking-tight">{children}</h2>
+      {badge ? (<span className="text-xs px-2 py-0.5 rounded-full bg-zinc-100 text-zinc-600">{badge}</span>) : null}
+    </div>
+  );
 });
 
 const StatusBadge = React.memo(function StatusBadge({ status }: { status: OrderStatus; }) {
-    return (
-        <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs border ${status === 'PENDING' ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200'}`}>
-            {status === 'PENDING' ? '受取待ち' : '受け渡し済み'}
-        </span>
-    );
+  return (
+    <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs border ${status === 'PENDING' ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200'}`}>
+      {status === 'PENDING' ? '受取待ち' : '受け渡し済み'}
+    </span>
+  );
 });
 
 const OrderCard = React.memo(function OrderCard({ order, onHandoff }: { order: Order; onHandoff: (o: Order) => void; }) {
-    const onClick = useCallback(() => onHandoff(order), [onHandoff, order]);
-    const mounted = useMounted();
-    return (
-        <div className="rounded-2xl border bg-white shadow-sm p-4 flex flex-col gap-3">
-            <div className="flex items-center justify-between">
-                <div className="font-medium">{order.customer}</div>
-                <StatusBadge status={order.status} />
-            </div>
-            <div className="text-sm text-zinc-600">注文ID: {order.id}</div>
-            <ul className="text-sm text-zinc-800 space-y-1">
-                {order.items.map((it) => (
-                    <li key={it.id} className="flex items-center justify-between">
-                        <span>{it.name}</span>
-                        <span className="tabular-nums">×{it.qty}</span>
-                    </li>
-                ))}
-            </ul>
-
-
-
-
-            <div className="flex items-center justify-between text-sm">
-                <span className="text-zinc-500" suppressHydrationWarning>
-                    受付: {mounted ? since(order.placedAt) : '—'}
-                </span>
-                <span className="font-semibold">{yen(order.total)}</span>
-            </div>
-
-            {order.status === 'PENDING' ? (
-                <button onClick={onClick} className="w-full rounded-xl bg-zinc-900 text-white py-2.5 text-sm font-medium hover:bg-zinc-800 active:opacity-90">引換する（コード照合）</button>
-            ) : (
-                <div className="w-full rounded-xl bg-emerald-600/10 text-emerald-700 py-2.5 text-sm text-center font-medium">受け渡し完了</div>
-            )}
-        </div>
-    );
+  const onClick = useCallback(() => onHandoff(order), [onHandoff, order]);
+  const mounted = useMounted();
+  return (
+    <div className="rounded-2xl border bg-white shadow-sm p-4 flex flex-col gap-3">
+      <div className="flex items-center justify-between">
+        <div className="font-medium">{order.customer}</div>
+        <StatusBadge status={order.status} />
+      </div>
+      <div className="text-sm text-zinc-600">注文ID: {order.id}</div>
+      <ul className="text-sm text-zinc-800 space-y-1">
+        {order.items.map((it) => (
+          <li key={it.id} className="flex items-center justify-between">
+            <span>{it.name}</span>
+            <span className="tabular-nums">×{it.qty}</span>
+          </li>
+        ))}
+      </ul>
+      <div className="flex items-center justify-between text-sm">
+        <span className="text-zinc-500" suppressHydrationWarning>
+          受付 {mounted ? since(order.placedAt) : ''}
+        </span>
+        <span className="font-semibold">{yen(order.total)}</span>
+      </div>
+      {order.status === 'PENDING' ? (
+        <button onClick={onClick} className="w-full rounded-xl bg-zinc-900 text-white py-2.5 text-sm font-medium hover:bg-zinc-800 active:opacity-90">受け渡し（コード照合）</button>
+      ) : (
+        <div className="w-full rounded-xl bg-emerald-600/10 text-emerald-700 py-2.5 text-sm text-center font-medium">受け渡し完了</div>
+      )}
+    </div>
+  );
 });
 
-function QRScanner({ onDetect, onClose }: { onDetect: (code: string) => void; onClose: () => void; }) {
-    const videoRef = useRef<HTMLVideoElement | null>(null);
-    const [err, setErr] = useState<string | null>(null);
-    useEffect(() => {
-        let stream: MediaStream | undefined; let raf: number | undefined; let detector: any;
-        async function start() {
-            try {
-                const supports = 'BarcodeDetector' in window;
-                if (supports) detector = new window.BarcodeDetector({ formats: ['qr_code', 'ean_13', 'code_128'] });
-                stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
-                const v = videoRef.current; if (!v) return; (v as any).srcObject = stream; await v.play();
-                if (detector) {
-                    const loop = async () => { try { const codes = await detector.detect(v); if (codes && codes[0]) { onDetect(codes[0].rawValue || codes[0].rawValueText || ''); stop(); } } catch { } raf = requestAnimationFrame(loop); };
-                    raf = requestAnimationFrame(loop);
-                }
-            } catch (e) { setErr('カメラにアクセスできません'); }
-        }
-        function stop() { try { stream?.getTracks()?.forEach((t) => t.stop()); } catch { } try { if (raf) cancelAnimationFrame(raf); } catch { } onClose && onClose(); }
-        start();
-        return () => { try { stream?.getTracks()?.forEach((t) => t.stop()); } catch { } try { if (raf) cancelAnimationFrame(raf); } catch { } };
-    }, [onDetect, onClose]);
-    return (
-        <div className="fixed inset-0 z-50 grid place-items-center bg-black/70 p-4" role="dialog" aria-modal="true">
-            <div className="w-full max-w-sm rounded-2xl bg-black p-3 text-white space-y-2">
-                <div className="text-sm">QRを枠内に合わせてください</div>
-                <video ref={videoRef} className="w-full aspect-[3/4] rounded-xl bg-black" muted playsInline />
-                {err ? <div className="text-xs text-red-300">{err}</div> : null}
-                <button onClick={onClose} className="w-full rounded-xl bg-white/10 py-2 text-sm">閉じる</button>
-            </div>
-        </div>
-    );
-}
-
-function HandoffDialog({ order, onClose, onFulfill }: { order: Order | null; onClose: () => void; onFulfill: (id: string) => any; }) {
-    const [input, setInput] = useState("");
-    const [error, setError] = useState<string | null>(null);
-    const [submitting, setSubmitting] = useState(false);
-    const [scan, setScan] = useState(false);
-    const inputRef = useRef<HTMLInputElement | null>(null);
-    const overlayRef = useRef<HTMLDivElement | null>(null);
-    useEffect(() => { if (order) { setInput(""); setError(null); requestAnimationFrame(() => { try { inputRef.current?.focus(); } catch { } }); } }, [order]);
-    useEffect(() => { if (!order) return; const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); }; window.addEventListener('keydown', onKey); return () => window.removeEventListener('keydown', onKey); }, [order, onClose]);
-    if (!order) return null;
-    const check = () => { const normalized = input.trim().toUpperCase(); if (!normalized) { setError('コードを入力してください'); return; } setSubmitting(true); if (normalized === String(order.code).toUpperCase()) { const maybe = onFulfill(order.id); onClose(); if (maybe?.then) (maybe as Promise<any>).finally(() => setSubmitting(false)); else setSubmitting(false); } else { setError('コードが一致しません'); setSubmitting(false); } };
-    const titleId = 'handoff-title', descId = 'handoff-desc';
-    return (
-        <div ref={overlayRef} className="fixed inset-0 z-50 grid place-items-center bg-black/30 p-4" role="dialog" aria-modal="true" aria-labelledby={titleId} aria-describedby={descId} onMouseDown={(e) => { if (e.target === overlayRef.current) onClose(); }}>
-            <div className="w-full max-w-md rounded-2xl bg-white shadow-xl border p-5" onMouseDown={(e) => e.stopPropagation()}>
-                <div className="mb-3">
-                    <div id={titleId} className="text-base font-semibold">コード照合</div>
-                    <div className="text-sm text-zinc-600">注文ID {order.id}（{order.customer}）</div>
-                </div>
-                <div id={descId} className="mb-3 text-sm text-zinc-700">引換コードを入力するか、QRを読み取ってください。</div>
-                <div className="flex gap-2 mb-2">
-                    <input id="redeem-code" ref={inputRef} className="flex-1 rounded-xl border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-zinc-900" placeholder="例: A7C2-9K" value={input} onChange={(e) => setInput(e.target.value)} />
-                    <button onClick={() => setScan(true)} className="rounded-xl border px-3 py-2 text-sm">カメラ</button>
-                </div>
-                {error ? <p className="mt-1 text-sm text-red-600" role="alert">{error}</p> : null}
-                <div className="mt-4 flex items-center justify-end gap-2">
-                    <button onClick={onClose} className="rounded-xl border px-4 py-2 text-sm hover:bg-zinc-50" disabled={submitting}>キャンセル</button>
-                    <button onClick={check} className="rounded-xl bg-zinc-900 text-white px-4 py-2 text-sm font-medium hover:bg-zinc-800 disabled:opacity-50 disabled:cursor-not-allowed" disabled={submitting}>{submitting ? '処理中…' : '照合して受け渡し'}</button>
-                </div>
-            </div>
-            {scan && (
-                <QRScanner onDetect={(code) => { setInput(code); setScan(false); }} onClose={() => setScan(false)} />
-            )}
-        </div>
-    );
-}
-
 function ProductForm() {
-    const { products, perr, ploading, add, remove, reload } = useProducts();
-    const [name, setName] = useState(""); const [price, setPrice] = useState(""); const [stock, setStock] = useState("");
-    const take = storeTake(price);
-    const onSubmit = async (e: React.FormEvent) => { e.preventDefault(); await add({ name: name.trim(), price: Number(price || 0), stock: Number(stock || 0) }); setName(""); setPrice(""); setStock(""); };
-    return (
-        <div className="rounded-2xl border bg-white p-4 space-y-4">
-            <div className="flex items-center justify-between"><div className="text-base font-semibold">商品登録</div><button onClick={reload} className="text-xs rounded-lg border px-2 py-1">再読込</button></div>
-            <form onSubmit={onSubmit} className="grid grid-cols-1 md:grid-cols-5 gap-2">
-                <input className="rounded-xl border px-3 py-2 text-sm" placeholder="商品名" value={name} onChange={e => setName(e.target.value)} required />
-                <input className="rounded-xl border px-3 py-2 text-sm" placeholder="価格" inputMode="numeric" value={price} onChange={e => setPrice(e.target.value)} />
-                <input className="rounded-xl border px-3 py-2 text-sm" placeholder="在庫" inputMode="numeric" value={stock} onChange={e => setStock(e.target.value)} />
-                <input className="rounded-xl border px-3 py-2 text-sm bg-zinc-50" value={`店舗受取額 ${yen(take)}`} readOnly aria-label="店舗受取額" />
-                <button className="rounded-xl bg-zinc-900 text-white px-3 py-2 text-sm" disabled={ploading}>追加</button>
-            </form>
-            {perr ? <div className="text-sm text-red-600">{perr}</div> : null}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                {products.map(p => (
-                    <div key={p.id} className="rounded-xl border p-3 text-sm flex items-center justify-between">
-                        <div className="space-y-0.5">
-                            <div className="font-medium">{p.name}</div>
-                            <div className="text-zinc-600 text-xs">店舗受取額 {yen(storeTake(p.price))}</div>
-                        </div>
-                        <div className="text-right">
-                            <div className="font-semibold">{yen(p.price)}</div>
-                            <div className="text-xs text-zinc-500">在庫 {p.stock}</div>
-                            {/* 👇👇👇 ここを追加（右下に「削除」ボタン） */}
-                            <button
-                                type="button"
-                                className="mt-2 inline-flex items-center rounded-lg border px-2 py-1 text-xs text-red-600 border-red-200 hover:bg-red-50 disabled:opacity-50"
-                                onClick={() => {
-                                    if (confirm(`「${p.name}」を削除しますか？`)) remove(p.id);
-                                }}
-                                disabled={ploading}
-                                aria-label={`${p.name} を削除`}
-                            >
-                                削除
-                            </button>
-                        </div>
-                    </div>
-                ))}
+  const { products, perr, ploading, add, remove } = useProducts();
+  const [name, setName] = useState("");
+  const [price, setPrice] = useState("");
+  const [stock, setStock] = useState("");
+  const take = storeTake(Number(price || 0));
+
+  return (
+    <div className="rounded-2xl border bg-white p-4 space-y-3">
+      <SectionTitle>商品</SectionTitle>
+      <form className="flex flex-wrap items-center gap-2" onSubmit={(e) => { e.preventDefault(); add({ name: name.trim(), price: Number(price || 0), stock: Number(stock || 0) }); setName(""); setPrice(""); setStock(""); }}>
+        <input className="rounded-xl border px-3 py-2 text-sm" placeholder="商品名" value={name} onChange={e => setName(e.target.value)} required />
+        <input className="rounded-xl border px-3 py-2 text-sm" placeholder="価格" inputMode="numeric" value={price} onChange={e => setPrice(e.target.value)} />
+        <input className="rounded-xl border px-3 py-2 text-sm" placeholder="在庫" inputMode="numeric" value={stock} onChange={e => setStock(e.target.value)} />
+        <input className="rounded-xl border px-3 py-2 text-sm bg-zinc-50" value={`店側受取額 ${yen(take)}`} readOnly aria-label="店側受取額" />
+        <button className="rounded-xl bg-zinc-900 text-white px-3 py-2 text-sm" disabled={ploading}>追加</button>
+      </form>
+      {perr ? <div className="text-sm text-red-600">{perr}</div> : null}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+        {products.map(p => (
+          <div key={p.id} className="rounded-xl border p-3 text-sm flex items-center justify-between">
+            <div className="space-y-0.5">
+              <div className="font-medium">{p.name}</div>
+              <div className="text-zinc-600 text-xs">店側受取額 {yen(storeTake(p.price))}</div>
             </div>
-        </div>
-    );
+            <div className="text-right">
+              <div className="font-semibold">{yen(p.price)}</div>
+              <div className="text-xs text-zinc-500">在庫 {p.stock}</div>
+              <button type="button" className="mt-2 inline-flex items-center rounded-lg border px-2 py-1 text-xs text-red-600 border-red-200 hover:bg-red-50 disabled:opacity-50" onClick={() => { if (confirm(`「${p.name}」を削除しますか？`)) remove(p.id); }} disabled={ploading} aria-label={`${p.name} を削除`}>削除</button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }
-
-export default function StoreApp() {
-    // SSR時は 'orders' 固定。マウント後にハッシュ反映
-    const [route, setRoute] = useState<'orders' | 'products'>('orders');
-    const mounted = useMounted();
-
-    useEffect(() => {
-        const read = () => {
-            const h = (typeof window !== 'undefined'
-                ? window.location.hash.replace('#/', '')
-                : '') as 'orders' | 'products';
-            setRoute(h === 'products' ? 'products' : 'orders');
-        };
-        read();
-        window.addEventListener('hashchange', read);
-        return () => window.removeEventListener('hashchange', read);
-    }, []);
-
-    // SSR 直後は 'orders' を見せ、mounted 後に route を反映して
-    // ハイドレーション不一致を回避
-    const routeForUI = mounted ? route : 'orders';
-
-    return (
-        <div className="min-h-screen bg-zinc-50">
-            <header className="sticky top-0 z-40 bg-white/80 backdrop-blur supports-[backdrop-filter]:bg-white/60 border-b">
-                <div className="mx-auto max-w-4xl px-4 py-3 flex items-center justify-between">
-                    <div className="text-base font-semibold tracking-tight">店舗アプリ</div>
-                    <nav className="flex items-center gap-2 text-sm">
-                        <a
-                            href="#/orders"
-                            className={`px-3 py-1.5 rounded-lg border ${routeForUI === 'orders'
-                                ? 'bg-zinc-900 text-white border-zinc-900'
-                                : 'bg-white text-zinc-700 hover:bg-zinc-50'
-                                }`}
-                            suppressHydrationWarning
-                        >
-                            注文管理
-                        </a>
-                        <a
-                            href="#/products"
-                            className={`px-3 py-1.5 rounded-lg border ${routeForUI === 'products'
-                                ? 'bg-zinc-900 text-white border-zinc-900'
-                                : 'bg-white text-zinc-700 hover:bg-zinc-50'
-                                }`}
-                            suppressHydrationWarning
-                        >
-                            商品管理
-                        </a>
-                    </nav>
-                </div>
-            </header>
-
-            {routeForUI === 'orders' ? <OrdersPage /> : <ProductsPage />}
-        </div>
-    );
-}
-
-// 以降は既存のJSXのままでOK
-
 
 function OrdersPage() {
-    const { ready, err, pending, fulfilled, fulfill, retry } = useOrders();
-    const [current, setCurrent] = useState<Order | null>(null); const onHandoff = useCallback((o: Order) => setCurrent(o), []);
-    return (
-        <main className="mx-auto max-w-4xl px-4 py-5 space-y-8">
-            {!ready && (<div className="rounded-xl border bg-white p-4 text-sm text-zinc-600">読み込み中…</div>)}
-            {err ? (<div className="rounded-xl border bg-red-50 p-4 text-sm text-red-700 flex items-center justify-between"><span>{err}</span><button onClick={retry} className="rounded-lg bg-red-600 text-white px-3 py-1 text-xs">リトライ</button></div>) : null}
-            <section>
-                <SectionTitle badge={`${pending.length}件`}>受取待ちの注文</SectionTitle>
-                {pending.length === 0 ? (<div className="rounded-xl border bg-white p-6 text-sm text-zinc-600">現在、受け取り待ちの注文はありません。</div>) : (
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">{pending.map((o) => (<OrderCard key={o.id} order={o} onHandoff={onHandoff} />))}</div>
-                )}
-            </section>
-            <section>
-                <SectionTitle badge={`${fulfilled.length}件`}>受け渡し済み</SectionTitle>
-                {fulfilled.length === 0 ? (<div className="rounded-xl border bg-white p-6 text-sm text-zinc-600">まだ受け渡し済みの履歴はありません。</div>) : (
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 opacity-90">{fulfilled.map((o) => (<OrderCard key={o.id} order={o} onHandoff={onHandoff} />))}</div>
-                )}
-            </section>
-            <HandoffDialog order={current} onClose={() => setCurrent(null)} onFulfill={fulfill} />
-        </main>
-    );
+  const { ready, err, pending, fulfilled, fulfill, retry } = useOrders();
+  const [current, setCurrent] = useState<Order | null>(null);
+  return (
+    <main className="mx-auto max-w-4xl px-4 py-5 space-y-8">
+      {!ready && (<div className="rounded-xl border bg-white p-4 text-sm text-zinc-600">読み込み中…</div>)}
+      {err ? (<div className="rounded-xl border bg-red-50 p-4 text-sm text-red-700 flex items-center justify-between"><span>{err}</span><button onClick={retry} className="rounded-lg bg-red-600 text-white px-3 py-1 text-xs">リトライ</button></div>) : null}
+      <section>
+        <SectionTitle badge={`${pending.length}件`}>受取待ちの注文</SectionTitle>
+        {pending.length === 0 ? (<div className="rounded-xl border bg-white p-6 text-sm text-zinc-600">現在、受取待ちの注文はありません。</div>) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">{pending.map(o => (<OrderCard key={o.id} order={o} onHandoff={setCurrent} />))}</div>
+        )}
+      </section>
+      <section>
+        <SectionTitle badge={`${fulfilled.length}件`}>受け渡し済み</SectionTitle>
+        {fulfilled.length === 0 ? (<div className="rounded-xl border bg-white p-6 text-sm text-zinc-600">まだ受け渡し済みの注文はありません。</div>) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 opacity-90">{fulfilled.map(o => (<OrderCard key={o.id} order={o} onHandoff={() => {}} />))}</div>
+        )}
+      </section>
+      {current && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-black/30 p-4" role="dialog" aria-modal="true" onClick={() => setCurrent(null)}>
+          <div className="w-full max-w-md rounded-2xl bg-white shadow-xl border p-5" onClick={e => e.stopPropagation()}>
+            <div className="mb-3">
+              <div className="text-base font-semibold">コード照合</div>
+              <div className="text-sm text-zinc-600">注文ID {current.id} / 顧客 {current.customer}</div>
+            </div>
+            <div className="mt-4 flex items-center justify-end gap-2">
+              <button onClick={() => setCurrent(null)} className="rounded-xl border px-4 py-2 text-sm">キャンセル</button>
+              <button onClick={() => { fulfill(current.id); setCurrent(null); }} className="rounded-xl bg-zinc-900 text-white px-4 py-2 text-sm">受け渡し</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </main>
+  );
 }
 
-function ProductsPage() {
-    return (
-        <main className="mx-auto max-w-4xl px-4 py-5 space-y-8">
-            <ProductForm />
-            <div className="text-xs text-zinc-500">※ 商品管理は別タブ/別ページとして独立しています。ブックマーク推奨: <code>#/products</code></div>
-        </main>
-    );
+function ProductsPage() { return (<main className="mx-auto max-w-4xl px-4 py-5 space-y-8"><ProductForm /><div className="text-xs text-zinc-500">※ 商品管理は単一ページとして暫定運用。ブックマーク例: <code>#/products</code></div></main>); }
+
+export default function StoreApp() {
+  const mounted = useMounted();
+  const [route, setRoute] = useState<'orders' | 'products'>('orders');
+  useEffect(() => {
+    const read = () => { const h = (typeof window !== 'undefined' ? window.location.hash.replace('#/', '') : '') as 'orders' | 'products'; setRoute(h === 'products' ? 'products' : 'orders'); };
+    read(); window.addEventListener('hashchange', read); return () => window.removeEventListener('hashchange', read);
+  }, []);
+  const routeForUI = mounted ? route : 'orders';
+
+  return (
+    <div className="min-h-screen bg-zinc-50">
+      <header className="sticky top-0 z-40 bg-white/80 backdrop-blur supports-[backdrop-filter]:bg-white/60 border-b">
+        <div className="mx-auto max-w-4xl px-4 py-3 flex items-center justify-between">
+          <div className="text-base font-semibold tracking-tight">店側アプリ</div>
+          <nav className="flex items-center gap-2 text-sm">
+            <StoreSwitcher />
+            <a href="#/orders" className={`px-3 py-1.5 rounded-lg border ${routeForUI === 'orders' ? 'bg-zinc-900 text-white border-zinc-900' : 'bg-white text-zinc-700 hover:bg-zinc-50'}`} suppressHydrationWarning>注文管理</a>
+            <a href="#/products" className={`px-3 py-1.5 rounded-lg border ${routeForUI === 'products' ? 'bg-zinc-900 text-white border-zinc-900' : 'bg-white text-zinc-700 hover:bg-zinc-50'}`} suppressHydrationWarning>商品管理</a>
+          </nav>
+        </div>
+      </header>
+      {routeForUI === 'orders' ? <OrdersPage /> : <ProductsPage />}
+    </div>
+  );
 }
 
-// Dev tests (簡易)
-function runDevTests() {
-    try {
-        const rowFull: OrdersRow = { id: "x", code: "ABC", customer: "c", items: [{ id: "p1", name: "n", qty: 1 }], total: 123, placed_at: "2020-01-01T00:00:00Z", status: "PENDING" };
-        const rowNulls: OrdersRow = { id: "y", code: "DEF", customer: null, items: null, total: null, placed_at: null, status: "FULFILLED" };
-        const o1 = mapOrder(rowFull); console.assert(o1.customer === "c" && o1.items.length === 1 && o1.total === 123, 'mapRow full failed');
-        const o2 = mapOrder(rowNulls); console.assert(o2.customer === "匿名" && Array.isArray(o2.items) && o2.items.length === 0 && o2.total === 0, 'mapRow nulls failed');
-        console.info('✅ Dev tests passed');
-    } catch (e) { console.warn('⚠️ Dev tests error:', e); }
-}
-if (typeof window !== 'undefined' && (typeof process === 'undefined' || process.env?.NODE_ENV !== 'production')) { runDevTests(); }

@@ -190,7 +190,9 @@ export default function UserPilotApp() {
     const [focusedShop, setFocusedShop] = useState<string | undefined>(undefined);
     const supabase = useSupabase();
     type DbProduct = { id: string; store_id?: string; name: string; price?: number; stock?: number; image_url?: string; updated_at?: string };
+    type DbStore = { id: string; name: string; created_at?: string };
     const [dbProducts, setDbProducts] = useState<DbProduct[]>([]);
+    const [dbStores, setDbStores] = useState<DbStore[]>([]);
 
 
 
@@ -231,6 +233,44 @@ export default function UserPilotApp() {
         })();
     }, [supabase]);
 
+
+    // DBから stores を読む（全件・上限あり）
+    useEffect(() => {
+        if (!supabase) return;
+        (async () => {
+            const { data, error } = await supabase
+                .from("stores")
+                .select("id, name, created_at")
+                .order("created_at", { ascending: true })
+                .limit(200);
+            if (error) {
+                console.error("[stores:list] error", error);
+                emitToast("error", `店舗の取得に失敗しました: ${error.message}`);
+                setDbStores([]);
+            } else {
+                setDbStores(data ?? []);
+            }
+        })();
+    }, [supabase]);
+
+    // DBの stores/products があれば、それを shops に反映（完全DB由来へ）
+    useEffect(() => {
+        if (!Array.isArray(dbStores) || dbStores.length === 0) return;
+        const byStore = new Map<string, DbProduct[]>();
+        for (const p of dbProducts) {
+            const sid = String(p?.store_id ?? "");
+            if (!byStore.has(sid)) byStore.set(sid, []);
+            byStore.get(sid)!.push(p);
+        }
+        const mapToItem = (p: any): Item => {
+            const rawStock = (p?.stock ?? p?.quantity ?? p?.stock_count ?? 0);
+            const stock = Math.max(0, Number(rawStock) || 0);
+            return { id: String(p.id), name: String(p.name ?? "不明"), price: Math.max(0, Number(p.price ?? 0) || 0), stock, pickup: "18:00-20:00", note: "", photo: "🛍️" };
+        };
+        const built: Shop[] = dbStores.map((st) => ({ id: String(st.id), name: String(st.name ?? "店舗"), lat: 0, lng: 0, zoomOnPin: 16, closed: false, items: (byStore.get(String(st.id)) || []).map(mapToItem) }));
+
+        setShops(prev => (JSON.stringify(prev) === JSON.stringify(built) ? prev : built));
+    }, [dbStores, dbProducts, setShops]);
 
     // トースト購読
     const [toast, setToast] = useState<ToastPayload | null>(null);
@@ -394,6 +434,8 @@ export default function UserPilotApp() {
 
     // DBの商品が取れていて storeId が指定されていれば、その店舗の items を DB で差し替え
     const shopsWithDb = useMemo(() => {
+        // すでに DB 由来の shops を反映している場合はそのまま返す
+        if (Array.isArray(dbStores) && dbStores.length > 0) return shops;
         if (!Array.isArray(dbProducts) || dbProducts.length === 0 || !storeId) return shops;
 
         const mapToItem = (p: any): Item => {
@@ -421,7 +463,7 @@ export default function UserPilotApp() {
             i === targetIndex ? { ...s, items: dbProducts.map(mapToItem) } : s
         );
 
-    }, [shops, dbProducts, storeId]);
+    }, [shops, dbProducts, storeId, dbStores]);
 
     const shopsSorted = useMemo<ShopWithDistance[]>(
         () => shopsWithDb.map((s, i) => ({ ...s, distance: distKm(i) })),

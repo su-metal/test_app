@@ -31,9 +31,19 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <script
           dangerouslySetInnerHTML={{
             __html: `
-              window.__SUPABASE_URL__ = ${JSON.stringify(supabaseUrl)};
-              window.__SUPABASE_ANON_KEY__ = ${JSON.stringify(supabaseKey)};
-              window.__STORE_ID__ = ${JSON.stringify(storeId)};
+              (function(){
+                try {
+                  var saved = null;
+                  try { saved = localStorage.getItem('store:selected'); } catch {}
+                  window.__SUPABASE_URL__ = ${JSON.stringify(supabaseUrl)};
+                  window.__SUPABASE_ANON_KEY__ = ${JSON.stringify(supabaseKey)};
+                  window.__STORE_ID__ = saved || ${JSON.stringify(storeId)};
+                } catch(e) {
+                  window.__SUPABASE_URL__ = ${JSON.stringify(supabaseUrl)};
+                  window.__SUPABASE_ANON_KEY__ = ${JSON.stringify(supabaseKey)};
+                  window.__STORE_ID__ = ${JSON.stringify(storeId)};
+                }
+              })();
             `,
           }}
         />

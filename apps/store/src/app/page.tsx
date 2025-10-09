@@ -48,17 +48,13 @@ type Product = {
     stock: number;
 };
 
-// Window 拡張（環境変数を window 越しに参照するため）
-declare global {
-    interface Window {
-        NEXT_PUBLIC_SUPABASE_URL?: string;
-        __SUPABASE_URL__?: string;
-        NEXT_PUBLIC_SUPABASE_ANON_KEY?: string;
-        __SUPABASE_ANON_KEY__?: string;
-        __STORE_ID__?: string;
-        BarcodeDetector?: any;
-    }
-}
+
+// ---- Store ID helper（どこでも同じ方法で取得）
+const getStoreId = () =>
+    (typeof process !== "undefined" && (process.env?.NEXT_PUBLIC_STORE_ID as string | undefined)) ||
+    (typeof window !== "undefined" && window.__STORE_ID__) ||
+    "default";
+
 
 // ===== 正規化 =====
 function mapOrder(r: OrdersRow): Order {
@@ -95,13 +91,28 @@ const mockProducts: Product[] = [{ id: "p1", name: "救済パンBOX", price: 400
 const yen = (n: number) => n.toLocaleString("ja-JP", { style: "currency", currency: "JPY" });
 const since = (iso: string) => { const d = Date.now() - new Date(iso).getTime(); const m = Math.floor(d / 60000); if (m < 1) return "たった今"; if (m < 60) return `${m}分前`; return `${Math.floor(m / 60)}時間前`; };
 const storeTake = (price: number | string) => Math.floor(Number(price || 0) * 0.8);
+// SSR/CSRの時刻差でHydrationがズレないように、クライアントマウント後か判定するフック
+function useMounted() {
+    const [mounted, setMounted] = React.useState(false);
+    React.useEffect(() => setMounted(true), []);
+    return mounted;
+}
+
 
 // ===== Clients =====
 function useSupabase() {
-    const url = (typeof process !== 'undefined' && (process.env?.NEXT_PUBLIC_SUPABASE_URL as string | undefined)) || (typeof window !== 'undefined' && (window.NEXT_PUBLIC_SUPABASE_URL || window.__SUPABASE_URL__)) || undefined;
-    const key = (typeof process !== 'undefined' && (process.env?.NEXT_PUBLIC_SUPABASE_ANON_KEY as string | undefined)) || (typeof window !== 'undefined' && (window.NEXT_PUBLIC_SUPABASE_ANON_KEY || window.__SUPABASE_ANON_KEY__)) || undefined;
-    return useMemo(() => { if (typeof window === 'undefined' || !url || !key) return null; try { return createClient(url, key); } catch { return null; } }, [url, key]);
+    return useMemo(() => {
+        if (typeof window === "undefined") return null;
+        if (window.__supabase) return window.__supabase; // ← まずこれを返す
+        // 予備：Boot実行前の瞬間に備えてenvから生成
+        const url = (process.env.NEXT_PUBLIC_SUPABASE_URL as string | undefined) || window.NEXT_PUBLIC_SUPABASE_URL;
+        const key = (process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY as string | undefined) || window.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+        if (!url || !key) return null;
+        try { const sb = createClient(url, key); window.__supabase = sb; return sb; } catch { return null; }
+    }, []);
 }
+
+
 
 function useBroadcast(name: string) {
     const chan = useMemo(() => { if (typeof window === 'undefined') return null; try { return new BroadcastChannel(name); } catch { return null; } }, [name]);
@@ -120,7 +131,13 @@ function useProducts() {
 
     const load = useCallback(async () => {
         if (!supabase) return; setPloading(true); setPerr(null);
-        const { data, error } = await supabase.from('products').select('*').order('updated_at', { ascending: false });
+        const storeId = getStoreId();
+        const { data, error } = await supabase
+            .from('products')
+            .select('*')
+            .eq('store_id', storeId)            // ★ 追加：店舗でフィルタ
+            .order('updated_at', { ascending: false });
+
         if (error) setPerr(error.message || '商品取得に失敗'); else if (Array.isArray(data)) setProducts((data as ProductsRow[]).map(mapProduct));
         setPloading(false);
     }, [supabase]);
@@ -130,10 +147,48 @@ function useProducts() {
         if (!payload.name) { setPerr('商品名は必須'); return; }
         if (!supabase) { const np: Product = { id: Math.random().toString(36).slice(2), ...payload }; setProducts(prev => [np, ...prev]); return; }
         setPloading(true); setPerr(null);
-        const { data, error } = await supabase.from('products').insert({ name: payload.name, price: payload.price, stock: payload.stock }).select('*').single();
+        const storeId = getStoreId();
+        const { data, error } = await supabase
+            .from('products')
+            .insert({ name: payload.name, price: payload.price, stock: payload.stock, store_id: storeId }) // ★ 追加
+            .select('*')
+            .single();
+
         if (error) setPerr(error.message || '商品登録に失敗'); else if (data) setProducts(prev => [mapProduct(data as ProductsRow), ...prev]);
         setPloading(false);
     }, [supabase]);
+
+    const storeId =
+        (typeof process !== 'undefined' && (process.env?.NEXT_PUBLIC_STORE_ID as string | undefined)) ||
+        (typeof window !== 'undefined' && window.__STORE_ID__) ||
+        'default';
+
+    const remove = useCallback(async (id: string) => {
+        if (!id) return;
+
+        // まずローカル表示から先に消してUXを良くする（DBエラーなら後で戻す）
+        setProducts(prev => prev.filter(p => p.id !== id));
+        setPerr(null);
+
+        try {
+            if (!supabase) return; // mock環境ならここで終了
+
+            // RLSでstore_id一致が必要な設計なら、ここも合わせる
+            const q = supabase.from('products').delete().eq('id', id).eq('store_id', getStoreId())
+            // もしポリシーで store_id 条件が必要なら:
+            // const q = supabase.from('products').delete().eq('id', id).eq('store_id', storeId);
+
+            const { error } = await q;
+            if (error) {
+                // 失敗したらロールバック
+                setProducts(prev => prev); // no-opでもOK、必要なら直前のスナップショット保持して戻す
+                setPerr(error.message || '削除に失敗しました');
+            }
+        } catch (e) {
+            setPerr((e as Error).message || '削除に失敗しました');
+        }
+    }, [supabase, setProducts, setPerr, storeId]);
+
 
     // 受け渡し後の在庫減算を購読
     useEffect(() => {
@@ -148,7 +203,8 @@ function useProducts() {
         const ch = new BroadcastChannel('inventory-sync'); ch.onmessage = onMsg; return () => { try { ch.close(); } catch { } };
     }, []);
 
-    return { products, perr, ploading, add, reload: load, invChan } as const;
+    return { products, perr, ploading, add, remove, reload: load, invChan } as const;
+
 }
 
 // ===== Data: Orders（在庫減算を内包） =====
@@ -172,14 +228,25 @@ function useOrders() {
 
     const fetchAndSubscribe = useCallback(async () => {
         if (!supabase) { setReady(true); return; } setErr(null); cleanup();
-        const { data, error } = await supabase.from('orders').select('*').order('placed_at', { ascending: false });
+        const storeId = getStoreId();
+        const { data, error } = await supabase
+            .from('orders')
+            .select('*')
+            .eq('store_id', storeId)     // ★ 追加
+            .order('placed_at', { ascending: false });
         if (error) setErr(error.message || 'データ取得に失敗しました'); else if (Array.isArray(data)) setOrders((data as OrdersRow[]).map(mapOrder));
         try {
+            const storeId = getStoreId();
             const ch = (supabase as any)
                 .channel(chanName)
-                .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'orders' }, (p: any) => { if (p?.new) setOrders(prev => [mapOrder(p.new as OrdersRow), ...prev]); })
-                .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'orders' }, (p: any) => { if (p?.new) setOrders(prev => prev.map(o => o.id === String((p.new as OrdersRow).id) ? mapOrder(p.new as OrdersRow) : o)); })
+                .on('postgres_changes',
+                    { event: 'INSERT', schema: 'public', table: 'orders', filter: `store_id=eq.${storeId}` }, // ★ 追加
+                    (p: any) => { if (p?.new) setOrders(prev => [mapOrder(p.new as OrdersRow), ...prev]); })
+                .on('postgres_changes',
+                    { event: 'UPDATE', schema: 'public', table: 'orders', filter: `store_id=eq.${storeId}` }, // ★ 追加
+                    (p: any) => { if (p?.new) setOrders(prev => prev.map(o => o.id === String((p.new as OrdersRow).id) ? mapOrder(p.new as OrdersRow) : o)); })
                 .subscribe() as RealtimeChannel;
+
             channelRef.current = ch;
         } catch { setErr('リアルタイム購読に失敗しました'); }
         setReady(true);
@@ -210,7 +277,7 @@ function useOrders() {
             orderChan.post({ type: 'ORDER_FULFILLED', orderId: id, at: Date.now() });
             return;
         }
-        return supabase.from('orders').update({ status: 'FULFILLED' }).eq('id', id).select('*').single().then(async ({ data, error }) => {
+        return supabase.from('orders').update({ status: 'FULFILLED' }).eq('id', id).eq('store_id', getStoreId()).select('*').single().then(async ({ data, error }) => {
             if (error) { setErr(error.message || '更新に失敗しました'); return; }
             if (data) { setOrders(prev => prev.map(o => o.id === String((data as OrdersRow).id) ? mapOrder(data as OrdersRow) : o)); await decrementStocksDB(target.items); orderChan.post({ type: 'ORDER_FULFILLED', orderId: String((data as OrdersRow).id), at: Date.now() }); }
         });
@@ -241,6 +308,7 @@ const StatusBadge = React.memo(function StatusBadge({ status }: { status: OrderS
 
 const OrderCard = React.memo(function OrderCard({ order, onHandoff }: { order: Order; onHandoff: (o: Order) => void; }) {
     const onClick = useCallback(() => onHandoff(order), [onHandoff, order]);
+    const mounted = useMounted();
     return (
         <div className="rounded-2xl border bg-white shadow-sm p-4 flex flex-col gap-3">
             <div className="flex items-center justify-between">
@@ -256,10 +324,17 @@ const OrderCard = React.memo(function OrderCard({ order, onHandoff }: { order: O
                     </li>
                 ))}
             </ul>
+
+
+
+
             <div className="flex items-center justify-between text-sm">
-                <span className="text-zinc-500">受付: {since(order.placedAt)}</span>
+                <span className="text-zinc-500" suppressHydrationWarning>
+                    受付: {mounted ? since(order.placedAt) : '—'}
+                </span>
                 <span className="font-semibold">{yen(order.total)}</span>
             </div>
+
             {order.status === 'PENDING' ? (
                 <button onClick={onClick} className="w-full rounded-xl bg-zinc-900 text-white py-2.5 text-sm font-medium hover:bg-zinc-800 active:opacity-90">引換する（コード照合）</button>
             ) : (
@@ -340,7 +415,7 @@ function HandoffDialog({ order, onClose, onFulfill }: { order: Order | null; onC
 }
 
 function ProductForm() {
-    const { products, perr, ploading, add, reload } = useProducts();
+    const { products, perr, ploading, add, remove, reload } = useProducts();
     const [name, setName] = useState(""); const [price, setPrice] = useState(""); const [stock, setStock] = useState("");
     const take = storeTake(price);
     const onSubmit = async (e: React.FormEvent) => { e.preventDefault(); await add({ name: name.trim(), price: Number(price || 0), stock: Number(stock || 0) }); setName(""); setPrice(""); setStock(""); };
@@ -365,6 +440,18 @@ function ProductForm() {
                         <div className="text-right">
                             <div className="font-semibold">{yen(p.price)}</div>
                             <div className="text-xs text-zinc-500">在庫 {p.stock}</div>
+                            {/* 👇👇👇 ここを追加（右下に「削除」ボタン） */}
+                            <button
+                                type="button"
+                                className="mt-2 inline-flex items-center rounded-lg border px-2 py-1 text-xs text-red-600 border-red-200 hover:bg-red-50 disabled:opacity-50"
+                                onClick={() => {
+                                    if (confirm(`「${p.name}」を削除しますか？`)) remove(p.id);
+                                }}
+                                disabled={ploading}
+                                aria-label={`${p.name} を削除`}
+                            >
+                                削除
+                            </button>
                         </div>
                     </div>
                 ))}
@@ -374,14 +461,25 @@ function ProductForm() {
 }
 
 export default function StoreApp() {
-    const [route, setRoute] = useState<string>(() => {
-        if (typeof window !== 'undefined') { const h = window.location.hash.replace('#/', ''); return (h as string) || 'orders'; }
-        return 'orders';
-    });
+    // SSR時は 'orders' 固定。マウント後にハッシュ反映
+    const [route, setRoute] = useState<'orders' | 'products'>('orders');
+    const mounted = useMounted();
+
     useEffect(() => {
-        const onHash = () => { const h = window.location.hash.replace('#/', '') || 'orders'; setRoute(h); };
-        window.addEventListener('hashchange', onHash); return () => window.removeEventListener('hashchange', onHash);
+        const read = () => {
+            const h = (typeof window !== 'undefined'
+                ? window.location.hash.replace('#/', '')
+                : '') as 'orders' | 'products';
+            setRoute(h === 'products' ? 'products' : 'orders');
+        };
+        read();
+        window.addEventListener('hashchange', read);
+        return () => window.removeEventListener('hashchange', read);
     }, []);
+
+    // SSR 直後は 'orders' を見せ、mounted 後に route を反映して
+    // ハイドレーション不一致を回避
+    const routeForUI = mounted ? route : 'orders';
 
     return (
         <div className="min-h-screen bg-zinc-50">
@@ -389,16 +487,37 @@ export default function StoreApp() {
                 <div className="mx-auto max-w-4xl px-4 py-3 flex items-center justify-between">
                     <div className="text-base font-semibold tracking-tight">店舗アプリ</div>
                     <nav className="flex items-center gap-2 text-sm">
-                        <a href="#/orders" className={`px-3 py-1.5 rounded-lg border ${route === 'orders' ? 'bg-zinc-900 text-white border-zinc-900' : 'bg-white text-zinc-700 hover:bg-zinc-50'}`}>注文管理</a>
-                        <a href="#/products" className={`px-3 py-1.5 rounded-lg border ${route === 'products' ? 'bg-zinc-900 text-white border-zinc-900' : 'bg-white text-zinc-700 hover:bg-zinc-50'}`}>商品管理</a>
+                        <a
+                            href="#/orders"
+                            className={`px-3 py-1.5 rounded-lg border ${routeForUI === 'orders'
+                                ? 'bg-zinc-900 text-white border-zinc-900'
+                                : 'bg-white text-zinc-700 hover:bg-zinc-50'
+                                }`}
+                            suppressHydrationWarning
+                        >
+                            注文管理
+                        </a>
+                        <a
+                            href="#/products"
+                            className={`px-3 py-1.5 rounded-lg border ${routeForUI === 'products'
+                                ? 'bg-zinc-900 text-white border-zinc-900'
+                                : 'bg-white text-zinc-700 hover:bg-zinc-50'
+                                }`}
+                            suppressHydrationWarning
+                        >
+                            商品管理
+                        </a>
                     </nav>
                 </div>
             </header>
 
-            {route === 'orders' ? <OrdersPage /> : <ProductsPage />}
+            {routeForUI === 'orders' ? <OrdersPage /> : <ProductsPage />}
         </div>
     );
 }
+
+// 以降は既存のJSXのままでOK
+
 
 function OrdersPage() {
     const { ready, err, pending, fulfilled, fulfill, retry } = useOrders();

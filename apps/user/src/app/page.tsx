@@ -1,5 +1,9 @@
 "use client";
 import React, { useEffect, useMemo, useRef, useState, startTransition, useCallback } from "react";
+import { createClient } from "@supabase/supabase-js";
+
+
+
 
 /**
  * ユーザー向けフードロスアプリ（Pilot v2.6 / TS対応）
@@ -8,6 +12,14 @@ import React, { useEffect, useMemo, useRef, useState, startTransition, useCallba
  */
 
 // ---- ユーティリティ ----
+function useSupabase() {
+    const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+    const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+    return React.useMemo(
+        () => (typeof window === "undefined" ? null : createClient(url, key)),
+        [url, key]
+    );
+}
 function pushLog(entry: unknown) {
     try {
         const key = "app_logs";
@@ -152,6 +164,8 @@ export default function UserPilotApp() {
 
     const [tab, setTab] = useState<"home" | "cart" | "order" | "account">("home");
     const [focusedShop, setFocusedShop] = useState<string | undefined>(undefined);
+    const supabase = useSupabase();
+
 
     // --- Hydration対策（SSRとクライアント差異を回避） ---
     const [hydrated, setHydrated] = useState(false);
@@ -253,57 +267,120 @@ export default function UserPilotApp() {
     const [orderTarget, setOrderTarget] = useState<string | undefined>(undefined);
     const toOrder = (sid: string) => { setOrderTarget(sid); setTab("order"); };
 
-    const confirmPay = useCallback(() => {
+    const confirmPay = useCallback(async () => {
         if (!orderTarget || isPayingRef.current || isPaying) return;
         isPayingRef.current = true;
         setIsPaying(true);
+
         try {
             const sid = orderTarget;
-            const card = validateTestCard(cardDigits);
-            if (!card.ok) { emitToast("error", (card as any).msg); return; }
 
-            // カートのスナップショット（対象店舗のみ）
-            const linesSnapshot = (cartByShop[sid] || []).map((l) => ({ ...l }));
+            // カード検証
+            const card = validateTestCard(cardDigits);
+            if (!card.ok) { emitToast("error", card.msg); return; }
+
+            // 対象店舗のカートをスナップショット
+            const linesSnapshot = (cartByShop[sid] || []).map(l => ({ ...l }));
             if (linesSnapshot.length === 0) { emitToast("error", "対象カートが空です"); return; }
 
-            // 在庫検証（O(1)）
+            // 在庫検証
             for (const l of linesSnapshot) {
                 const inv = itemsById.get(sid)?.get(l.item.id)?.stock ?? 0;
-                if (l.qty > inv) { emitToast("error", `在庫不足: ${l.item.name} の在庫は ${inv} です（カート数量 ${l.qty}）`); return; }
+                if (l.qty > inv) {
+                    emitToast("error", `在庫不足: ${l.item.name} の在庫は ${inv} です（カート数量 ${l.qty}）`);
+                    return;
+                }
             }
 
-            // 金額はスナップショットから確定値計算
+            // 金額確定
             const amount = linesSnapshot.reduce((a, l) => a + l.item.price * l.qty, 0);
             const oid = uid();
-            const newOrder: Order = { id: oid, userEmail: userEmail || "guest@example.com", shopId: sid, amount, status: "paid", code6: to6(oid), createdAt: Date.now(), lines: linesSnapshot };
 
-            // アイテムID→数量
+            // Supabase用ペイロード（店舗側は PENDING で受け取り待ち）
+            const orderPayload = {
+                code: to6(oid),
+                customer: userEmail || "guest@example.com",
+                items: linesSnapshot.map(l => ({ id: l.item.id, name: l.item.name, qty: l.qty })), // JSONB
+                total: amount,
+                status: "PENDING" as const,
+            };
+
+            // Supabaseが設定されていればDBへ作成
+            // Supabaseが設定されていればDBへ作成
+            if (supabase) {
+                const { data, error } = await supabase
+                    .from("orders")
+                    .insert(orderPayload)
+                    .select("*")
+                    .single();
+
+                if (error) {
+                    emitToast("error", "注文の作成に失敗しました");
+                    return;
+                }
+
+                // ★ここを追加：DBに作成した注文と“同じコード”をローカル履歴にも保存する
+                const createdAt = Date.now();
+                const localOrder: Order = {
+                    id: String(data?.id ?? oid),                 // 取得できたらDBのid、なければoid
+                    userEmail: userEmail || "guest@example.com",
+                    shopId: sid,
+                    amount,
+                    status: "paid",                               // ユーザー側は「未引換チケット」を paid で扱う既存UIのまま
+                    code6: orderPayload.code,                     // ← ここが超重要：DBに入れた code をそのまま使う
+                    createdAt,
+                    lines: linesSnapshot,
+                };
+                setOrders(prev => [localOrder, ...prev]);
+
+            } else {
+                // Supabase未設定時のフォールバック（従来のローカル動作）
+                const localOrder: Order = {
+                    id: oid,
+                    userEmail: userEmail || "guest@example.com",
+                    shopId: sid,
+                    amount,
+                    status: "paid",
+                    code6: orderPayload.code,                     // ← フォールバック時もアルゴリズムを1本化
+                    createdAt: Date.now(),
+                    lines: linesSnapshot,
+                };
+                setOrders(prev => [localOrder, ...prev]);
+            }
+
+
+            // 在庫減算＆カートクリア（ローカルUIの整合性のため常に実施）
             const qtyByItemId = new Map<string, number>();
-            for (const l of linesSnapshot) { qtyByItemId.set(l.item.id, (qtyByItemId.get(l.item.id) || 0) + l.qty); }
-
-            const nextShops = shops.map(s => s.id !== sid ? s : ({
-                ...s,
-                items: s.items.map(it => {
-                    const q = qtyByItemId.get(it.id) || 0;
-                    return q > 0 ? { ...it, stock: Math.max(0, it.stock - q) } : it;
-                })
-            }));
+            for (const l of linesSnapshot) {
+                qtyByItemId.set(l.item.id, (qtyByItemId.get(l.item.id) || 0) + l.qty);
+            }
+            const nextShops = shops.map(s =>
+                s.id !== sid
+                    ? s
+                    : {
+                        ...s,
+                        items: s.items.map(it => {
+                            const q = qtyByItemId.get(it.id) || 0;
+                            return q > 0 ? { ...it, stock: Math.max(0, it.stock - q) } : it;
+                        }),
+                    }
+            );
             const nextCart = cart.filter(l => l.shopId !== sid);
 
-            // 一括更新
             startTransition(() => {
-                setOrders(prev => [newOrder, ...prev]);
                 setShops(nextShops);
                 setCart(nextCart);
                 setTab("account");
             });
+
             setCardDigits("");
-            emitToast("success", `注文が完了しました。カード: ${(card as any).brand || "TEST"}`);
+            emitToast("success", `注文が完了しました。カード: ${card.brand || "TEST"}`);
         } finally {
             isPayingRef.current = false;
             setIsPaying(false);
         }
-    }, [orderTarget, isPaying, cardDigits, cartByShop, itemsById, shops, cart, userEmail]);
+    }, [orderTarget, isPaying, cardDigits, cartByShop, itemsById, shops, cart, userEmail, supabase]);
+
 
     // UI 共通
     const Tab = ({ id, label, icon }: { id: "home" | "cart" | "order" | "account"; label: string; icon: string }) => (

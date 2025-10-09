@@ -923,6 +923,11 @@ function AccountView({
     );
 
     const [openTicketId, setOpenTicketId] = useState<string | null>(null);
+    const [openHistoryId, setOpenHistoryId] = useState<string | null>(null);
+
+    const statusText = (s: Order["status"]) => (
+        s === 'redeemed' ? '引換済み' : s === 'paid' ? '未引換' : s === 'refunded' ? '返金済み' : s
+    );
 
     // 履歴も canonical を元に
     const sortedOrders = useMemo(
@@ -1027,15 +1032,57 @@ function AccountView({
                 </div>
 
                 <ul className="mt-2 divide-y">
-                    {visibleOrders.map(o => (
-                        <li key={o.id} className="py-3 flex items-center justify-between text-sm">
-                            <div>
-                                <div className="font-medium">{o.id}</div>
-                                <div className="text-xs text-zinc-500">{new Date(o.createdAt).toLocaleString()} / {o.status}</div>
-                            </div>
-                            <div className="font-semibold">{currency(o.amount)}</div>
-                        </li>
-                    ))}
+                    {visibleOrders.map(o => {
+                        const isOpen = openHistoryId === o.id;
+                        const shopName = shopsById.get(o.shopId)?.name || o.shopId;
+                        return (
+                            <li key={o.id} className="py-2">
+                                <button
+                                    type="button"
+                                    className="w-full flex items-center justify-between text-sm cursor-pointer"
+                                    aria-expanded={isOpen}
+                                    aria-controls={`history-${o.id}`}
+                                    onClick={() => setOpenHistoryId(isOpen ? null : o.id)}
+                                >
+                                    <div className="min-w-0">
+                                        <div className="font-medium truncate">{shopName}</div>
+                                        <div className="text-[11px] text-zinc-500 truncate">{new Date(o.createdAt).toLocaleString()} / 注文番号 {o.id}</div>
+                                    </div>
+                                    <div className="flex items-center gap-3 shrink-0">
+                                        <span className={`text-[11px] px-2 py-0.5 rounded ${o.status === 'redeemed' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>{statusText(o.status)}</span>
+                                        <span className="font-semibold tabular-nums">{currency(o.amount)}</span>
+                                        <span className="text-xs">{isOpen ? '▾' : '▸'}</span>
+                                    </div>
+                                </button>
+
+                                {isOpen && (
+                                    <div id={`history-${o.id}`} className="mt-2 px-1 text-sm">
+                                        <div className="grid grid-cols-2 gap-4">
+                                            <div>
+                                                <div className="text-xs text-zinc-500">6桁コード</div>
+                                                <div className="text-base font-mono tracking-widest">{o.code6}</div>
+                                                <div className="text-xs text-zinc-500 mt-2">ステータス</div>
+                                                <div className="text-sm font-medium">{statusText(o.status)}</div>
+                                                <div className="text-xs text-zinc-500 mt-2">合計</div>
+                                                <div className="text-base font-semibold">{currency(o.amount)}</div>
+                                            </div>
+                                            <div>
+                                                <div className="text-xs text-zinc-500 mb-1">注文内容</div>
+                                                <ul className="space-y-1">
+                                                    {o.lines.map((l, i) => (
+                                                        <li key={`${l.item.id}-${i}`} className="flex items-center justify-between">
+                                                            <span className="truncate mr-2">{l.item.name} × {l.qty}</span>
+                                                            <span className="tabular-nums">{currency(l.item.price * l.qty)}</span>
+                                                        </li>
+                                                    ))}
+                                                </ul>
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
+                            </li>
+                        );
+                    })}
                 </ul>
                 {remaining > 0 && !showAllHistory && (
                     <div className="pt-3">

@@ -47,6 +47,15 @@ const norm = (v: unknown): string => {
     return s.trim().replace(/[\s_-]/g, "").replace(/[^0-9A-Za-z]/g, "").toUpperCase();
 };
 
+// 6桁コード専用: 数字のみ抽出し、左ゼロ埋めで6桁に揃える
+const normalizeCode6 = (v: unknown): string => {
+    const digits = String(v ?? "").replace(/\D/g, "");
+    if (digits.length === 6) return digits;
+    if (digits.length < 6) return digits.padStart(6, '0');
+    // 6桁より長い場合は比較に使わない（不一致扱い）
+    return digits;
+};
+
 // ---- Toast（非同期通知） ----
 type ToastKind = "info" | "success" | "error";
 interface ToastPayload { kind: ToastKind; msg: string }
@@ -269,8 +278,6 @@ export default function UserPilotApp() {
         };
 
 
-
-
         // コードでひも付け（code は注文作成時に orderPayload.code として保存済み＝ local の code6）
         const channel = supabase
             .channel("orders-updates")
@@ -283,8 +290,7 @@ export default function UserPilotApp() {
                     // ★ 完全一致：トリム/大文字化/記号除去などは一切しない
                     const codeDB = row?.code != null ? String(row.code) : "";
                     const idDB = row?.id ? String(row.id) : "";
-                    const codeNorm = norm(codeDB);
-                    const idNorm = norm(idDB);
+                    const codeNorm6 = normalizeCode6(codeDB);
 
                     const next: Order["status"] = (() => {
                         const s = String(row?.status || '').toUpperCase();
@@ -297,10 +303,10 @@ export default function UserPilotApp() {
                     setOrders(prev => {
                         // 1) 更新：code(大文字) or id でヒットしたものを書き換え
                         const mapped = prev.map(o => {
-                            const oc = norm(o.code6);  // ★ 差し替え
-                            const byCode = codeNorm ? (oc === codeNorm) : false;
+                            const oc = normalizeCode6(o.code6);  // 6桁コードを正規化して比較
+                            const byCode = (codeNorm6.length === 6 && oc.length === 6) ? (oc === codeNorm6) : false;
 
-                            const byId = idNorm ? (o.id === idNorm) : false;
+                            const byId = idDB ? (String(o.id) === idDB) : false;
                             return (byCode || byId) ? { ...o, status: next } : o;
                         });
 
@@ -338,6 +344,52 @@ export default function UserPilotApp() {
 
         return () => { supabase.removeChannel(channel); };
     }, [supabase, setOrders, setTab]);
+
+    // 受け渡し済みになっても消えない場合のフェールセーフ: 定期ポーリングで同期
+    const pendingKey = useMemo(() => {
+        try { return JSON.stringify(orders.filter(o => o.status === 'paid').map(o => ({ id: o.id, code6: o.code6 }))); } catch { return ""; }
+    }, [orders]);
+
+    useEffect(() => {
+        if (!supabase) return;
+        // 未引換が無ければ停止
+        const targets = orders.filter(o => o.status === 'paid');
+        if (targets.length === 0) return;
+
+        let alive = true;
+        const toLocal = (dbStatus?: string): Order["status"] => {
+            const s = String(dbStatus || '').toUpperCase();
+            if (s === 'FULFILLED' || s === 'REDEEMED' || s === 'COMPLETED') return 'redeemed';
+            if (s === 'PAID' || s === 'PENDING') return 'paid';
+            return 'paid';
+        };
+
+        const tick = async () => {
+            try {
+                const ids = targets.map(o => String(o.id));
+                const { data, error } = await supabase.from('orders').select('id, code, status').in('id', ids);
+                if (!alive || error || !Array.isArray(data)) return;
+                const rows = data as Array<{ id: string; code: string | null; status?: string | null }>;
+                // id と 6桁コードでローカルを更新
+                setOrders(prev => {
+                    let changed = false;
+                    const next = prev.map(o => {
+                        const hit = rows.find(r => String(r.id) === String(o.id) || (normalizeCode6(r.code) === normalizeCode6(o.code6)));
+                        if (!hit) return o;
+                        const ns = toLocal(hit.status || undefined);
+                        if (ns !== o.status) { changed = true; return { ...o, status: ns }; }
+                        return o;
+                    });
+                    return changed ? next : prev;
+                });
+            } catch {/* noop */}
+        };
+
+        // 即時 + 周期的に確認（4秒毎）。画面操作や注文更新で依存キーが変わると自動で張り替え
+        tick();
+        const timer = window.setInterval(tick, 4000);
+        return () => { alive = false; window.clearInterval(timer); };
+    }, [supabase, pendingKey]);
 
 
     // DBの商品が取れていて storeId が指定されていれば、その店舗の items を DB で差し替え
@@ -871,6 +923,11 @@ function AccountView({
     );
 
     const [openTicketId, setOpenTicketId] = useState<string | null>(null);
+    const [openHistoryId, setOpenHistoryId] = useState<string | null>(null);
+
+    const statusText = (s: Order["status"]) => (
+        s === 'redeemed' ? '引換済み' : s === 'paid' ? '未引換' : s === 'refunded' ? '返金済み' : s
+    );
 
     // 履歴も canonical を元に
     const sortedOrders = useMemo(
@@ -975,15 +1032,57 @@ function AccountView({
                 </div>
 
                 <ul className="mt-2 divide-y">
-                    {visibleOrders.map(o => (
-                        <li key={o.id} className="py-3 flex items-center justify-between text-sm">
-                            <div>
-                                <div className="font-medium">{o.id}</div>
-                                <div className="text-xs text-zinc-500">{new Date(o.createdAt).toLocaleString()} / {o.status}</div>
-                            </div>
-                            <div className="font-semibold">{currency(o.amount)}</div>
-                        </li>
-                    ))}
+                    {visibleOrders.map(o => {
+                        const isOpen = openHistoryId === o.id;
+                        const shopName = shopsById.get(o.shopId)?.name || o.shopId;
+                        return (
+                            <li key={o.id} className="py-2">
+                                <button
+                                    type="button"
+                                    className="w-full flex items-center justify-between text-sm cursor-pointer"
+                                    aria-expanded={isOpen}
+                                    aria-controls={`history-${o.id}`}
+                                    onClick={() => setOpenHistoryId(isOpen ? null : o.id)}
+                                >
+                                    <div className="min-w-0">
+                                        <div className="font-medium truncate">{shopName}</div>
+                                        <div className="text-[11px] text-zinc-500 truncate">{new Date(o.createdAt).toLocaleString()} / 注文番号 {o.id}</div>
+                                    </div>
+                                    <div className="flex items-center gap-3 shrink-0">
+                                        <span className={`text-[11px] px-2 py-0.5 rounded ${o.status === 'redeemed' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>{statusText(o.status)}</span>
+                                        <span className="font-semibold tabular-nums">{currency(o.amount)}</span>
+                                        <span className="text-xs">{isOpen ? '▾' : '▸'}</span>
+                                    </div>
+                                </button>
+
+                                {isOpen && (
+                                    <div id={`history-${o.id}`} className="mt-2 px-1 text-sm">
+                                        <div className="grid grid-cols-2 gap-4">
+                                            <div>
+                                                <div className="text-xs text-zinc-500">6桁コード</div>
+                                                <div className="text-base font-mono tracking-widest">{o.code6}</div>
+                                                <div className="text-xs text-zinc-500 mt-2">ステータス</div>
+                                                <div className="text-sm font-medium">{statusText(o.status)}</div>
+                                                <div className="text-xs text-zinc-500 mt-2">合計</div>
+                                                <div className="text-base font-semibold">{currency(o.amount)}</div>
+                                            </div>
+                                            <div>
+                                                <div className="text-xs text-zinc-500 mb-1">注文内容</div>
+                                                <ul className="space-y-1">
+                                                    {o.lines.map((l, i) => (
+                                                        <li key={`${l.item.id}-${i}`} className="flex items-center justify-between">
+                                                            <span className="truncate mr-2">{l.item.name} × {l.qty}</span>
+                                                            <span className="tabular-nums">{currency(l.item.price * l.qty)}</span>
+                                                        </li>
+                                                    ))}
+                                                </ul>
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
+                            </li>
+                        );
+                    })}
                 </ul>
                 {remaining > 0 && !showAllHistory && (
                     <div className="pt-3">

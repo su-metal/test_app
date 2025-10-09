@@ -41,6 +41,12 @@ const currency = (n: number) => fmt.format(n);
 const uid = () => Math.random().toString(36).slice(2, 10);
 const to6 = (s: string) => (Array.from(s).reduce((a, c) => a + c.charCodeAt(0), 0) % 1_000_000).toString().padStart(6, "0");
 
+// 入力正規化: トリム + 記号除去 + 大文字化（英数字のみ残す）
+const norm = (v: unknown): string => {
+    const s = (v ?? "").toString();
+    return s.trim().replace(/[\s_-]/g, "").replace(/[^0-9A-Za-z]/g, "").toUpperCase();
+};
+
 // ---- Toast（非同期通知） ----
 type ToastKind = "info" | "success" | "error";
 interface ToastPayload { kind: ToastKind; msg: string }
@@ -277,6 +283,8 @@ export default function UserPilotApp() {
                     // ★ 完全一致：トリム/大文字化/記号除去などは一切しない
                     const codeDB = row?.code != null ? String(row.code) : "";
                     const idDB = row?.id ? String(row.id) : "";
+                    const codeNorm = norm(codeDB);
+                    const idNorm = norm(idDB);
 
                     const next: Order["status"] = (() => {
                         const s = String(row?.status || '').toUpperCase();

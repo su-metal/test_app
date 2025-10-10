@@ -439,8 +439,63 @@ function StockInline({ id, stock, disabled, onCommit }: { id: string; stock: num
   );
 }
 
+// 在庫調整モーダル（数値入力で更新）
+function StockAdjustModal({
+  open,
+  initial,
+  productName,
+  onClose,
+  onCommit,
+  disabled,
+}: {
+  open: boolean;
+  initial: number;
+  productName: string;
+  onClose: () => void;
+  onCommit: (val: number) => void;
+  disabled: boolean;
+}) {
+  const [val, setVal] = React.useState<string>(() => String(Math.max(0, Math.floor(Number(initial || 0)))));
+  React.useEffect(() => { setVal(String(Math.max(0, Math.floor(Number(initial || 0))))); }, [initial, open]);
+  const commit = React.useCallback(() => {
+    const n = Math.max(0, Math.floor(Number(val || 0)));
+    if (!Number.isFinite(n)) return;
+    onCommit(n);
+  }, [val, onCommit]);
+  if (!open) return null;
+  return (
+    <div className="fixed inset-0 z-[60] grid place-items-center bg-black/40 p-4" role="dialog" aria-modal="true" onClick={onClose}>
+      <div className="w-full max-w-md rounded-2xl bg-white shadow-xl border p-4" onClick={e => e.stopPropagation()}>
+        <div className="text-base font-semibold mb-2">在庫調整</div>
+        <div className="text-sm text-zinc-600 mb-3">対象: {productName}</div>
+        <label className="block text-sm">
+          <span className="text-zinc-700">在庫数</span>
+          <input
+            type="number"
+            inputMode="numeric"
+            min={0}
+            step={1}
+            className="mt-1 w-full rounded-xl border px-3 py-2 text-sm text-right"
+            value={val}
+            onChange={e => setVal(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); commit(); } }}
+            aria-label="在庫数"
+            disabled={disabled}
+            autoFocus
+          />
+        </label>
+        <div className="mt-4 flex items-center justify-end gap-2">
+          <button onClick={onClose} className="rounded-xl border px-4 py-2 text-sm">キャンセル</button>
+          <button onClick={commit} disabled={disabled} className={`rounded-xl px-4 py-2 text-sm text-white ${disabled ? 'bg-zinc-400 cursor-not-allowed' : 'bg-zinc-900'}`}>更新</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ProductForm() {
   const { products, perr, ploading, add, remove, updateStock } = useProducts();
+  const [adjust, setAdjust] = useState<null | { id: string; name: string; stock: number }>(null);
   const [name, setName] = useState("");
   const [price, setPrice] = useState("");
   const [stock, setStock] = useState("");
@@ -467,12 +522,27 @@ function ProductForm() {
             <div className="text-right">
               <div className="font-semibold">{yen(p.price)}</div>
               <div className="text-xs text-zinc-500">在庫 {p.stock}</div>
-              <StockInline id={p.id} stock={p.stock} disabled={ploading} onCommit={(n) => updateStock(p.id, n)} />
+              <button
+                type="button"
+                className="mt-1 inline-flex items-center rounded-lg border px-2 py-1 text-xs hover:bg-zinc-50 disabled:opacity-50"
+                onClick={() => setAdjust({ id: p.id, name: p.name, stock: p.stock })}
+                disabled={ploading}
+                aria-label={`${p.name} の在庫を調整`}
+              >在庫調整</button>
               <button type="button" className="mt-2 inline-flex items-center rounded-lg border px-2 py-1 text-xs text-red-600 border-red-200 hover:bg-red-50 disabled:opacity-50" onClick={() => { if (confirm(`「${p.name}」を削除しますか？`)) remove(p.id); }} disabled={ploading} aria-label={`${p.name} を削除`}>削除</button>
             </div>
           </div>
         ))}
       </div>
+
+      <StockAdjustModal
+        open={!!adjust}
+        initial={adjust?.stock || 0}
+        productName={adjust?.name || ''}
+        disabled={ploading}
+        onClose={() => setAdjust(null)}
+        onCommit={(n) => { if (adjust) { updateStock(adjust.id, n); setAdjust(null); } }}
+      />
     </div>
   );
 }

@@ -8,11 +8,13 @@
   "scripts": {
     "dev": "concurrently -n store,user \"pnpm -C apps/store dev\" \"pnpm -C apps/user dev\"",
     "dev:store": "pnpm -C apps/store dev",
-    "dev:user": "pnpm -C apps/user dev"
+    "dev:user": "pnpm -C apps/user dev",
+    "seed:stores:locations": "node scripts/seed-stores-locations.mjs"
   },
   "devDependencies": {
     "@types/react": "^19.2.2",
     "@types/react-dom": "^19.2.1",
+    "@types/leaflet": "^1.9.12",
     "autoprefixer": "^10.4.21",
     "concurrently": "^9.2.1",
     "postcss": "^8.5.6",
@@ -20,6 +22,7 @@
     "typescript": "^5.9.3"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.74.0"
+    "@supabase/supabase-js": "^2.74.0",
+    "leaflet": "^1.9.4"
   }
 }

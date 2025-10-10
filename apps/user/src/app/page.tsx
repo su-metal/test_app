@@ -188,6 +188,7 @@ export default function UserPilotApp() {
 
     const [tab, setTab] = useState<"home" | "cart" | "order" | "account">("home");
     const [focusedShop, setFocusedShop] = useState<string | undefined>(undefined);
+    const [detail, setDetail] = useState<{ shopId: string; item: Item } | null>(null);
     const supabase = useSupabase();
     type DbProduct = { id: string; store_id?: string; name: string; price?: number; stock?: number; image_url?: string; updated_at?: string };
     type DbStore = { id: string; name: string; created_at?: string };
@@ -199,6 +200,13 @@ export default function UserPilotApp() {
     // --- Hydration対策（SSRとクライアント差異を回避） ---
     const [hydrated, setHydrated] = useState(false);
     useEffect(() => setHydrated(true), []);
+    // モーダル: Esc で閉じる
+    useEffect(() => {
+        if (!detail) return;
+        const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setDetail(null); };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+    }, [detail]);
 
     const [clock, setClock] = useState<string>("");
     useEffect(() => {
@@ -609,6 +617,7 @@ export default function UserPilotApp() {
     // 注文処理
     const [cardDigits, setCardDigits] = useState(""); // 数字のみ（最大16桁）
     const [orderTarget, setOrderTarget] = useState<string | undefined>(undefined);
+    const [paymentMethod, setPaymentMethod] = useState<"card" | "paypay">("card"); // 支払方法（テスト）
     const unredeemedOrders = useMemo(() => orders.filter(o => o.status === 'paid'), [orders]);
     const redeemedOrders = useMemo(() => orders.filter(o => o.status === 'redeemed'), [orders]);
 
@@ -651,8 +660,15 @@ export default function UserPilotApp() {
             const sid = orderTarget;
 
             // カード検証
-            const card = validateTestCard(cardDigits);
-            if (!card.ok) { emitToast("error", card.msg); return; }
+            let payBrand = "TEST";
+            if (paymentMethod === "card") {
+                const card = validateTestCard(cardDigits);
+                if (!card.ok) { emitToast("error", card.msg); return; }
+                payBrand = card.brand || "TEST";
+            } else {
+                // TODO(req v2): PayPay 本実装。現状はテストとして即時成功扱い。
+                payBrand = "PayPay";
+            }
 
             // 対象店舗のカートをスナップショット
             const linesSnapshot = (cartByShop[sid] || []).map(l => ({ ...l }));
@@ -780,13 +796,14 @@ export default function UserPilotApp() {
                 setTab("account");
             });
 
+            const card = { brand: payBrand } as const; // テスト用: 旧トースト文言互換
             setCardDigits("");
             emitToast("success", `注文が完了しました。カード: ${card.brand || "TEST"}`);
         } finally {
             isPayingRef.current = false;
             setIsPaying(false);
         }
-    }, [orderTarget, isPaying, cardDigits, cartByShop, itemsById, shops, cart, userEmail, supabase]);
+    }, [orderTarget, isPaying, cardDigits, cartByShop, itemsById, shops, cart, userEmail, supabase, paymentMethod]);
 
     // --- 開発用：この店舗の注文をすべてリセット（削除） ---
     const devResetOrders = useCallback(async () => {
@@ -833,10 +850,22 @@ export default function UserPilotApp() {
         const reserved = getReserved(sid, it.id);
         const remain = Math.max(0, it.stock - reserved);
         return (
-            <div className="mt-2 inline-flex items-center rounded-full border px-2 py-1 text-sm select-none">
-                <button type="button" className="px-2 py-0.5 rounded-full border cursor-pointer disabled:opacity-40" disabled={reserved <= 0} onClick={() => changeQty(sid, it, -1)}>−</button>
+            <div className="inline-flex items-center rounded-full px-2 py-1 text-sm select-none">
+                <button
+                    type="button"
+                    className="w-5 h-5 text-[10px] leading-none rounded-full border cursor-pointer disabled:opacity-40 flex items-center justify-center"
+                    disabled={reserved <= 0}
+                    onClick={() => changeQty(sid, it, -1)}
+                    aria-label="数量を減らす"
+                >−</button>
                 <span className="mx-3 min-w-[1.5rem] text-center tabular-nums">{reserved}</span>
-                <button type="button" className="px-2 py-0.5 rounded-full border cursor-pointer disabled:opacity-40" disabled={remain <= 0} onClick={() => changeQty(sid, it, +1)}>＋</button>
+                <button
+                    type="button"
+                    className="w-5 h-5 text-[10px] leading-none rounded-full border cursor-pointer disabled:opacity-40 flex items-center justify-center"
+                    disabled={remain <= 0}
+                    onClick={() => changeQty(sid, it, +1)}
+                    aria-label="数量を増やす"
+                >＋</button>
             </div>
         );
     };
@@ -846,23 +875,40 @@ export default function UserPilotApp() {
 
     return (
         <MinimalErrorBoundary>
-            <div className="min-h-screen bg-gradient-to-b from-white to-zinc-50">
-                <header className="sticky top-0 z-20 bg-white/80 backdrop-blur border-b">
+            <div className="min-h-screen bg-[#f6f1e9]">{/* 柔らかいベージュ背景 */}
+                <header className="sticky top-0 z-20 bg-white/85 backdrop-blur border-b">
                     <div className="max-w-[448px] mx-auto px-4 py-3 flex items-center justify-between" suppressHydrationWarning>
-                        <h1 className="text-lg font-bold">ユーザーアプリ（Pilot v2.6）</h1>
-                        <div className="text-xs text-zinc-500">{clock || "—"}</div>
-
+                        <h1 className="text-lg font-bold">ユーザーアプリ モック v3</h1>
+                        <div className="flex items-center gap-3">
+                            <div className="text-xs text-zinc-500">{clock || "—"}</div>
+                            {/* カートバッジ */}
+                            <button className="relative px-2 py-1 rounded-full border bg-white cursor-pointer" onClick={() => setTab('cart')} aria-label="カートへ">
+                                <span>🛒</span>
+                                <span className="absolute -top-1 -right-1 min-w-5 h-5 px-1 rounded-full bg-zinc-900 text-white text-[10px] flex items-center justify-center">
+                                    {cart.length}
+                                </span>
+                            </button>
+                        </div>
                     </div>
-                </header >
+                </header>
 
                 <main className="max-w-[448px] mx-auto px-4 pb-28">
                     {tab === "home" && (
                         <section className="mt-4 space-y-4">
                             <h2 className="text-base font-semibold">近くのお店</h2>
-                            <div className="rounded-2xl h-40 border bg-gradient-to-br from-zinc-100 to-zinc-200 flex items-center justify-center text-sm text-zinc-500">（ダミーマップ）ピンをタップして店舗を注目</div>
+                            {/* 店舗チップ群（ピン） */}
+                            <div className="rounded-2xl border bg-white p-3 flex flex-wrap gap-2 text-sm">
+                                {shopsSorted.map((s) => (
+                                    <button key={`chip-${s.id}`} onClick={() => setFocusedShop(s.id)} className={`px-3 py-1 rounded-full border cursor-pointer flex items-center gap-1 ${focusedShop === s.id ? 'bg-zinc-900 text-white border-zinc-900' : 'bg-white'}`}>
+                                        <span>📍</span>
+                                        <span className="truncate max-w-[10rem]">{s.name}</span>
+                                    </button>
+                                ))}
+                                <div className="basis-full text-[11px] text-zinc-500 mt-1">ピンをタップすると下の店舗がハイライト</div>
+                            </div>
 
                             <div className="grid grid-cols-1 gap-3">
-                                {shopsSorted.map((s) => {
+                                {shopsSorted.map((s, idx) => {
                                     const visibleItems = s.items.filter(it => { const r = getReserved(s.id, it.id); const remain = Math.max(0, it.stock - r); return it.stock > 0 && (remain > 0 || r > 0); });
                                     const hasAny = visibleItems.length > 0;
                                     const remainingTotal = visibleItems.reduce((a, it) => a + Math.max(0, it.stock - getReserved(s.id, it.id)), 0);
@@ -870,37 +916,62 @@ export default function UserPilotApp() {
                                     const cartCount = qtyByShop[s.id] || 0;
                                     return (
                                         <div key={s.id} className={`relative rounded-2xl border bg-white p-4 ${!hasAny ? 'opacity-70' : ''} ${focusedShop === s.id ? "ring-2 ring-zinc-900" : ""}`}>
-                                            {/* ヘッダー */}
-                                            <div className="flex items-center justify-between">
-                                                <div className="flex items-center gap-2 min-w-0">
-                                                    <div className="text-left">
-                                                        <div className="text-sm font-semibold truncate">{s.name}</div>
-                                                        <div className="text-[11px] text-zinc-500">{s.distance.toFixed(2)} km</div>
-                                                    </div>
-                                                </div>
-                                                <button type="button" className="text-xs px-2 py-1 rounded border cursor-pointer" onClick={() => setFocusedShop(s.id)}>ピン注目</button>
+                                            {/* ヒーロー画像 */}
+                                            <div className="relative">
+                                                <img
+                                                    src={idx % 3 === 0 ? 'https://images.unsplash.com/photo-1495474472287-4d71bcdd2085?q=80&w=1200&auto=format&fit=crop' : idx % 3 === 1 ? 'https://images.unsplash.com/photo-1475855581690-80accde3ae2b?q=80&w=1200&auto=format&fit=crop' : 'https://images.unsplash.com/photo-1460306855393-0410f61241c7?q=80&w=1200&auto=format&fit=crop'}
+                                                    alt={s.name}
+                                                    className="w-full h-44 object-cover rounded-2xl"
+                                                />
+                                                <div className="absolute left-3 top-3 px-2 py-1 rounded bg-black/60 text-white text-xs">{s.name}</div>
+                                                <div className="absolute right-3 top-3 px-2 py-1 rounded-full bg-white/90 border text-[11px]">{s.distance.toFixed(2)} km</div>
                                             </div>
 
-                                            {/* 詳細 */}
+                                            {/* 住所/ミニマップ（スクショ風） */}
+                                            <div className="mt-3">
+                                                <div className="flex items-center gap-2 text-sm text-zinc-700">
+                                                    <span>📍</span>
+                                                    <span className="truncate">名古屋市中村区名駅1-1-1</span>
+                                                </div>
+                                                <div className="relative mt-2">
+                                                    <div className="w-full h-28 rounded-xl border bg-[linear-gradient(0deg,transparent_24%,rgba(0,0,0,0.04)_25%,rgba(0,0,0,0.04)_26%,transparent_27%,transparent_74%,rgba(0,0,0,0.04)_75%,rgba(0,0,0,0.04)_76%,transparent_77%),linear-gradient(90deg,transparent_24%,rgba(0,0,0,0.04)_25%,rgba(0,0,0,0.04)_26%,transparent_27%,transparent_74%,rgba(0,0,0,0.04)_75%,rgba(0,0,0,0.04)_76%,transparent_77%)] bg-[length:12px_12px]"></div>
+                                                    <div className="absolute right-2 top-2 px-2 py-1 rounded bg-white/90 border text-[11px]">35.171, 136.881</div>
+                                                    <div className="absolute inset-0 flex items-center justify-center text-sm text-zinc-600"><span>📍 ここにあります</span></div>
+                                                </div>
+                                            </div>
+
+                                            {/* 概要 */}
                                             <div className="mt-3 flex items-center justify-between text-sm">
                                                 <div className="text-zinc-700">最安 <span className="font-semibold">{hasAny ? currency(minPrice) : '—'}</span></div>
                                                 <div className="text-zinc-700">在庫 <span className="tabular-nums font-semibold">{remainingTotal}</span></div>
                                                 <div className="text-xs px-2 py-0.5 rounded bg-zinc-100">カート {cartCount}</div>
                                             </div>
                                             {hasAny ? (
-                                                <div className="mt-3 grid grid-cols-2 gap-3">
+                                                <div className="mt-3 space-y-2">
                                                     {visibleItems.map(it => {
                                                         const remain = Math.max(0, it.stock - getReserved(s.id, it.id));
                                                         return (
-                                                            <div key={it.id} className={`rounded-xl border p-3`}>
-                                                                <div className="text-3xl">{it.photo}</div>
-                                                                <div className="text-sm mt-1 font-medium line-clamp-2">{it.name}</div>
-                                                                <div className="text-xs text-zinc-500">受取 {it.pickup}</div>
-                                                                <div className="flex items-center justify-between mt-2">
-                                                                    <div className="text-sm font-semibold">{currency(it.price)}</div>
-                                                                    <div className="text-[11px] text-zinc-500">在庫 {remain}</div>
+                                                            <div key={it.id} className="flex gap-3 rounded-2xl border bg-white p-2 pr-3">
+                                                                {/* 左側：詳細を開くボタン領域（数量チップはボタン外へ） */}
+                                                                <button type="button" onClick={() => setDetail({ shopId: s.id, item: it })} className="flex items-center gap-3 flex-1 min-w-0 text-left">
+                                                                    <div className="w-24 h-24 overflow-hidden rounded-xl bg-zinc-100 flex items-center justify-center text-4xl shrink-0">
+                                                                        {/* TODO(req v2): image_url を配置 */}
+                                                                        <span>{it.photo}</span>
+                                                                    </div>
+                                                                    <div className="flex-1 min-w-0">
+                                                                        <div className="text-sm font-medium truncate">{it.name}</div>
+                                                                        <div className="mt-0.5 text-xs text-zinc-500 flex items-center justify-between gap-3 w-full whitespace-nowrap">
+                                                                            <span className="inline-flex items-center gap-1"><span>⏰</span><span>受取 {it.pickup}</span></span>
+                                                                            <span className="ml-auto inline-flex items-center gap-1 text-[11px]">在庫 <span className="tabular-nums">{remain}</span></span>
+                                                                        </div>
+                                                                        {/* 下段：価格（数量チップは外側） */}
+                                                                        <div className="mt-2 text-base font-semibold">{currency(it.price)}</div>
+                                                                    </div>
+                                                                </button>
+                                                                {/* 右下：数量チップ（ボタン外、下寄せ） */}
+                                                                <div className="self-end ml-1 rounded-full border px-2 py-1" onClick={(e) => e.stopPropagation()}>
+                                                                    <QtyChip sid={s.id} it={it} />
                                                                 </div>
-                                                                <QtyChip sid={s.id} it={it} />
                                                             </div>
                                                         );
                                                     })}
@@ -912,12 +983,13 @@ export default function UserPilotApp() {
                                                     </div>
                                                 </div>
                                             )}
-                                            <div className="mt-3 grid grid-cols-2 gap-2">
-                                                <button type="button" className="w-full px-3 py-2 rounded border cursor-pointer disabled:opacity-40" disabled={(qtyByShop[s.id] || 0) === 0} onClick={() => setTab("cart")}>
+                                            {/* カートボタン（スクショ風） */}
+                                            <div className="mt-3 grid grid-cols-[1fr_auto] gap-2 items-center">
+                                                <button type="button" className="w-full px-3 py-2 rounded-xl border cursor-pointer disabled:opacity-40 bg-white" disabled={(qtyByShop[s.id] || 0) === 0} onClick={() => setTab("cart")}>
                                                     カートを見る（{qtyByShop[s.id] || 0}）
                                                 </button>
-                                                <button type="button" className="w-full px-3 py-2 rounded border cursor-pointer disabled:opacity-40 border-red-500 text-red-600" disabled={(qtyByShop[s.id] || 0) === 0} onClick={() => clearShopCart(s.id)}>
-                                                    カートを空にする
+                                                <button type="button" className="px-3 py-2 rounded-xl border cursor-pointer disabled:opacity-40 text-zinc-700" disabled={(qtyByShop[s.id] || 0) === 0} onClick={() => clearShopCart(s.id)} title="カートを空にする">
+                                                    🗑️
                                                 </button>
                                             </div>
                                             {!hasAny && (
@@ -1020,6 +1092,21 @@ export default function UserPilotApp() {
                                                                 ))}
                                                             </ul>
                                                         </div>
+                                                        {/* TODO(req v2): 本番ではこの削除機能を無効化/非表示にする（テスト運用限定） */}
+                                                        <div className="mt-3 flex items-center gap-2">
+                                                            <button
+                                                                type="button"
+                                                                className="text-xs px-2 py-1 rounded border border-red-300 text-red-700 cursor-pointer"
+                                                                onClick={(e) => {
+                                                                    e.stopPropagation();
+                                                                    if (!confirm('このチケットを削除しますか？（ローカルのみ削除）')) return;
+                                                                    setOrders(prev => prev.filter(x => !(String(x.id) === String(o.id) && x.status === 'paid')));
+                                                                    emitToast('success', 'チケットを削除しました');
+                                                                }}
+                                                            >
+                                                                このチケットを削除
+                                                            </button>
+                                                        </div>
                                                         <div className="text-xs text-zinc-500 mt-3">※ 店頭で6桁コードまたはQRを提示してください。受取完了は店側アプリで行われ、ステータスが <b>redeemed</b> に更新されます。</div>
                                                     </div>
                                                 )}
@@ -1104,6 +1191,34 @@ export default function UserPilotApp() {
                                     ))}
                                 </div>
                                 <div className="p-4 border-t space-y-2">
+                                    {/* 支払い方法 */}
+                                    <div className="grid grid-cols-2 gap-2" role="group" aria-label="支払い方法">
+                                        {(() => {
+                                            const base = "w-full px-3 py-2 rounded border cursor-pointer text-sm";
+                                            const active = "bg-zinc-900 text-white border-zinc-900";
+                                            const inactive = "bg-white text-zinc-700";
+                                            return (
+                                                <>
+                                                    <button
+                                                        type="button"
+                                                        className={`${base} ${paymentMethod === 'card' ? active : inactive}`}
+                                                        aria-pressed={paymentMethod === 'card'}
+                                                        onClick={() => setPaymentMethod('card')}
+                                                    >
+                                                        クレカ
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        className={`${base} ${paymentMethod === 'paypay' ? active : inactive}`}
+                                                        aria-pressed={paymentMethod === 'paypay'}
+                                                        onClick={() => setPaymentMethod('paypay')}
+                                                    >
+                                                        PayPay
+                                                    </button>
+                                                </>
+                                            );
+                                        })()}
+                                    </div>
                                     <div className="text-xs text-zinc-500">テストカード例: 4242… は成功。400000… は失敗（例: 4000 0000 0000 0002）。入力は数字のみ。</div>
                                     {(() => {
                                         const d = cardDigits.replace(/\D/g, "").slice(0, 16);
@@ -1136,7 +1251,11 @@ export default function UserPilotApp() {
                                         type="button"
                                         className="w-full px-3 py-2 rounded border cursor-pointer disabled:opacity-40"
                                         onClick={confirmPay}
-                                        disabled={isPaying || cardDigits.length < 16 || ((cartByShop[orderTarget]?.length ?? 0) === 0)}
+                                        disabled={
+                                            isPaying ||
+                                            ((cartByShop[orderTarget]?.length ?? 0) === 0) ||
+                                            (paymentMethod === 'card' && cardDigits.length < 16)
+                                        }
                                     >
                                         支払いを確定する（テスト）
                                     </button>
@@ -1165,6 +1284,44 @@ export default function UserPilotApp() {
                 </div>
 
                 <ToastBar toast={toast} onClose={() => setToast(null)} />
+
+                {/* 商品詳細モーダル */}
+                {detail && (
+                    <div role="dialog" aria-modal="true" className="fixed inset-0 z-50">
+                        <div className="absolute inset-0 bg-black/40" onClick={() => setDetail(null)} />
+                        <div className="absolute inset-0 flex items-center justify-center p-4">
+                            <div className="max-w-[520px] w-full bg-white rounded-2xl overflow-hidden shadow-xl">
+                                <div className="relative">
+                                    <div className="w-full h-56 bg-zinc-100 flex items-center justify-center text-6xl">
+                                        <span>{detail.item.photo}</span>
+                                    </div>
+                                    <button type="button" aria-label="閉じる" className="absolute top-2 right-2 w-8 h-8 rounded-full bg-white/90 border flex items-center justify-center" onClick={() => setDetail(null)}>✕</button>
+                                </div>
+                                <div className="p-4 space-y-3">
+                                    <div className="text-lg font-semibold leading-tight break-words">{detail.item.name}</div>
+                                    <div className="text-sm text-zinc-600 flex items-center gap-3">
+                                        <span className="inline-flex items-center gap-1"><span>⏰</span><span>受取 {detail.item.pickup}</span></span>
+                                        <span className="inline-flex items-center gap-1"><span>🏷️</span><span className="tabular-nums">{currency(detail.item.price)}</span></span>
+                                        <span className="ml-auto inline-flex items-center gap-1"><span>在庫</span><span className="tabular-nums">{Math.max(0, detail.item.stock - getReserved(detail.shopId, detail.item.id))}</span></span>
+                                    </div>
+                                    <div className="text-sm text-zinc-700 bg-zinc-50 rounded-xl p-3">
+                                        {detail.item.note ? detail.item.note : 'お店のおすすめ商品です。数量限定のため、お早めにお求めください。'}
+                                    </div>
+                                    <div className="flex items-center justify-between pt-2">
+                                        <div className="text-base font-semibold">{currency(detail.item.price)}</div>
+                                        <div className="rounded-full border px-2 py-1">
+                                            <QtyChip sid={detail.shopId} it={detail.item} />
+                                        </div>
+                                    </div>
+                                    <div className="grid grid-cols-2 gap-2 pt-1">
+                                        <button type="button" className="px-3 py-2 rounded-xl border" onClick={() => setDetail(null)}>閉じる</button>
+                                        <button type="button" className="px-3 py-2 rounded-xl border bg-zinc-900 text-white" onClick={() => { addToCart(detail.shopId, detail.item); emitToast('success', 'カートに追加しました'); setDetail(null); }}>カートに追加</button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                )}
             </div >
         </MinimalErrorBoundary >
     );

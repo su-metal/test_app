@@ -1,0 +1,2025 @@
+﻿"use client";
+import React, { useEffect, useMemo, useRef, useState, startTransition, useCallback } from "react";
+import { createClient } from '@supabase/supabase-js';
+import type { SupabaseClient } from '@supabase/supabase-js';
+import "leaflet/dist/leaflet.css";
+
+
+let __sb__: SupabaseClient | null = null;
+function getSupabaseSingleton() {
+    if (!__sb__) {
+        __sb__ = createClient(
+            process.env.NEXT_PUBLIC_SUPABASE_URL!,
+            process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+            { auth: { storageKey: 'sb-user-app' } } // 竊・隴ｦ蜻雁屓驕ｿ縺ｮ縺溘ａ蝗ｺ螳・
+        );
+    }
+    return __sb__;
+}
+
+/**
+ * 繝ｦ繝ｼ繧ｶ繝ｼ蜷代￠繝輔・繝峨Ο繧ｹ繧｢繝励Μ・・ilot v2.6 / TS蟇ｾ蠢懶ｼ・
+ * - Toast騾夂衍縲∝惠蠎ｫ騾｣蜍輔∝ｺ苓・蛻･莨夊ｨ医∫ｰ｡譏薙ユ繧ｹ繝域ｱｺ貂・
+ * - 證鈴ｻ・any 縺ｮ謗帝勁縲￣rops/State 蝙九ｒ譏守､ｺ
+ */
+
+// ---- 繝ｦ繝ｼ繝・ぅ繝ｪ繝・ぅ ----
+function useSupabase() {
+    return useMemo(getSupabaseSingleton, []);
+}
+
+function pushLog(entry: unknown) {
+    try {
+        const key = "app_logs";
+        const arr = JSON.parse(localStorage.getItem(key) || "[]");
+        arr.unshift({ ts: Date.now(), entry });
+        localStorage.setItem(key, JSON.stringify(arr.slice(0, 100)));
+    } catch {/* noop */ }
+}
+
+const fmt = new Intl.NumberFormat("ja-JP", { style: "currency", currency: "JPY" });
+const currency = (n: number) => fmt.format(n);
+const DEFAULT_CENTER = { lat: 34.7628, lng: 137.3833 }; // 雎頑ｩ矩ｧ・ｼ域ｦらｮ暦ｼ・const uid = () => Math.random().toString(36).slice(2, 10);
+const to6 = (s: string) => (Array.from(s).reduce((a, c) => a + c.charCodeAt(0), 0) % 1_000_000).toString().padStart(6, "0");
+
+// 蜈･蜉帶ｭ｣隕丞喧: 繝医Μ繝 + 險伜捷髯､蜴ｻ + 螟ｧ譁・ｭ怜喧・郁恭謨ｰ蟄励・縺ｿ谿九☆・・
+const norm = (v: unknown): string => {
+    const s = (v ?? "").toString();
+    return s.trim().replace(/[\s_-]/g, "").replace(/[^0-9A-Za-z]/g, "").toUpperCase();
+};
+
+// 6譯√さ繝ｼ繝牙ｰら畑: 謨ｰ蟄励・縺ｿ謚ｽ蜃ｺ縺励∝ｷｦ繧ｼ繝ｭ蝓九ａ縺ｧ6譯√↓謠・∴繧・
+const normalizeCode6 = (v: unknown): string => {
+    const digits = String(v ?? "").replace(/\D/g, "");
+    if (digits.length === 6) return digits;
+    if (digits.length < 6) return digits.padStart(6, '0');
+    // 6譯√ｈ繧企聞縺・ｴ蜷医・豈碑ｼ・↓菴ｿ繧上↑縺・ｼ井ｸ堺ｸ閾ｴ謇ｱ縺・ｼ・
+    return digits;
+};
+
+// ---- Toast・磯撼蜷梧悄騾夂衍・・----
+type ToastKind = "info" | "success" | "error";
+interface ToastPayload { kind: ToastKind; msg: string }
+const emitToast = (kind: ToastKind, msg: string) => {
+    if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent<ToastPayload>("app:toast", { detail: { kind, msg } as ToastPayload } as CustomEventInit<ToastPayload>));
+    }
+};
+
+function ToastBar({ toast, onClose }: { toast: ToastPayload | null; onClose: () => void }) {
+    if (!toast) return null;
+    const tone = toast.kind === "success" ? "bg-emerald-600" : toast.kind === "error" ? "bg-red-600" : "bg-zinc-800";
+    return (
+        <div className={`fixed bottom-6 left-1/2 -translate-x-1/2 z-50 px-4 py-2 text-white rounded-full shadow ${tone}`} role="status" aria-live="polite">
+            <div className="flex items-center gap-3">
+                <span className="text-sm whitespace-pre-wrap">{toast.msg}</span>
+                <button type="button" className="text-xs underline cursor-pointer" onClick={onClose}>髢峨§繧・/button>
+            </div>
+        </div>
+    );
+}
+
+// 繧ｯ繝ｪ繝・・繝懊・繝会ｼ医け繝ｪ繝・け襍ｷ轤ｹ縺ｧ蜻ｼ縺ｶ縲ょ､ｱ謨玲凾縺ｯ繝輔か繝ｼ繝ｫ繝舌ャ繧ｯ・・
+async function safeCopy(text: string) {
+    try {
+        if (typeof navigator !== "undefined" && navigator.clipboard && window.isSecureContext) {
+            await navigator.clipboard.writeText(text); return true;
+        }
+    } catch {/* fallthrough */ }
+    try {
+        const ta = document.createElement("textarea");
+        ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0"; ta.style.pointerEvents = "none";
+        document.body.appendChild(ta); ta.focus(); ta.select();
+        const ok = document.execCommand("copy");
+        document.body.removeChild(ta);
+        return ok;
+    } catch {
+        emitToast("error", `繧ｳ繝斐・縺ｧ縺阪∪縺帙ｓ縺ｧ縺励◆縲よ焔蜍輔〒驕ｸ謚槭＠縺ｦ縺上□縺輔＞\n${text}`);
+        return false;
+    }
+}
+
+// ---- localStorage 豎守畑繝輔ャ繧ｯ ----
+function useLocalStorageState<T>(key: string, initial: T | (() => T)) {
+    const read = () => {
+        try { const v = localStorage.getItem(key); if (v != null) return JSON.parse(v) as T; } catch {/* noop */ }
+        return typeof initial === "function" ? (initial as () => T)() : initial;
+    };
+    const [state, setState] = useState<T>(read);
+    useEffect(() => { try { localStorage.setItem(key, JSON.stringify(state)); } catch {/* noop */ } }, [key, state]);
+    return [state, setState] as const;
+}
+
+// ---- 繝・せ繝医き繝ｼ繝画､懆ｨｼ・育ｰ｡譏難ｼ・----
+function sanitizeCard(input: string) { return input.replace(/\s|-/g, ""); }
+function validateTestCard(cardRaw: string) {
+    const card = sanitizeCard(cardRaw);
+    if (card.length === 0) return { ok: true, brand: "TEST", note: "・域悴蜈･蜉帙・繝｢繝・け謌仙粥謇ｱ縺・ｼ・ } as const;
+    if (!/^\d{16}$/.test(card)) return { ok: false, msg: "繧ｫ繝ｼ繝臥分蜿ｷ縺ｯ16譯√・謨ｰ蟄励〒蜈･蜉帙＠縺ｦ縺上□縺輔＞・医ユ繧ｹ繝茨ｼ・ } as const;
+    if (card.startsWith("400000")) return { ok: false, msg: "螟ｱ謨励き繝ｼ繝会ｼ・00000窶ｦ・峨→縺励※謇ｱ縺・∪縺励◆・医ユ繧ｹ繝茨ｼ・ } as const;
+    if (card === "4000000000000002") return { ok: false, msg: "荳闊ｬ逧・↑繧ｫ繝ｼ繝画拠蜷ｦ・医ユ繧ｹ繝茨ｼ・ } as const;
+    if (card.startsWith("4242")) return { ok: true, brand: "Visa(4242)" } as const;
+    return { ok: true, brand: "TEST" } as const;
+}
+
+// ---- 蝙・----
+interface Item { id: string; name: string; price: number; stock: number; pickup: string; note: string; photo: string }
+interface Shop { id: string; name: string; lat: number; lng: number; zoomOnPin: number; closed: boolean; items: Item[] }
+interface CartLine { shopId: string; item: Item; qty: number }
+interface Order { id: string; userEmail: string; shopId: string; amount: number; status: "paid" | "redeemed" | "refunded"; code6: string; createdAt: number; lines: CartLine[] }
+
+type ShopWithDistance = Shop & { distance: number; bearingDeg: number };
+
+// 霍晞屬/譁ｹ隗偵Θ繝ｼ繝・ぅ繝ｪ繝・ぅ
+function haversineKm(a: { lat: number; lng: number }, b: { lat: number; lng: number }) {
+    const R = 6371; // km
+    const dLat = (b.lat - a.lat) * Math.PI / 180;
+    const dLng = (b.lng - a.lng) * Math.PI / 180;
+    const la1 = a.lat * Math.PI / 180;
+    const la2 = b.lat * Math.PI / 180;
+    const sinDLat = Math.sin(dLat / 2);
+    const sinDLng = Math.sin(dLng / 2);
+    const h = sinDLat * sinDLat + Math.cos(la1) * Math.cos(la2) * sinDLng * sinDLng;
+    const c = 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
+    return R * c;
+}
+function bearingDeg(from: { lat: number; lng: number }, to: { lat: number; lng: number }) {
+    const ﾏ・ = from.lat * Math.PI / 180;
+    const ﾏ・ = to.lat * Math.PI / 180;
+    const ﾎｻ1 = from.lng * Math.PI / 180;
+    const ﾎｻ2 = to.lng * Math.PI / 180;
+    const y = Math.sin(ﾎｻ2 - ﾎｻ1) * Math.cos(ﾏ・);
+    const x = Math.cos(ﾏ・) * Math.sin(ﾏ・) - Math.sin(ﾏ・) * Math.cos(ﾏ・) * Math.cos(ﾎｻ2 - ﾎｻ1);
+    let ﾎｸ = Math.atan2(y, x) * 180 / Math.PI; // -180..180
+    if (ﾎｸ < 0) ﾎｸ += 360; // 0..360
+    return ﾎｸ;
+}
+function bearingTo8(deg: number) {
+    const dirs = [
+        { a: '竊・, t: '蛹・ },
+        { a: '竊・, t: '蛹玲擲' },
+        { a: '竊・, t: '譚ｱ' },
+        { a: '竊・, t: '蜊玲擲' },
+        { a: '竊・, t: '蜊・ },
+        { a: '竊・, t: '蜊苓･ｿ' },
+        { a: '竊・, t: '隘ｿ' },
+        { a: '竊・, t: '蛹苓･ｿ' },
+    ];
+    const i = Math.round(deg / 45) % 8;
+    return dirs[i];
+}
+
+
+// ---- 蛻晄悄繝・・繧ｿ ----
+const seedShops = (): Shop[] => ([
+    {
+        id: "s1", name: "繝吶・繧ｫ繝ｪ繝ｼ 縺薙・縺・, lat: 35.682, lng: 139.768, zoomOnPin: 16, closed: false, items: [
+            { id: "i1", name: "譛ｬ譌･縺ｮ繝代Φ隧ｰ繧∝粋繧上○", price: 400, stock: 3, pickup: "18:00-20:00", note: "蠖捺律荳ｭ縺ｫ", photo: "･・ },
+            { id: "i2", name: "繧ｯ繝ｭ繝ｯ繝・し繝ｳ3蛟・, price: 350, stock: 5, pickup: "18:00-20:00", note: "", photo: "･・ },
+        ]
+    },
+    {
+        id: "s2", name: "DELI 縺ｿ縺ｩ繧・, lat: 35.679, lng: 139.765, zoomOnPin: 15, closed: false, items: [
+            { id: "i3", name: "繧ｵ繝ｩ繝繝懊え繝ｫ", price: 500, stock: 4, pickup: "19:00-21:00", note: "", photo: "･・ },
+            { id: "i4", name: "譌･譖ｿ繧上ｊ繝・Μ", price: 600, stock: 2, pickup: "19:00-21:00", note: "", photo: "些" },
+        ]
+    },
+    {
+        id: "s3", name: "CAFE 縺ゅ♀縺槭ｉ", lat: 35.683, lng: 139.769, zoomOnPin: 17, closed: false, items: [
+            { id: "i5", name: "辟ｼ縺崎藷蟄舌そ繝・ヨ", price: 300, stock: 6, pickup: "17:30-19:30", note: "", photo: "根" },
+        ]
+    },
+]);
+
+// ---- 蜈ｱ譛峨く繝ｼ ----
+const K = { shops: "shops", cart: "cart", orders: "orders", user: "user_email" } as const;
+
+// ---- ErrorBoundary ----
+class MinimalErrorBoundary extends React.Component<React.PropsWithChildren, { hasError: boolean; message?: string }> {
+    constructor(props: React.PropsWithChildren) { super(props); this.state = { hasError: false }; }
+    static getDerivedStateFromError(err: unknown) { return { hasError: true, message: String((err as any)?.message || err) }; }
+    componentDidCatch(error: unknown, info: unknown) { pushLog({ type: "error", message: String((error as any)?.message || error), info }); }
+    render() {
+        if (this.state.hasError) {
+            return (
+                <div className="min-h-screen flex items-center justify-center p-6">
+                    <div className="max-w-[480px] w-full rounded-2xl border bg-white p-5 text-sm">
+                        <div className="font-semibold mb-2">蝠城｡後′逋ｺ逕溘＠縺ｾ縺励◆</div>
+                        <div className="text-zinc-600 mb-3">逕ｻ髱｢繧貞・隱ｭ縺ｿ霎ｼ縺ｿ縺励※縺上□縺輔＞縲ゅΟ繧ｰ縺ｯ菫晏ｭ倥＆繧後※縺・∪縺吶・/div>
+                        <div className="flex gap-2">
+                            <button className="px-3 py-2 rounded border cursor-pointer" onClick={() => location.reload()}>蜀崎ｪｭ縺ｿ霎ｼ縺ｿ</button>
+                            <button className="px-3 py-2 rounded border cursor-pointer" onClick={async () => { const data = localStorage.getItem("app_logs") || "[]"; const ok = await safeCopy(data); emitToast(ok ? "success" : "error", ok ? "繝ｭ繧ｰ繧偵さ繝斐・縺励∪縺励◆" : "繝ｭ繧ｰ縺ｮ繧ｳ繝斐・縺ｫ螟ｱ謨励＠縺ｾ縺励◆"); }}>繝ｭ繧ｰ繧偵さ繝斐・</button>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+        return this.props.children as React.ReactNode;
+    }
+}
+
+export default function UserPilotApp() {
+
+    // 豌ｸ邯壼喧
+    const [shops, setShops] = useLocalStorageState<Shop[]>(K.shops, seedShops);
+    const [cart, setCart] = useLocalStorageState<CartLine[]>(K.cart, []);
+    const [orders, setOrders] = useLocalStorageState<Order[]>(K.orders, []);
+    const [userEmail] = useLocalStorageState<string>(K.user, "");
+
+    const [tab, setTab] = useState<"home" | "cart" | "order" | "account">("home");
+    // マップのUIを一時停止するフラグ（ロジックは残す）
+    const MAPS_ENABLED = false;
+    const [focusedShop, setFocusedShop] = useState<string | undefined>(undefined);
+    const scrollingToShopRef = useRef(false);
+    const focusShopFromMap = useCallback((id: string) => {
+        setFocusedShop(id);
+        if (tab === 'home') {
+            try {
+                const el = document.querySelector(`[data-shop-id="${CSS.escape(id)}"]`) as HTMLElement | null;
+                if (el) {
+                    scrollingToShopRef.current = true;
+                    const top = el.getBoundingClientRect().top + window.scrollY - 80; // 繝倥ャ繝繝ｼ蛻・が繝輔そ繝・ヨ
+                    window.scrollTo({ top, behavior: 'smooth' });
+                    window.setTimeout(() => { scrollingToShopRef.current = false; }, 600);
+                }
+            } catch { /* noop */ }
+        }
+    }, [tab]);
+    const [isMapOverlayOpen, setMapOverlayOpen] = useState(false);
+    const [peekOpen, setPeekOpen] = useState(false);
+    const peekCloseTsRef = useRef<number>(0);
+    // 繝倥ャ繝繝ｼ繝槭ャ繝怜炎髯､縺ｫ莨ｴ縺・√せ繧ｯ繝ｭ繝ｼ繝ｫ邵ｮ蟆上・繝ｭ繧ｸ繝・け縺ｯ謦､蜴ｻ
+    // 豕ｨ逶ｮ蠎苓・縺悟・繧頑崛繧上▲縺溘ｉ縲√・繝ｬ繝薙Η繝ｼ蝨ｰ蝗ｳ繧定・蜍戊｡ｨ遉ｺ・育峩霑代〒謇句虚繧ｯ繝ｭ繝ｼ繧ｺ縺励※縺・↑縺・ｴ蜷茨ｼ・    useEffect(() => {
+        if (tab !== 'home') return;
+        if (!focusedShop) return;
+        const now = Date.now();
+        if (now - peekCloseTsRef.current < 15_000) return;
+        setPeekOpen(true);
+    }, [focusedShop, tab]);
+    const supabase = useSupabase();
+    type DbProduct = { id: string; store_id?: string; name: string; price?: number; stock?: number; image_url?: string; updated_at?: string };
+    type DbStore = { id: string; name: string; lat?: number | null; lng?: number | null; created_at?: string };
+    const [dbProducts, setDbProducts] = useState<DbProduct[]>([]);
+    const [dbStores, setDbStores] = useState<DbStore[]>([]);
+
+
+
+    // --- Hydration蟇ｾ遲厄ｼ・SR縺ｨ繧ｯ繝ｩ繧､繧｢繝ｳ繝亥ｷｮ逡ｰ繧貞屓驕ｿ・・---
+    const [hydrated, setHydrated] = useState(false);
+    useEffect(() => setHydrated(true), []);
+
+    const [clock, setClock] = useState<string>("");
+    const [userLoc, setUserLoc] = useState<{ lat: number; lng: number } | null>(null);
+    useEffect(() => {
+        const tick = () => setClock(new Date().toLocaleTimeString());
+        tick();
+        const id = setInterval(tick, 30_000);
+        return () => clearInterval(id);
+    }, []);
+    // 迴ｾ蝨ｨ蝨ｰ・郁ｨｱ蜿ｯ縺後≠繧後・・峨ｒ蜿門ｾ励ょ､ｱ謨玲凾縺ｯ譛ｪ險ｭ螳壹・縺ｾ縺ｾ・・EFAULT_CENTER縺ｧ莉｣譖ｿ・・    useEffect(() => {
+        try {
+            if (typeof navigator !== 'undefined' && navigator.geolocation) {
+                navigator.geolocation.getCurrentPosition(
+                    (pos) => {
+                        const { latitude, longitude } = pos.coords;
+                        if (Number.isFinite(latitude) && Number.isFinite(longitude)) setUserLoc({ lat: latitude, lng: longitude });
+                    },
+                    () => { /* noop: 蜿門ｾ玲拠蜷ｦ/螟ｱ謨玲凾縺ｯ譌｢螳壻ｸｭ蠢・〒霍晞屬邂怜・ */ },
+                    { enableHighAccuracy: false, timeout: 5000, maximumAge: 60_000 }
+                );
+            }
+        } catch { /* noop */ }
+    }, []);
+
+    // DB縺九ｉ products 繧定ｪｭ繧・亥惠蠎ｫ縺ゅｊ・冗音螳壼ｺ苓・縺ｮ縺ｿ・・
+    useEffect(() => {
+        if (!supabase) return;
+        (async () => {
+            const q = supabase
+                .from("products")
+                .select("*");
+            // 蠎苓・繧堤腸蠅・､画焚縺ｧ邨槭ｋ・郁ｨｭ螳壹′縺ゅｋ蝣ｴ蜷医・縺ｿ・・
+            // 蜈ｨ蠎苓・繧貞ｯｾ雎｡縺ｫ蜿門ｾ暦ｼ・tore_id 縺ｧ縺ｮ邨槭ｊ霎ｼ縺ｿ繧貞ｻ・ｭ｢・・
+            const { data, error } = await q.limit(200);
+
+            console.log("[products:list]", { data, error });
+            console.log("[products:peek]", data?.slice(0, 3)?.map(p => ({ name: p.name, stock: p.stock, quantity: (p as any).quantity, stock_count: (p as any).stock_count })));
+
+            if (error) {
+                console.error("[products:list] error", error);
+                emitToast("error", `蝠・刀蜿門ｾ励↓螟ｱ謨・ ${error.message}`);
+                setDbProducts([]);
+            } else {
+                setDbProducts(data ?? []);
+            }
+        })();
+    }, [supabase]);
+
+    // products 縺ｮ Realtime 蜿肴丐・・NSERT/UPDATE/DELETE・牙・蠎苓・蟇ｾ雎｡
+    useEffect(() => {
+        if (!supabase) return;
+        try {
+            const ch = (supabase as any)
+                .channel(`products-realtime-all`)
+                .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'products' }, (p: any) => {
+                    const row = p?.new; if (!row) return;
+                    setDbProducts(prev => [row, ...prev.filter(x => String(x.id) !== String(row.id))]);
+                })
+                .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'products' }, (p: any) => {
+                    const row = p?.new; if (!row) return;
+                    setDbProducts(prev => prev.map(x => String(x.id) === String(row.id) ? row : x));
+                })
+                .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'products' }, (p: any) => {
+                    const row = p?.old; if (!row) return;
+                    setDbProducts(prev => prev.filter(x => String(x.id) !== String(row.id)));
+                })
+                .subscribe();
+            return () => { try { (supabase as any).removeChannel(ch); } catch { } };
+        } catch {
+            /* noop */
+        }
+    }, [supabase]);
+
+
+    // DB縺九ｉ stores 繧定ｪｭ繧・亥・莉ｶ繝ｻ荳企剞縺ゅｊ・・
+    useEffect(() => {
+        if (!supabase) return;
+        (async () => {
+            const { data, error } = await supabase
+                .from("stores")
+                .select("id, name, lat, lng, created_at")
+                .order("created_at", { ascending: true })
+                .limit(200);
+            if (error) {
+                console.error("[stores:list] error", error);
+                emitToast("error", `蠎苓・縺ｮ蜿門ｾ励↓螟ｱ謨励＠縺ｾ縺励◆: ${error.message}`);
+                setDbStores([]);
+            } else {
+                setDbStores(data ?? []);
+            }
+        })();
+    }, [supabase]);
+
+    // DB縺ｮ stores/products 縺後≠繧後・縲√◎繧後ｒ shops 縺ｫ蜿肴丐・亥ｮ悟・DB逕ｱ譚･縺ｸ・・
+    useEffect(() => {
+        if (!Array.isArray(dbStores) || dbStores.length === 0) return;
+        const byStore = new Map<string, DbProduct[]>();
+        for (const p of dbProducts) {
+            const sid = String(p?.store_id ?? "");
+            if (!byStore.has(sid)) byStore.set(sid, []);
+            byStore.get(sid)!.push(p);
+        }
+        const mapToItem = (p: any): Item => {
+            const rawStock = (p?.stock ?? p?.quantity ?? p?.stock_count ?? 0);
+            const stock = Math.max(0, Number(rawStock) || 0);
+            return { id: String(p.id), name: String(p.name ?? "荳肴・"), price: Math.max(0, Number(p.price ?? 0) || 0), stock, pickup: "18:00-20:00", note: "", photo: "寫・・ };
+        };
+        const center = { lat: 34.7628, lng: 137.3833 }; // 雎頑ｩ矩ｧ・ｼ域ｦらｮ暦ｼ・        const built: Shop[] = dbStores.map((st) => ({
+            id: String(st.id),
+            name: String(st.name ?? "蠎苓・"),
+            lat: Number.isFinite(Number(st.lat)) ? Number(st.lat) : center.lat,
+            lng: Number.isFinite(Number(st.lng)) ? Number(st.lng) : center.lng,
+            zoomOnPin: 16,
+            closed: false,
+            items: (byStore.get(String(st.id)) || []).map(mapToItem),
+        }));
+
+        setShops(prev => (JSON.stringify(prev) === JSON.stringify(built) ? prev : built));
+    }, [dbStores, dbProducts, setShops]);
+
+    // 繝医・繧ｹ繝郁ｳｼ隱ｭ
+    const [toast, setToast] = useState<ToastPayload | null>(null);
+    useEffect(() => {
+        let timeoutId: number | undefined;
+        const handler = (e: Event) => {
+            const ev = e as CustomEvent<ToastPayload>; setToast(ev.detail);
+            if (timeoutId) window.clearTimeout(timeoutId);
+            timeoutId = window.setTimeout(() => setToast(null), 3000);
+        };
+        window.addEventListener("app:toast", handler as any);
+
+        const onErr = (ev: ErrorEvent) => pushLog({ type: "window.error", message: String(ev.message) });
+        const onRej = (ev: PromiseRejectionEvent) => pushLog({ type: "unhandledrejection", message: String((ev.reason as any)?.message || ev.reason) });
+        window.addEventListener("error", onErr);
+        window.addEventListener("unhandledrejection", onRej);
+
+        return () => {
+            window.removeEventListener("app:toast", handler as any);
+            window.removeEventListener("error", onErr);
+            window.removeEventListener("unhandledrejection", onRej);
+            if (timeoutId) window.clearTimeout(timeoutId);
+        };
+    }, []);
+
+    // 莠碁㍾豎ｺ貂磯亟豁｢
+    const isPayingRef = useRef(false);
+    const [isPaying, setIsPaying] = useState(false);
+
+    // 霍晞屬縺ｯ繝繝溘・
+    const distKm = (i: number) => 0.4 + i * 0.3;
+    const storeId = process.env.NEXT_PUBLIC_STORE_ID;
+
+    // 蠎苓・蛛ｴ縺ｧ orders.status 縺梧峩譁ｰ縺輔ｌ縺溘ｉ繝ｭ繝ｼ繧ｫ繝ｫ縺ｮ豕ｨ譁・ｒ蜷梧悄・域悴蠑墓鋤竊貞ｱ･豁ｴ縺ｸ・・
+    useEffect(() => {
+        if (!supabase) return;
+
+        // DB 竊・繝ｭ繝ｼ繧ｫ繝ｫ縺ｮ繧ｹ繝・・繧ｿ繧ｹ螟画鋤
+        // DB 竊・繝ｭ繝ｼ繧ｫ繝ｫ縺ｮ繧ｹ繝・・繧ｿ繧ｹ螟画鋤・・ENDING/PAID 莉･螟悶・縺吶∋縺ｦ蠑墓鋤貂医∩謇ｱ縺・ｼ・
+        const toLocalStatus = (dbStatus?: string): Order["status"] => {
+            const s = String(dbStatus || "").toUpperCase();
+            if (s === "FULFILLED" || s === "REDEEMED" || s === "COMPLETED") return "redeemed"; // 竊・縺薙％縺ｫ FULFILLED 縺悟性縺ｾ繧後※縺・ｋ縺薙→
+            if (s === "PAID" || s === "PENDING") return "paid";
+            return "paid";
+        };
+
+
+        // 繧ｳ繝ｼ繝峨〒縺ｲ繧ゆｻ倥￠・・ode 縺ｯ豕ｨ譁・ｽ懈・譎ゅ↓ orderPayload.code 縺ｨ縺励※菫晏ｭ俶ｸ医∩・・local 縺ｮ code6・・
+        const channel = supabase
+            .channel("orders-updates")
+            .on(
+                "postgres_changes",
+                { event: "UPDATE", schema: "public", table: "orders" },
+                (payload) => {
+                    console.log('[realtime:orders][UPDATE]', payload.new);
+                    const row: any = payload.new || {};
+                    // 笘・螳悟・荳閾ｴ・壹ヨ繝ｪ繝/螟ｧ譁・ｭ怜喧/險伜捷髯､蜴ｻ縺ｪ縺ｩ縺ｯ荳蛻・＠縺ｪ縺・
+                    const codeDB = row?.code != null ? String(row.code) : "";
+                    const idDB = row?.id ? String(row.id) : "";
+                    const codeNorm6 = normalizeCode6(codeDB);
+
+                    const next: Order["status"] = (() => {
+                        const s = String(row?.status || '').toUpperCase();
+                        if (s === 'FULFILLED' || s === 'REDEEMED' || s === 'COMPLETED') return 'redeemed';
+                        if (s === 'PAID' || s === 'PENDING') return 'paid';
+                        return 'paid';
+                    })();
+
+                    let touched = false;
+                    setOrders(prev => {
+                        // 1) 譖ｴ譁ｰ・喞ode(螟ｧ譁・ｭ・ or id 縺ｧ繝偵ャ繝医＠縺溘ｂ縺ｮ繧呈嶌縺肴鋤縺・
+                        const mapped = prev.map(o => {
+                            const oc = normalizeCode6(o.code6);  // 6譯√さ繝ｼ繝峨ｒ豁｣隕丞喧縺励※豈碑ｼ・
+                            const byCode = (codeNorm6.length === 6 && oc.length === 6) ? (oc === codeNorm6) : false;
+
+                            const byId = idDB ? (String(o.id) === idDB) : false;
+                            return (byCode || byId) ? { ...o, status: next } : o;
+                        });
+
+                        // 2) 蜷御ｸ code6 繧帝㍾隍・勁蜴ｻ・亥､ｧ譁・ｭ励く繝ｼ縺ｧ縲〉edeemed 繧貞━蜈茨ｼ・
+                        const seen = new Map<string, Order>();
+                        for (const o of mapped) {
+                            const k = String(o.code6 ?? "");
+                            const ex = seen.get(k);
+                            if (!ex) {
+                                seen.set(k, o);
+                            } else {
+                                if (ex.status === 'redeemed' && o.status !== 'redeemed') {
+                                    // 譌｢蟄・螻･豁ｴ)繧貞━蜈・
+                                } else if (o.status === 'redeemed' && ex.status !== 'redeemed') {
+                                    // 莉雁屓縺悟ｱ･豁ｴ縺ｪ繧臥ｽｮ謠・
+                                    seen.set(k, o);
+                                } else {
+                                    // 蜷梧ｼ縺ｪ繧牙・蜍昴■
+                                }
+                            }
+                        }
+                        const dedup = Array.from(seen.values());
+
+                        touched = JSON.stringify(prev) !== JSON.stringify(dedup);
+                        return dedup;
+                    });
+
+                    if (touched && next === 'redeemed') {
+                        setTab('account');
+                        emitToast('success', '蠑墓鋤螳御ｺ・ｼ壹メ繧ｱ繝・ヨ繧貞ｱ･豁ｴ縺ｸ遘ｻ蜍輔＠縺ｾ縺励◆');
+                    }
+                }
+            )
+            .subscribe();
+
+        return () => { supabase.removeChannel(channel); };
+    }, [supabase, setOrders, setTab]);
+
+    // 蜿励￠貂｡縺玲ｸ医∩縺ｫ縺ｪ縺｣縺ｦ繧よｶ医∴縺ｪ縺・ｴ蜷医・繝輔ぉ繝ｼ繝ｫ繧ｻ繝ｼ繝・ 螳壽悄繝昴・繝ｪ繝ｳ繧ｰ縺ｧ蜷梧悄
+    const pendingKey = useMemo(() => {
+        try { return JSON.stringify(orders.filter(o => o.status === 'paid').map(o => ({ id: o.id, code6: o.code6 }))); } catch { return ""; }
+    }, [orders]);
+
+    useEffect(() => {
+        if (!supabase) return;
+        // 譛ｪ蠑墓鋤縺檎┌縺代ｌ縺ｰ蛛懈ｭ｢
+        const targets = orders.filter(o => o.status === 'paid');
+        if (targets.length === 0) return;
+
+        let alive = true;
+        const toLocal = (dbStatus?: string): Order["status"] => {
+            const s = String(dbStatus || '').toUpperCase();
+            if (s === 'FULFILLED' || s === 'REDEEMED' || s === 'COMPLETED') return 'redeemed';
+            if (s === 'PAID' || s === 'PENDING') return 'paid';
+            return 'paid';
+        };
+
+        const tick = async () => {
+            try {
+                const ids = targets.map(o => String(o.id));
+                const { data, error } = await supabase.from('orders').select('id, code, status').in('id', ids);
+                if (!alive || error || !Array.isArray(data)) return;
+                const rows = data as Array<{ id: string; code: string | null; status?: string | null }>;
+                // id 縺ｨ 6譯√さ繝ｼ繝峨〒繝ｭ繝ｼ繧ｫ繝ｫ繧呈峩譁ｰ
+                setOrders(prev => {
+                    let changed = false;
+                    const next = prev.map(o => {
+                        const hit = rows.find(r => String(r.id) === String(o.id) || (normalizeCode6(r.code) === normalizeCode6(o.code6)));
+                        if (!hit) return o;
+                        const ns = toLocal(hit.status || undefined);
+                        if (ns !== o.status) { changed = true; return { ...o, status: ns }; }
+                        return o;
+                    });
+                    return changed ? next : prev;
+                });
+            } catch {/* noop */}
+        };
+
+        // 蜊ｳ譎・+ 蜻ｨ譛溽噪縺ｫ遒ｺ隱搾ｼ・遘呈ｯ趣ｼ峨ら判髱｢謫堺ｽ懊ｄ豕ｨ譁・峩譁ｰ縺ｧ萓晏ｭ倥く繝ｼ縺悟､峨ｏ繧九→閾ｪ蜍輔〒蠑ｵ繧頑崛縺・
+        tick();
+        const timer = window.setInterval(tick, 4000);
+        return () => { alive = false; window.clearInterval(timer); };
+    }, [supabase, pendingKey]);
+
+
+    // DB縺ｮ蝠・刀縺悟叙繧後※縺・※ storeId 縺梧欠螳壹＆繧後※縺・ｌ縺ｰ縲√◎縺ｮ蠎苓・縺ｮ items 繧・DB 縺ｧ蟾ｮ縺玲崛縺・
+    const shopsWithDb = useMemo(() => {
+        // 縺吶〒縺ｫ DB 逕ｱ譚･縺ｮ shops 繧貞渚譏縺励※縺・ｋ蝣ｴ蜷医・縺昴・縺ｾ縺ｾ霑斐☆
+        if (Array.isArray(dbStores) && dbStores.length > 0) return shops;
+        if (!Array.isArray(dbProducts) || dbProducts.length === 0 || !storeId) return shops;
+
+        const mapToItem = (p: any): Item => {
+            // stock / quantity / stock_count 縺ｮ縺ｩ繧後°縺悟・縺｣縺ｦ縺・ｋ諠ｳ螳・
+            const rawStock = (p?.stock ?? p?.quantity ?? p?.stock_count ?? 0);
+            const stock = Math.max(0, Number(rawStock) || 0);
+
+            return {
+                id: String(p.id),
+                name: String(p.name ?? "蝠・刀"),
+                price: Math.max(0, Number(p.price ?? 0) || 0),
+                stock,
+                pickup: "18:00-20:00",
+                note: "",
+                photo: "寫・・,
+            };
+        };
+
+
+        // shops[].id 縺・UUID 縺ｧ縺ｪ縺・ｼ医Ο繝ｼ繧ｫ繝ｫID・牙ｴ蜷医・繝輔か繝ｼ繝ｫ繝舌ャ繧ｯ・壽怙蛻昴・繧ｷ繝ｧ繝・・縺ｫ驕ｩ逕ｨ
+        const idx = shops.findIndex(s => String(s.id) === String(storeId));
+        const targetIndex = idx >= 0 ? idx : 0;
+
+        return shops.map((s, i) =>
+            i === targetIndex ? { ...s, items: dbProducts.map(mapToItem) } : s
+        );
+
+    }, [shops, dbProducts, storeId, dbStores]);
+
+    const shopsSorted = useMemo<ShopWithDistance[]>(() => {
+        const base = userLoc ?? DEFAULT_CENTER;
+        return shopsWithDb.map((s) => {
+            const d = haversineKm(base, { lat: s.lat, lng: s.lng });
+            const b = bearingDeg(base, { lat: s.lat, lng: s.lng });
+            return { ...s, distance: d, bearingDeg: b };
+        });
+    }, [shopsWithDb, userLoc]);
+
+    // 蠎苓・繧ｫ繝ｼ繝峨・蜿ｯ隕夜伜沺縺ｫ蠢懊§縺ｦ focusedShop 繧貞酔譛滂ｼ・ntersectionObserver・・    useEffect(() => {
+        if (tab !== 'home') return;
+        const timer = window.setTimeout(() => {
+            const cards = Array.from(document.querySelectorAll('[data-shop-id]')) as HTMLElement[];
+            if (cards.length === 0) return;
+            const visible = new Map<string, IntersectionObserverEntry>();
+            const obs = new IntersectionObserver((entries) => {
+                for (const e of entries) {
+                    const id = (e.target as HTMLElement).dataset.shopId;
+                    if (!id) continue;
+                    if (e.isIntersecting) visible.set(id, e); else visible.delete(id);
+                }
+                if (visible.size === 0) return;
+                let bestId: string | null = null;
+                let bestTopPos = Number.POSITIVE_INFINITY;
+                let bestTopNeg = -Number.POSITIVE_INFINITY;
+                visible.forEach((ent, id) => {
+                    const top = ent.boundingClientRect.top;
+                    if (top >= 0) { if (top < bestTopPos) { bestTopPos = top; bestId = id; } }
+                    else { if (top > bestTopNeg && bestId == null) { bestTopNeg = top; bestId = id; } }
+                });
+                if (bestId && bestId !== focusedShop && !scrollingToShopRef.current) {
+                    setFocusedShop(bestId);
+                }
+            }, { root: null, threshold: [0, 0.25, 0.5], rootMargin: '0px 0px -40% 0px' });
+            for (const el of cards) obs.observe(el);
+            (window as any).__shopCardsObserver__ = obs;
+        }, 50);
+        return () => { try { window.clearTimeout(timer); const obs = (window as any).__shopCardsObserver__; if (obs) obs.disconnect(); } catch {} };
+    }, [tab, shopsSorted, setFocusedShop, focusedShop]);
+
+
+    // 蜿ら・繧､繝ｳ繝・ャ繧ｯ繧ｹ
+    const shopsById = useMemo(() => {
+        const m = new Map<string, Shop>();
+        for (const s of shopsWithDb) m.set(s.id, s);
+        return m;
+    }, [shopsWithDb]);
+
+    const itemsById = useMemo(() => {
+        const outer = new Map<string, Map<string, Item>>();
+        for (const s of shopsWithDb) {
+            const inner = new Map<string, Item>();
+            for (const it of s.items) inner.set(it.id, it);
+            outer.set(s.id, inner);
+        }
+        return outer;
+    }, [shopsWithDb]);
+
+
+    // 莠育ｴ・焚驥擾ｼ医き繝ｼ繝域焚驥擾ｼ・
+    const reservedMap = useMemo(() => {
+        const m = new Map<string, number>();
+        for (const c of cart) { const k = `${c.shopId}:${c.item.id}`; m.set(k, (m.get(k) || 0) + c.qty); }
+        return m;
+    }, [cart]);
+    const getReserved = (sid: string, itemId: string) => reservedMap.get(`${sid}:${itemId}`) || 0;
+
+    // 蠎苓・蛻･縺ｮ繧ｫ繝ｼ繝域ュ蝣ｱ
+    const cartByShop = useMemo(() => {
+        const g: Record<string, CartLine[]> = {}; for (const l of cart) { (g[l.shopId] ||= []).push(l); } return g;
+    }, [cart]);
+    const totalsByShop = useMemo(() => {
+        const t: Record<string, number> = {}; for (const sid in cartByShop) { t[sid] = cartByShop[sid].reduce((a, l) => a + l.item.price * l.qty, 0); } return t;
+    }, [cartByShop]);
+    const qtyByShop = useMemo(() => {
+        const q: Record<string, number> = {}; for (const sid in cartByShop) { q[sid] = cartByShop[sid].reduce((a, l) => a + l.qty, 0); } return q;
+    }, [cartByShop]);
+    const shopTotal = (sid: string) => totalsByShop[sid] || 0;
+
+    // 謨ｰ驥丞､画峩・按ｱ繝√ャ繝励→霑ｽ蜉繝懊ち繝ｳ蜈ｱ騾夲ｼ・
+    const changeQty = (sid: string, it: Item, delta: number) => setCart(cs => {
+        const idx = cs.findIndex(c => c.shopId === sid && c.item.id === it.id);
+        const cur = idx >= 0 ? cs[idx].qty : 0;
+        const next = Math.max(0, Math.min(it.stock, cur + delta));
+        if (idx < 0 && next === 0) return cs; // 螟画峩縺ｪ縺・
+        if (next === 0) return cs.filter((_, i) => i !== idx);
+        if (idx < 0) return [...cs, { shopId: sid, item: it, qty: next }];
+        const copy = cs.slice(); copy[idx] = { ...cs[idx], qty: next }; return copy;
+    });
+    const addToCart = (sid: string, it: Item) => changeQty(sid, it, +1);
+
+    // 蠎苓・縺斐→縺ｮ繧ｫ繝ｼ繝医ｒ遨ｺ縺ｫ縺吶ｋ
+    const clearShopCart = (sid: string) => {
+        const count = (cartByShop[sid]?.length ?? 0);
+        if (count === 0) { emitToast("info", "縺薙・蠎苓・縺ｮ繧ｫ繝ｼ繝医・遨ｺ縺ｧ縺・); return; }
+        setCart(cs => cs.filter(l => l.shopId !== sid));
+        const name = shopsById.get(sid)?.name || sid;
+        emitToast("success", `${name} 縺ｮ繧ｫ繝ｼ繝医ｒ遨ｺ縺ｫ縺励∪縺励◆`);
+    };
+
+    // 蜈ｨ蠎苓・蛻・・繧ｫ繝ｼ繝医ｒ荳諡ｬ繧ｯ繝ｪ繧｢
+    const clearAllCarts = () => {
+        if (!(typeof window !== 'undefined' && window.confirm('縺吶∋縺ｦ縺ｮ繧ｫ繝ｼ繝医ｒ遨ｺ縺ｫ縺励∪縺吶°・・))) return;
+        if (cart.length === 0) { emitToast('info', '繧ｫ繝ｼ繝医・縺吶〒縺ｫ遨ｺ縺ｧ縺・); return; }
+        setCart([]);
+        emitToast('success', '縺吶∋縺ｦ縺ｮ繧ｫ繝ｼ繝医ｒ遨ｺ縺ｫ縺励∪縺励◆');
+    };
+
+    // 譛ｪ蠑墓鋤繝√こ繝・ヨ繧剃ｸ諡ｬ繝ｪ繧ｻ繝・ヨ・・B縺ｨ繝ｭ繝ｼ繧ｫ繝ｫ繧貞酔譛滂ｼ・
+    const devResetOrdersStrict = useCallback(async () => {
+        if (!confirm('譛ｪ蠑墓鋤縺ｮ繝√こ繝・ヨ繧偵☆縺ｹ縺ｦ繝ｪ繧ｻ繝・ヨ縺励∪縺吶ゅｈ繧阪＠縺・〒縺吶°・・)) return;
+        try {
+            const targetIds = orders.filter(o => o.status === 'paid').map(o => o.id);
+            if (targetIds.length === 0) { emitToast('info', '譛ｪ蠑墓鋤縺ｮ繝√こ繝・ヨ縺ｯ縺ゅｊ縺ｾ縺帙ｓ'); return; }
+            if (supabase) {
+                const { error } = await supabase.from('orders').delete().in('id', targetIds);
+                if (error) {
+                    console.error('[orders.reset] error', error);
+                    emitToast('error', `繝ｪ繧ｻ繝・ヨ縺ｫ螟ｱ謨励＠縺ｾ縺励◆: ${error.message}`);
+                    return;
+                }
+            }
+            setOrders(prev => prev.filter(o => o.status !== 'paid'));
+            emitToast('success', '譛ｪ蠑墓鋤縺ｮ繝√こ繝・ヨ繧偵Μ繧ｻ繝・ヨ縺励∪縺励◆');
+        } catch (e) {
+            console.error('[orders.reset] exception', e);
+            emitToast('error', `繧ｨ繝ｩ繝ｼ: ${(e as any)?.message ?? e}`);
+        }
+    }, [supabase, orders, setOrders]);
+
+    // 豕ｨ譁・ｱ･豁ｴ縺ｮ縺ｿ繧剃ｸ諡ｬ繝ｪ繧ｻ繝・ヨ・医Ο繝ｼ繧ｫ繝ｫ蜆ｪ蜈医∝庄閭ｽ縺ｪ繧吋B繧ょ炎髯､・・
+    const devResetOrderHistory = useCallback(async () => {
+        if (!confirm('豕ｨ譁・ｱ･豁ｴ繧偵☆縺ｹ縺ｦ繝ｪ繧ｻ繝・ヨ縺励∪縺吶ゅｈ繧阪＠縺・〒縺吶°・・)) return;
+        try {
+            const targetIds = orders.filter(o => o.status === 'redeemed').map(o => o.id);
+            if (targetIds.length === 0) { emitToast('info', '豕ｨ譁・ｱ･豁ｴ縺ｯ縺ゅｊ縺ｾ縺帙ｓ'); return; }
+            if (supabase) {
+                const { error } = await supabase.from('orders').delete().in('id', targetIds);
+                if (error) {
+                    console.error('[orders.resetHistory] error', error);
+                    emitToast('error', `繝ｪ繧ｻ繝・ヨ縺ｫ螟ｱ謨励＠縺ｾ縺励◆: ${error.message}`);
+                    return;
+                }
+            }
+            setOrders(prev => prev.filter(o => o.status !== 'redeemed'));
+            emitToast('success', '豕ｨ譁・ｱ･豁ｴ繧偵Μ繧ｻ繝・ヨ縺励∪縺励◆');
+        } catch (e) {
+            console.error('[orders.resetHistory] exception', e);
+            emitToast('error', `繧ｨ繝ｩ繝ｼ: ${(e as any)?.message ?? e}`);
+        }
+    }, [supabase, orders, setOrders]);
+
+    // 豕ｨ譁・・逅・
+    const [cardDigits, setCardDigits] = useState(""); // 謨ｰ蟄励・縺ｿ・域怙螟ｧ16譯・ｼ・    const [paymentMethod, setPaymentMethod] = useState<'card' | 'paypay'>('card');
+    const [orderTarget, setOrderTarget] = useState<string | undefined>(undefined);
+    const unredeemedOrders = useMemo(() => orders.filter(o => o.status === 'paid'), [orders]);
+    const redeemedOrders = useMemo(() => orders.filter(o => o.status === 'redeemed'), [orders]);
+
+    // 豕ｨ譁・せ繝・・繧ｿ繧ｹ陦ｨ遉ｺ繝・く繧ｹ繝・
+    const statusText = (s: Order["status"]) => (
+        s === 'redeemed' ? '蠑墓鋤貂医∩' : s === 'paid' ? '譛ｪ蠑墓鋤' : s === 'refunded' ? '霑秘≡貂医∩' : s
+    );
+
+    // 蠑墓鋤縺医ち繝門髄縺托ｼ喞ode6縺ｧ豁｣隕丞喧繝ｻ驥崎､・賜髯､縺励〉edeemed蜆ｪ蜈医・豁｣隕丞ｽ｢繧剃ｽ懈・
+    const canonicalOrdersForOrderTab = useMemo(() => {
+        const byCode = new Map<string, Order>();
+        for (const o of orders) {
+            const k = String(o.code6 ?? "");
+            const ex = byCode.get(k);
+            if (!ex) {
+                byCode.set(k, o);
+            } else {
+                if (ex.status !== 'redeemed' && o.status === 'redeemed') byCode.set(k, o);
+            }
+        }
+        return Array.from(byCode.values());
+    }, [orders]);
+
+    // 譛ｪ蠑墓鋤縺ｮ縺ｿ・域眠縺励＞鬆・ｼ・
+    const pendingForOrderTab = useMemo(
+        () => canonicalOrdersForOrderTab.filter(o => o.status === 'paid').sort((a, b) => b.createdAt - a.createdAt),
+        [canonicalOrdersForOrderTab]
+    );
+
+    const [openTicketIdOrder, setOpenTicketIdOrder] = useState<string | null>(null);
+
+    const toOrder = (sid: string) => { setOrderTarget(sid); setTab("order"); };
+
+    const confirmPay = useCallback(async () => {
+        if (!orderTarget || isPayingRef.current || isPaying) return;
+        isPayingRef.current = true;
+        setIsPaying(true);
+
+        try {
+            const sid = orderTarget;
+
+            // 謾ｯ謇墓婿豕輔↓蠢懊§縺溷・蜉帶､懆ｨｼ
+            if (paymentMethod === 'card') {
+                const card = validateTestCard(cardDigits);
+                if (!card.ok) { emitToast("error", card.msg); return; }
+            }
+
+            // 蟇ｾ雎｡蠎苓・縺ｮ繧ｫ繝ｼ繝医ｒ繧ｹ繝翫ャ繝励す繝ｧ繝・ヨ
+            const linesSnapshot = (cartByShop[sid] || []).map(l => ({ ...l }));
+            if (linesSnapshot.length === 0) { emitToast("error", "蟇ｾ雎｡繧ｫ繝ｼ繝医′遨ｺ縺ｧ縺・); return; }
+
+            // 蝨ｨ蠎ｫ讀懆ｨｼ
+            for (const l of linesSnapshot) {
+                const inv = itemsById.get(sid)?.get(l.item.id)?.stock ?? 0;
+                if (l.qty > inv) {
+                    emitToast("error", `蝨ｨ蠎ｫ荳崎ｶｳ: ${l.item.name} 縺ｮ蝨ｨ蠎ｫ縺ｯ ${inv} 縺ｧ縺呻ｼ医き繝ｼ繝域焚驥・${l.qty}・荏);
+                    return;
+                }
+            }
+
+            // 驥鷹｡咲｢ｺ螳・
+            const amount = linesSnapshot.reduce((a, l) => a + l.item.price * l.qty, 0);
+            const oid = uid();
+
+            // Supabase逕ｨ繝壹う繝ｭ繝ｼ繝会ｼ亥ｺ苓・蛛ｴ縺ｯ PENDING 縺ｧ蜿励￠蜿悶ｊ蠕・■・・
+            // store_id 縺ｯ ENV・・EXT_PUBLIC_STORE_ID・峨・ UUID 繧剃ｽｿ逕ｨ縺吶ｋ
+            if (!storeId) {
+                emitToast("error", "STORE_ID 縺梧悴險ｭ螳壹〒縺呻ｼ・env.local 縺ｮ NEXT_PUBLIC_STORE_ID 繧堤｢ｺ隱搾ｼ・);
+                return;
+            }
+
+            const orderPayload = {
+                store_id: sid as any, // 雉ｼ蜈･蠎苓・縺ｮ id・・tores.id・峨ｒ菫晏ｭ・                code: to6(oid),
+                customer: userEmail || "guest@example.com",
+                items: linesSnapshot.map(l => ({
+                    id: l.item.id,
+                    name: l.item.name,
+                    qty: l.qty,
+                    price: l.item.price,  // 笘・驥崎ｦ・ｼ壻ｾ｡譬ｼ繧ゅせ繝翫ャ繝励す繝ｧ繝・ヨ菫晏ｭ・                })), // JSONB
+                total: amount,          // number・域枚蟄怜・縺ｧ縺ｯ縺ｪ縺・ｼ・                status: "PENDING" as const,
+                // placed_at 縺ｯ DB 蛛ｴ縺ｫ DEFAULT now() 縺後≠繧区Φ螳壹ゅ↑縺代ｌ縺ｰ蠕後〒 DB 縺ｫ霑ｽ蜉縲・            };
+            // TODO(req v2): 謾ｯ謇墓焔谿ｵ・・ayment_method・峨ｒ orders 縺ｫ菫晄戟・亥・霑ｽ蜉 or 繝｡繧ｿJSON・・
+
+            // Supabase縺瑚ｨｭ螳壹＆繧後※縺・ｌ縺ｰDB縺ｸ菴懈・
+            // Supabase縺瑚ｨｭ螳壹＆繧後※縺・ｌ縺ｰDB縺ｸ菴懈・
+            if (supabase) {
+                const { data, error } = await supabase
+                    .from("orders")
+                    .insert(orderPayload)
+                    .select("*")
+                    .single();
+
+                if (error) {
+                    console.error("[orders.insert] error", {
+                        code: (error as any).code,
+                        message: error.message,
+                        details: (error as any).details,
+                        hint: (error as any).hint,
+                    });
+                    emitToast("error", `豕ｨ譁・・菴懈・縺ｫ螟ｱ謨・ ${error.message}`);
+                    return;
+                }
+
+
+                // 笘・％縺薙ｒ霑ｽ蜉・咼B縺ｫ菴懈・縺励◆豕ｨ譁・→窶懷酔縺倥さ繝ｼ繝俄昴ｒ繝ｭ繝ｼ繧ｫ繝ｫ螻･豁ｴ縺ｫ繧ゆｿ晏ｭ倥☆繧・
+                const createdAt = Date.now();
+                const localOrder: Order = {
+                    id: String(data?.id ?? oid),                 // 蜿門ｾ励〒縺阪◆繧吋B縺ｮid縲√↑縺代ｌ縺ｰoid
+                    userEmail: userEmail || "guest@example.com",
+                    shopId: sid,
+                    amount,
+                    status: "paid",                               // 繝ｦ繝ｼ繧ｶ繝ｼ蛛ｴ縺ｯ縲梧悴蠑墓鋤繝√こ繝・ヨ縲阪ｒ paid 縺ｧ謇ｱ縺・里蟄篭I縺ｮ縺ｾ縺ｾ
+                    code6: orderPayload.code,                     // 竊・縺薙％縺瑚ｶ・㍾隕・ｼ咼B縺ｫ蜈･繧後◆ code 繧偵◎縺ｮ縺ｾ縺ｾ菴ｿ縺・
+                    createdAt,
+                    lines: linesSnapshot,
+                };
+                setOrders(prev => [localOrder, ...prev]);
+
+                // 蝨ｨ蠎ｫ繧偵梧髪謇輔＞譎らせ縲阪〒DB縺ｫ蜿肴丐・医ユ繧ｹ繝磯°逕ｨ・・
+                // TODO(req v2): 蜴溷ｭ千噪貂帷ｮ励・縺溘ａ繧ｵ繝ｼ繝舌・RPC遲峨∈遘ｻ陦・
+                try {
+                    await Promise.all(linesSnapshot.map(async (l) => {
+                        const { data: prod } = await supabase.from('products').select('id, stock').eq('id', l.item.id).single();
+                        const cur = Math.max(0, Number((prod as any)?.stock ?? 0));
+                        const next = Math.max(0, cur - l.qty);
+                        await supabase.from('products').update({ stock: next }).eq('id', l.item.id);
+                    }));
+                } catch {/* noop */}
+
+            } else {
+                // Supabase譛ｪ險ｭ螳壽凾縺ｮ繝輔か繝ｼ繝ｫ繝舌ャ繧ｯ・亥ｾ捺擂縺ｮ繝ｭ繝ｼ繧ｫ繝ｫ蜍穂ｽ懶ｼ・
+                const localOrder: Order = {
+                    id: oid,
+                    userEmail: userEmail || "guest@example.com",
+                    shopId: sid,
+                    amount,
+                    status: "paid",
+                    code6: orderPayload.code,                     // 竊・繝輔か繝ｼ繝ｫ繝舌ャ繧ｯ譎ゅｂ繧｢繝ｫ繧ｴ繝ｪ繧ｺ繝繧・譛ｬ蛹・
+                    createdAt: Date.now(),
+                    lines: linesSnapshot,
+                };
+                setOrders(prev => [localOrder, ...prev]);
+            }
+
+
+            // 蝨ｨ蠎ｫ貂帷ｮ暦ｼ・き繝ｼ繝医け繝ｪ繧｢・医Ο繝ｼ繧ｫ繝ｫUI縺ｮ謨ｴ蜷域ｧ縺ｮ縺溘ａ蟶ｸ縺ｫ螳滓命・・
+            const qtyByItemId = new Map<string, number>();
+            for (const l of linesSnapshot) {
+                qtyByItemId.set(l.item.id, (qtyByItemId.get(l.item.id) || 0) + l.qty);
+            }
+            const nextShops = shops.map(s =>
+                s.id !== sid
+                    ? s
+                    : {
+                        ...s,
+                        items: s.items.map(it => {
+                            const q = qtyByItemId.get(it.id) || 0;
+                            return q > 0 ? { ...it, stock: Math.max(0, it.stock - q) } : it;
+                        }),
+                    }
+            );
+            const nextCart = cart.filter(l => l.shopId !== sid);
+
+            startTransition(() => {
+                setShops(nextShops);
+                setCart(nextCart);
+                setTab("account");
+            });
+
+            setCardDigits("");
+            emitToast(
+                "success",
+                paymentMethod === 'card'
+                    ? `豕ｨ譁・′螳御ｺ・＠縺ｾ縺励◆縲ゅき繝ｼ繝・ ${validateTestCard(cardDigits).brand || "TEST"}`
+                    : "豕ｨ譁・′螳御ｺ・＠縺ｾ縺励◆縲よ髪謇墓婿豕・ PayPay・医ユ繧ｹ繝茨ｼ・
+            );
+        } finally {
+            isPayingRef.current = false;
+            setIsPaying(false);
+        }
+    }, [orderTarget, isPaying, cardDigits, cartByShop, itemsById, shops, cart, userEmail, supabase, paymentMethod]);
+
+    // --- 髢狗匱逕ｨ・壹％縺ｮ蠎苓・縺ｮ豕ｨ譁・ｒ縺吶∋縺ｦ繝ｪ繧ｻ繝・ヨ・亥炎髯､・・---
+    const devResetOrders = useCallback(async () => {
+        // .env.local 縺ｫ NEXT_PUBLIC_STORE_ID 縺悟ｿ・ｦ・
+        if (!storeId) {
+            emitToast("error", "STORE_ID 縺梧悴險ｭ螳壹〒縺呻ｼ・env.local 縺ｮ NEXT_PUBLIC_STORE_ID 繧堤｢ｺ隱搾ｼ・);
+            return;
+        }
+        if (!confirm("縺薙・蠎苓・縺ｮ蜈ｨ豕ｨ譁・ｒ蜑企勁縺励∪縺吶ゅｈ繧阪＠縺・〒縺吶°・・)) return;
+
+        try {
+            const { error } = await supabase
+                .from("orders")
+                .delete()
+                .eq("store_id", storeId);   // 蠎苓・蜊倅ｽ阪〒蜑企勁
+
+            if (error) {
+                console.error("[orders.reset] error", error);
+                emitToast("error", `繝ｪ繧ｻ繝・ヨ螟ｱ謨・ ${error.message}`);
+                return;
+            }
+
+            // 逕ｻ髱｢蛛ｴ繧らｩｺ縺ｫ
+            setOrders([]);
+            emitToast("success", "豕ｨ譁・ｒ繝ｪ繧ｻ繝・ヨ縺励∪縺励◆");
+        } catch (e: any) {
+            console.error("[orders.reset] exception", e);
+            emitToast("error", `萓句､・ ${e?.message ?? e}`);
+        }
+    }, [supabase, storeId, setOrders]);
+
+    // UI 蜈ｱ騾・
+    const Tab = ({ id, label, icon }: { id: "home" | "cart" | "order" | "account"; label: string; icon: string }) => {
+        const isActive = (tab === id) && !(id === 'order' && !!orderTarget);
+        const cls = `flex-1 py-2 text-center cursor-pointer ${isActive ? "text-zinc-900 font-semibold" : "text-zinc-500"}`;
+        return (
+            <button onClick={() => { if (id === 'order') setOrderTarget(undefined); setTab(id); }} className={cls}>
+                <div>{icon}</div><div className="text-xs">{label}</div>
+            </button>
+        );
+    };
+
+    const QtyChip = ({ sid, it }: { sid: string; it: Item }) => {
+        const reserved = getReserved(sid, it.id);
+        const remain = Math.max(0, it.stock - reserved);
+        return (
+            <div className="mt-2 inline-flex items-center rounded-full border px-2 py-1 text-sm select-none">
+                <button type="button" className="px-2 py-0.5 rounded-full border cursor-pointer disabled:opacity-40" disabled={reserved <= 0} onClick={() => changeQty(sid, it, -1)}>竏・/button>
+                <span className="mx-3 min-w-[1.5rem] text-center tabular-nums">{reserved}</span>
+                <button type="button" className="px-2 py-0.5 rounded-full border cursor-pointer disabled:opacity-40" disabled={remain <= 0} onClick={() => changeQty(sid, it, +1)}>・・/button>
+            </div>
+        );
+    };
+
+    // SSR譎ゅ・謠冗判繧剃ｿ晉蕗縺励※繧ｯ繝ｩ繧､繧｢繝ｳ繝医〒蛻晏屓謠冗判
+    if (!hydrated) return null;
+
+    return (
+        <MinimalErrorBoundary>
+            <div className="min-h-screen bg-gradient-to-b from-white to-zinc-50">
+                <header className="sticky top-0 z-20 bg-white/80 backdrop-blur border-b">
+                    <div className="max-w-[448px] mx-auto px-4 py-3 flex items-center justify-between" suppressHydrationWarning>
+                        <h1 className="text-lg font-bold">繝ｦ繝ｼ繧ｶ繝ｼ繧｢繝励Μ・・ilot v2.6・・/h1>
+                        <div className="text-xs text-zinc-500">{clock || "窶・}</div>
+
+                    </div>
+                </header >
+
+                <main className="max-w-[448px] mx-auto px-4 pb-28">
+                    {tab === "home" && (
+                        <section className="mt-4 space-y-4">
+                            <h2 className="text-base font-semibold">霑代￥縺ｮ縺雁ｺ・/h2>
+
+                            <div className="grid grid-cols-1 gap-3">
+                        {shopsSorted.map((s) => {
+                                    const visibleItems = s.items.filter(it => { const r = getReserved(s.id, it.id); const remain = Math.max(0, it.stock - r); return it.stock > 0 && (remain > 0 || r > 0); });
+                                    const hasAny = visibleItems.length > 0;
+                                    const remainingTotal = visibleItems.reduce((a, it) => a + Math.max(0, it.stock - getReserved(s.id, it.id)), 0);
+                                    const minPrice = hasAny ? Math.min(...visibleItems.map(it => it.price)) : 0;
+                                    const cartCount = qtyByShop[s.id] || 0;
+                                    return (
+                                        <div key={s.id} data-shop-id={s.id} id={`shop-${s.id}`} className={`relative rounded-2xl border bg-white p-4 ${!hasAny ? 'opacity-70' : ''} ${focusedShop === s.id ? "ring-2 ring-zinc-900" : ""}`}>
+                                            {/* 繝倥ャ繝繝ｼ・壼ｺ怜錐 + 諠・ｱ繝√ャ繝・+ 繧｢繧ｯ繧ｷ繝ｧ繝ｳ */}
+                                            <div className="flex items-start justify-between gap-2">
+                                                <div className="min-w-0">
+                                                    <div className="text-sm font-semibold truncate">{s.name}</div>
+                                                    {(() => { const d = Math.max(0, s.distance || 0); const bb = bearingTo8(s.bearingDeg || 0); const pickup = visibleItems[0]?.pickup || '蜿怜叙譎る俣縺ゅｊ'; return (
+                                                        <div className="mt-1 flex flex-wrap items-center gap-1 text-[11px] text-zinc-600">
+                                                            <span className="px-1.5 py-0.5 rounded bg-zinc-100">{d < 1 ? `${(d*1000)|0} m` : `${d.toFixed(1)} km`}</span>
+                                                            <span className="px-1.5 py-0.5 rounded bg-zinc-100">{bb.a} {bb.t}</span>
+                                                            <span className="px-1.5 py-0.5 rounded bg-zinc-100">蝨ｨ蠎ｫ {remainingTotal}</span>
+                                                            <span className="px-1.5 py-0.5 rounded bg-zinc-100">譛螳・{hasAny ? currency(minPrice) : '窶・}</span>
+                                                            <span className="px-1.5 py-0.5 rounded bg-zinc-100">蜿怜叙 {pickup}</span>
+                                                        </div>
+                                                    ); })()}
+                                                </div>
+                                                <div className="shrink-0 flex items-center gap-2">
+                                                    <button type="button" className="text-xs px-2 py-1 rounded border cursor-pointer" onClick={() => focusShopFromMap(s.id)}>蝨ｰ蝗ｳ縺ｧ隕九ｋ</button>
+                                                    <a className="text-xs px-2 py-1 rounded border cursor-pointer bg-zinc-50" href={`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(String(s.lat))}%2C${encodeURIComponent(String(s.lng))}&travelmode=walking`} target="_blank" rel="noopener noreferrer">邨瑚ｷｯ</a>
+                                                </div>
+                                            </div>
+
+                                            
+
+                                            {/* 隧ｳ邏ｰ */}
+                                            <div className="mt-3 flex items-center justify-between text-sm">
+                                                <div className="text-zinc-700">譛螳・<span className="font-semibold">{hasAny ? currency(minPrice) : '窶・}</span></div>
+                                                <div className="text-zinc-700">蝨ｨ蠎ｫ <span className="tabular-nums font-semibold">{remainingTotal}</span></div>
+                                                <div className="text-xs px-2 py-0.5 rounded bg-zinc-100">繧ｫ繝ｼ繝・{cartCount}</div>
+                                            </div>
+                                            {hasAny ? (
+                                                <div className="mt-3 grid grid-cols-2 gap-3">
+                                                    {visibleItems.map(it => {
+                                                        const remain = Math.max(0, it.stock - getReserved(s.id, it.id));
+                                                        return (
+                                                            <div key={it.id} className={`rounded-xl border p-3`}>
+                                                                <div className="text-3xl">{it.photo}</div>
+                                                                <div className="text-sm mt-1 font-medium line-clamp-2">{it.name}</div>
+                                                                <div className="text-xs text-zinc-500">蜿怜叙 {it.pickup}</div>
+                                                                <div className="flex items-center justify-between mt-2">
+                                                                    <div className="text-sm font-semibold">{currency(it.price)}</div>
+                                                                    <div className="text-[11px] text-zinc-500">蝨ｨ蠎ｫ {remain}</div>
+                                                                </div>
+                                                                <QtyChip sid={s.id} it={it} />
+                                                            </div>
+                                                        );
+                                                    })}
+                                                </div>
+                                            ) : (
+                                                <div className="mt-3">
+                                                    <div className="rounded-xl border border-dashed p-4 text-center text-sm text-zinc-500 bg-zinc-50">
+                                                        {s.items.length === 0 ? '逋ｻ骭ｲ蝠・刀縺後≠繧翫∪縺帙ｓ縲・ : '迴ｾ蝨ｨ縲∬ｲｩ螢ｲ蜿ｯ閭ｽ縺ｪ蝠・刀縺ｯ縺ゅｊ縺ｾ縺帙ｓ縲・}
+                                                    </div>
+                                                </div>
+                                            )}
+                                            <div className="mt-3 grid grid-cols-2 gap-2">
+                                                <button type="button" className="w-full px-3 py-2 rounded border cursor-pointer disabled:opacity-40" disabled={(qtyByShop[s.id] || 0) === 0} onClick={() => setTab("cart")}>
+                                                    繧ｫ繝ｼ繝医ｒ隕九ｋ・・qtyByShop[s.id] || 0}・・                                                </button>
+                                                <button type="button" className="w-full px-3 py-2 rounded border cursor-pointer disabled:opacity-40 border-red-500 text-red-600" disabled={(qtyByShop[s.id] || 0) === 0} onClick={() => clearShopCart(s.id)}>
+                                                    繧ｫ繝ｼ繝医ｒ遨ｺ縺ｫ縺吶ｋ
+                                                </button>
+                                            </div>
+                                            {/* 繧ｫ繝ｼ繝牙・繝励Ξ繝薙Η繝ｼ蝨ｰ蝗ｳ・域ｳｨ逶ｮ譎ゅ↓繝輔ぉ繝ｼ繝峨う繝ｳ・・*/}
+                                            {MAPS_ENABLED && focusedShop === s.id && (
+                                                <div className="mt-2 overflow-hidden transition-all duration-300 h-[160px] opacity-100">
+                                                    <InCardPeekMap shop={s as any} userLoc={userLoc ?? undefined} onFocus={focusShopFromMap} />
+                                                </div>
+                                            )}
+                                            {!hasAny && (
+                                                <div className="pointer-events-none absolute inset-0 rounded-2xl bg-black/5" aria-hidden="true" />
+                                            )}
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </section>
+                    )}
+
+                    {tab === "cart" && (
+                        <section className="mt-4 space-y-4">
+                            <div className="flex items-center justify-between">
+                                <h2 className="text-base font-semibold">繧ｫ繝ｼ繝茨ｼ亥ｺ苓・蛻･莨夊ｨ茨ｼ・/h2>
+                                <button
+                                    type="button"
+                                    className="text-xs px-2 py-1 rounded border cursor-pointer disabled:opacity-40"
+                                    onClick={clearAllCarts}
+                                    disabled={cart.length === 0}
+                                    aria-disabled={cart.length === 0}
+                                >繧ｫ繝ｼ繝医ｒ蜈ｨ縺ｦ遨ｺ縺ｫ縺吶ｋ</button>
+                            </div>
+                            {Object.keys(cartByShop).length === 0 && <p className="text-sm text-zinc-500">繧ｫ繝ｼ繝医・遨ｺ縺ｧ縺・/p>}
+                            {Object.keys(cartByShop).map(sid => (
+                                <div key={sid} className="rounded-2xl border bg-white">
+                                    <div className="p-4 border-b flex items-center justify-between">
+                                        <div className="text-sm font-semibold">{shopsById.get(sid)?.name || sid}</div>
+                                        <div className="text-sm font-semibold">{currency(shopTotal(sid))}</div>
+                                    </div>
+                                    <div className="p-4 space-y-2">
+                                        {(cartByShop[sid] || []).map((l) => (
+                                            <div key={`${l.item.id}-${sid}`} className="flex items-center justify-between text-sm">
+                                                <div className="truncate">{l.item.name} ﾃ・{l.qty}</div>
+                                                <div className="tabular-nums">{currency(l.item.price * l.qty)}</div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                    <div className="p-4 border-t">
+                                        <button type="button" className="w-full px-3 py-2 rounded bg-zinc-900 text-white cursor-pointer" onClick={() => toOrder(sid)}>豕ｨ譁・判髱｢縺ｸ</button>
+                                    </div>
+                                </div>
+                            ))}
+                        </section>
+                    )}
+
+                    {tab === "order" && !orderTarget && (
+                        <section className="mt-4 space-y-3">
+                            <h2 className="text-base font-semibold">譛ｪ蠑墓鋤縺ｮ繝√こ繝・ヨ</h2>
+                            {pendingForOrderTab.length === 0 && (
+                                <div className="text-sm text-zinc-500">譛ｪ蠑墓鋤縺ｮ繝√こ繝・ヨ縺ｯ縺ゅｊ縺ｾ縺帙ｓ縲・/div>
+                            )}
+                            {pendingForOrderTab.length > 0 && (
+                                <div className="space-y-3">
+                                    <div className="flex items-center justify-between">
+                                        <div className="text-sm text-zinc-600">蠑墓鋤蠕・■縺ｮ繝√こ繝・ヨ</div>
+                                        <div className="text-[11px] text-zinc-500">{pendingForOrderTab.length}莉ｶ</div>
+                                    </div>
+                                    {pendingForOrderTab.map(o => {
+                                        const shopName = shopsById.get(o.shopId)?.name || o.shopId;
+                                        const isOpen = openTicketIdOrder === o.id;
+                                        return (
+                                            <div key={o.id} className={`rounded-2xl border bg-white ${isOpen ? 'p-4' : 'p-3'}`}>
+                                                <button type="button" aria-expanded={isOpen} aria-controls={`ticket-${o.id}`} className="w-full flex items-center justify-between cursor-pointer" onClick={() => setOpenTicketIdOrder(isOpen ? null : o.id)}>
+                                                    <div className="flex items-center gap-2 min-w-0">
+                                                        <span className="text-lg leading-none">{isOpen ? '笆ｾ' : '笆ｸ'}</span>
+                                                        <div className="text-left truncate">
+                                                            <div className="text-sm font-semibold truncate">{shopName}</div>
+                                                            <div className="text-[11px] text-zinc-500 truncate">豕ｨ譁・分蜿ｷ {o.id}</div>
+                                                        </div>
+                                                    </div>
+                                                    <div className="text-xs px-2 py-1 rounded bg-amber-100 shrink-0">{statusText(o.status)}</div>
+                                                </button>
+                                                {isOpen && (
+                                                    <div id={`ticket-${o.id}`}>
+                                                        <div className="grid grid-cols-2 gap-4 items-center mt-3">
+                                                            <div>
+                                                                <div className="text-xs text-zinc-500">6譯√さ繝ｼ繝・/div>
+                                                                <div className="text-2xl font-mono tracking-widest">{o.code6}</div>
+                                                                <div className="text-xs text-zinc-500 mt-2">蜷郁ｨ・/div>
+                                                                <div className="text-base font-semibold">{currency(o.amount)}</div>
+                                                                <div className="text-[11px] text-zinc-500 mt-1">{new Date(o.createdAt).toLocaleString()}</div>
+                                                                <div className="mt-2">
+                                                                    <button type="button" className="text-xs px-2 py-1 rounded border cursor-pointer" onClick={async () => { const ok = await safeCopy(o.code6); emitToast(ok ? 'success' : 'error', ok ? '繧ｳ繝斐・縺励∪縺励◆' : '繧ｳ繝斐・縺ｫ螟ｱ謨励＠縺ｾ縺励◆'); }}>繧ｳ繝ｼ繝峨ｒ繧ｳ繝斐・</button>
+                                                                </div>
+                                                            </div>
+                                                            <div className="justify-self-center">
+                                                                <div className="p-2 rounded bg-white shadow"><TinyQR seed={o.id} /></div>
+                                                            </div>
+                                                        </div>
+                                                        <div className="mt-4">
+                                                            <div className="text-xs text-zinc-500 mb-1">雉ｼ蜈･蜀・ｮｹ</div>
+                                                            <ul className="space-y-1">
+                                                                {o.lines.map((l, i) => (
+                                                                    <li key={`${l.item.id}-${i}`} className="flex items-center justify-between text-sm">
+                                                                        <span className="truncate mr-2">{l.item.name}</span>
+                                                                        <span className="tabular-nums">ﾃ養l.qty}</span>
+                                                                    </li>
+                                                                ))}
+                                                            </ul>
+                                                        </div>
+                                                        <div className="text-xs text-zinc-500 mt-3">窶ｻ 蠎鈴ｭ縺ｧ6譯√さ繝ｼ繝峨∪縺溘・QR繧呈署遉ｺ縺励※縺上□縺輔＞縲ょ女蜿門ｮ御ｺ・・蠎怜・繧｢繝励Μ縺ｧ陦後ｏ繧後√せ繝・・繧ｿ繧ｹ縺・<b>redeemed</b> 縺ｫ譖ｴ譁ｰ縺輔ｌ縺ｾ縺吶・/div>
+                                                    </div>
+                                                )}
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            )}
+                        </section>
+                    )}
+                    {/*
+                    {tab === "order" && orderTarget && (
+                            <h2 className="text-base font-semibold">豕ｨ譁・・譛邨ら｢ｺ隱・/h2>
+                            {!orderTarget && <p className="text-sm text-red-600">蟇ｾ雎｡縺ｮ蠎苓・繧ｫ繝ｼ繝医′隕九▽縺九ｊ縺ｾ縺帙ｓ</p>}
+                            {orderTarget && (
+                                <div className="rounded-2xl border bg-white">
+                                    <div className="p-4 border-b flex items-center justify-between">
+                                        <div className="text-sm font-semibold">{shopsById.get(orderTarget)?.name}</div>
+                                        <div className="text-sm font-semibold">{currency(shopTotal(orderTarget))}</div>
+                                    </div>
+                                    <div className="p-4 space-y-2">
+                                        {(cartByShop[orderTarget] || []).map((l) => (
+                                            <div key={`${l.item.id}-${orderTarget}`} className="text-sm flex items-start justify-between">
+                                                <div>
+                                                    <div className="font-medium">{l.item.name} ﾃ・{l.qty}</div>
+                                                    <div className="text-xs text-zinc-500">蜿怜叙 {l.item.pickup} / 豕ｨ險・{l.item.note || "-"}</div>
+                                                </div>
+                                                <div className="tabular-nums">{currency(l.item.price * l.qty)}</div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                    <div className="p-4 border-t space-y-2">
+                                        <div className="text-xs text-zinc-500">繝・せ繝域ｱｺ貂茨ｼ・242窶ｦ 縺ｯ謌仙粥縲・00000窶ｦ 縺ｯ螟ｱ謨暦ｼ井ｾ具ｼ・000 0000 0000 0002・峨よ悴蜈･蜉帙ｂ謌仙粥謇ｱ縺・・/div>
+                                        {(() => {
+                                            const d = cardDigits.replace(/\D/g, "").slice(0, 16); const formatted = (d.match(/.{1,4}/g)?.join(" ") ?? d); const len = d.length; return (
+                                                <>
+                                                    <input
+                                                        className="w-full px-3 py-2 rounded border font-mono tracking-widest"
+                                                        placeholder="4242 4242 4242 4242"
+                                                        value={formatted}
+                                                        onChange={e => { const nd = e.target.value.replace(/\D/g, "").slice(0, 16); setCardDigits(nd); }}
+                                                        inputMode="numeric"
+                                                        maxLength={19}
+                                                        autoComplete="cc-number"
+                                                        aria-label="繧ｫ繝ｼ繝臥分蜿ｷ・医ユ繧ｹ繝茨ｼ・
+                                                        aria-describedby="card-help"
+                                                    />
+                                                    <div id="card-help" className="flex items-center justify-between text-[11px] text-zinc-500">
+                                                        <span>{len}/16 譯・/span>
+                                                        <span>4譯√＃縺ｨ縺ｫ閾ｪ蜍輔せ繝壹・繧ｹ</span>
+                                                    </div>
+                                                    <div className="h-1 bg-zinc-200 rounded">
+                                                        <div className="h-1 bg-zinc-900 rounded" style={{ width: `${(len / 16) * 100}%` }} />
+                                                    </div>
+                                                </>
+                                            );
+                                        })()}
+                                        <button type="button" className="w-full px-3 py-2 rounded border cursor-pointer disabled:opacity-40" onClick={confirmPay} disabled={isPaying || cardDigits.length < 16 || ((cartByShop[orderTarget]?.length ?? 0) === 0)}>豕ｨ譁・ｒ遒ｺ螳壹☆繧具ｼ域髪謇輔＞・・/button>
+                                    </div>
+                                </div>
+                            )}
+                        </section>
+                    )}
+                    */}
+                    {tab === "order" && orderTarget && (
+                        <section className="mt-4 space-y-4">
+                            <h2 className="text-base font-semibold">豕ｨ譁・・譛邨ら｢ｺ隱・/h2>
+                            <div className="rounded-2xl border bg-white">
+                                <div className="p-4 border-b flex items-center justify-between">
+                                    <div className="text-sm font-semibold">{shopsById.get(orderTarget)?.name}</div>
+                                    <div className="text-sm font-semibold">{currency(shopTotal(orderTarget))}</div>
+                                </div>
+                                <div className="p-4 space-y-2">
+                                    {(cartByShop[orderTarget] || []).map((l) => (
+                                        <div key={`${l.item.id}-${orderTarget}`} className="text-sm flex items-start justify-between">
+                                            <div>
+                                                <div className="font-medium">{l.item.name} ﾃ・{l.qty}</div>
+                                                <div className="text-xs text-zinc-500">蜿怜叙 {l.item.pickup} / 豕ｨ諢・{l.item.note || "-"}</div>
+                                            </div>
+                                            <div className="tabular-nums">{currency(l.item.price * l.qty)}</div>
+                                        </div>
+                                    ))}
+                                </div>
+                                <div className="p-4 border-t space-y-3">
+                                    <div>
+                                        <div className="text-sm font-semibold mb-1">謾ｯ謇墓婿豕・/div>
+                                        <div className="flex items-center gap-4 text-sm">
+                                            <label className="inline-flex items-center gap-2 cursor-pointer">
+                                                <input type="radio" name="pm" value="card" checked={paymentMethod === 'card'} onChange={() => setPaymentMethod('card')} />
+                                                <span>繧ｫ繝ｼ繝会ｼ医ユ繧ｹ繝茨ｼ・/span>
+                                            </label>
+                                            <label className="inline-flex items-center gap-2 cursor-pointer">
+                                                <input type="radio" name="pm" value="paypay" checked={paymentMethod === 'paypay'} onChange={() => setPaymentMethod('paypay')} />
+                                                <span>PayPay・医ユ繧ｹ繝茨ｼ・/span>
+                                            </label>
+                                        </div>
+                                    </div>
+
+                                    {paymentMethod === 'card' ? (
+                                        <>
+                                            <div className="text-xs text-zinc-500">繝・せ繝医き繝ｼ繝我ｾ・ 4242窶ｦ 縺ｯ謌仙粥縲・00000窶ｦ 縺ｯ螟ｱ謨暦ｼ井ｾ・ 4000 0000 0000 0002・峨ょ・蜉帙・謨ｰ蟄励・縺ｿ縲・/div>
+                                            {(() => {
+                                                const d = cardDigits.replace(/\D/g, "").slice(0, 16);
+                                                const formatted = (d.match(/.{1,4}/g)?.join(" ") ?? d);
+                                                const len = d.length;
+                                                return (
+                                                    <>
+                                                        <input
+                                                            className="w-full px-3 py-2 rounded border font-mono tracking-widest"
+                                                            placeholder="4242 4242 4242 4242"
+                                                            value={formatted}
+                                                            onChange={e => { const nd = e.target.value.replace(/\D/g, "").slice(0, 16); setCardDigits(nd); }}
+                                                            inputMode="numeric"
+                                                            maxLength={19}
+                                                            autoComplete="cc-number"
+                                                            aria-label="繧ｫ繝ｼ繝臥分蜿ｷ・医ユ繧ｹ繝茨ｼ・
+                                                            aria-describedby="card-help"
+                                                        />
+                                                        <div id="card-help" className="flex items-center justify-between text-[11px] text-zinc-500">
+                                                            <span>{len}/16 譯・/span>
+                                                            <span>4譯√＃縺ｨ縺ｫ繧ｹ繝壹・繧ｹ</span>
+                                                        </div>
+                                                        <div className="h-1 bg-zinc-200 rounded">
+                                                            <div className="h-1 bg-zinc-900 rounded" style={{ width: `${(len / 16) * 100}%` }} />
+                                                        </div>
+                                                    </>
+                                                );
+                                            })()}
+                                        </>
+                                    ) : (
+                                        <div className="text-xs text-zinc-500">PayPay・医ユ繧ｹ繝茨ｼ・ 繧｢繝励Μ驕ｷ遘ｻ縺ｯ陦後ｏ縺壹√％縺ｮ逕ｻ髱｢縺ｧ蜊ｳ譎ゅ↓豎ｺ貂域・蜉溘→縺励※蜃ｦ逅・＠縺ｾ縺吶・/div>
+                                    )}
+
+                                    <button
+                                        type="button"
+                                        className="w-full px-3 py-2 rounded border cursor-pointer disabled:opacity-40"
+                                        onClick={confirmPay}
+                                        disabled={
+                                            isPaying ||
+                                            ((cartByShop[orderTarget]?.length ?? 0) === 0) ||
+                                            (paymentMethod === 'card' && cardDigits.length < 16)
+                                        }
+                                    >
+                                        {paymentMethod === 'card' ? '謾ｯ謇輔＞繧堤｢ｺ螳壹☆繧具ｼ医き繝ｼ繝峨・繝・せ繝茨ｼ・ : 'PayPay縺ｧ謾ｯ謇輔≧・医ユ繧ｹ繝茨ｼ・}
+                                    </button>
+                                </div>
+                            </div>
+                        </section>
+                    )}
+                    {tab === "account" && (
+                        <AccountView orders={orders} shopsById={shopsById} onDevReset={devResetOrdersStrict} onDevResetHistory={devResetOrderHistory} />
+                    )}
+
+                </main>
+
+                <footer className="fixed bottom-0 left-0 right-0 border-t bg-white/90">
+                    <div className="max-w-[448px] mx-auto grid grid-cols-4 text-center">
+                        <Tab id="home" label="繝帙・繝" icon="匠" />
+                        <Tab id="cart" label="繧ｫ繝ｼ繝・ icon="將" />
+                        <Tab id="order" label="蠑墓鋤縺・ icon="ｧｾ" />
+                        <Tab id="account" label="繧｢繧ｫ繧ｦ繝ｳ繝・ icon="側" />
+                    </div>
+                </footer>
+
+                {/* 繝懊ヨ繝繝励Ξ繝薙Η繝ｼ蝨ｰ蝗ｳ・域ｳｨ逶ｮ蠎苓・縺ｫ霑ｽ髫擾ｼ・*/}
+                {MAPS_ENABLED && tab === 'home' && (
+                    <BottomPeekMap
+                        open={peekOpen && !!focusedShop}
+                        shop={focusedShop ? shopsById.get(focusedShop) : undefined}
+                        userLoc={userLoc ?? undefined}
+                        onExpand={() => setMapOverlayOpen(true)}
+                        onClose={() => { setPeekOpen(false); peekCloseTsRef.current = Date.now(); }}
+                        onFocus={focusShopFromMap}
+                    />
+                )}
+
+                {/* 蜈ｨ逕ｻ髱｢繧ｪ繝ｼ繝舌・繝ｬ繧､縺ｮ蝨ｰ蝗ｳ */}
+                {MAPS_ENABLED && isMapOverlayOpen && (
+                    <div className="fixed inset-0 z-[2000] bg-black/50">
+                        <div className="absolute inset-0 md:inset-8 rounded-none md:rounded-2xl overflow-hidden bg-white">
+                            <button
+                                type="button"
+                                onClick={() => setMapOverlayOpen(false)}
+                                className="absolute top-3 right-3 z-[2500] px-3 py-1 rounded-full bg-black/80 text-white text-sm shadow"
+                                aria-label="蝨ｰ蝗ｳ繧帝哩縺倥ｋ"
+                            >髢峨§繧・/button>
+                            <LargeShopMap
+                                shops={shopsSorted}
+                                focusedShop={focusedShop}
+                                onFocus={focusShopFromMap}
+                                userLoc={userLoc ?? undefined}
+                            />
+                        </div>
+                    </div>
+                )}
+
+                {/* 隕冗ｴ・Μ繝ｳ繧ｯ */}
+                <div className="max-w-[448px] mx-auto px-4 py-2 text-center text-[10px] text-zinc-500">
+                    <a className="underline cursor-pointer" href="#">蛻ｩ逕ｨ隕冗ｴ・/a> 繝ｻ <a className="underline cursor-pointer" href="#">繝励Λ繧､繝舌す繝ｼ</a>
+                </div>
+
+                <ToastBar toast={toast} onClose={() => setToast(null)} />
+            </div >
+        </MinimalErrorBoundary >
+    );
+}
+
+function ShopMap({ shops, focusedShop, onFocus, userLoc }: {
+    shops: Array<{ id: string; name: string; lat: number; lng: number }>;
+    focusedShop?: string;
+    onFocus: (id: string) => void;
+    userLoc?: { lat: number; lng: number };
+}) {
+    const ref = useRef<HTMLDivElement | null>(null);
+    const mapRef = useRef<any>(null);
+    const markersRef = useRef<any[]>([]);
+    const firstFitRef = useRef(false);
+    const myLocRef = useRef<any | null>(null);
+
+    // 蛻晄悄蛹・    useEffect(() => {
+        let disposed = false;
+        (async () => {
+            if (!ref.current || mapRef.current) return;
+            const L = await import('leaflet');
+            if (disposed) return;
+
+            // 荳ｭ蠢・ 雎頑ｩ矩ｧ・ｼ・hops縺ｫ蠎ｧ讓吶′縺ゅｌ縺ｰ蠕後〒fitBounds・・            const center: [number, number] = [34.7628, 137.3833];
+            const map = L.map(ref.current, { zoomControl: false }).setView(center, 13);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '&copy; OpenStreetMap contributors',
+                maxZoom: 19,
+            }).addTo(map);
+            mapRef.current = map;
+            try { map.invalidateSize(); } catch { }
+            window.setTimeout(() => { try { map.invalidateSize(); } catch { } }, 50);
+        })();
+        return () => { disposed = true; try { if (mapRef.current) { mapRef.current.remove(); mapRef.current = null; } } catch { /* noop */ }
+        };
+    }, []);
+
+    // 繝槭・繧ｫ繝ｼ蜀肴緒逕ｻ
+    useEffect(() => {
+        (async () => {
+            const map = mapRef.current; if (!map) return;
+            const L = await import('leaflet');
+            // 譌｢蟄倥・繝ｼ繧ｫ繝ｼ繧貞炎髯､
+            for (const m of markersRef.current) { try { m.remove(); } catch { } }
+            markersRef.current = [];
+
+            const pts = shops
+                .filter(s => Number.isFinite(Number(s.lat)) && Number.isFinite(Number(s.lng)))
+                .map(s => ({ id: s.id, name: s.name, lat: Number(s.lat), lng: Number(s.lng) }));
+
+            for (const s of pts) {
+                const marker = L.circleMarker([s.lat, s.lng], {
+                    radius: focusedShop === s.id ? 7 : 5,
+                    color: focusedShop === s.id ? '#111827' : '#2563eb',
+                    weight: 2,
+                    fillColor: focusedShop === s.id ? '#111827' : '#3b82f6',
+                    fillOpacity: 0.9,
+                }).addTo(map);
+                marker.bindTooltip(s.name);
+                marker.on('click', () => { try { map.panTo([s.lat, s.lng]); } catch { } onFocus(s.id); });
+                markersRef.current.push(marker);
+            }
+
+            // 迴ｾ蝨ｨ蝨ｰ繝槭・繧ｫ繝ｼ
+            if (myLocRef.current) { try { myLocRef.current.remove(); } catch { } }
+            if (userLoc) {
+                myLocRef.current = L.circleMarker([userLoc.lat, userLoc.lng], {
+                    radius: 5,
+                    color: '#059669',
+                    weight: 2,
+                    fillColor: '#10b981',
+                    fillOpacity: 0.9,
+                }).addTo(map);
+            }
+
+            // 蛻晏屓縺ｮ縺ｿ蜈ｨ菴楢｡ｨ遉ｺ
+            if (!firstFitRef.current && pts.length > 0) {
+                firstFitRef.current = true;
+                const bounds = L.latLngBounds(pts.map(p => [p.lat, p.lng] as [number, number]));
+                try { map.fitBounds(bounds.pad(0.2)); } catch { /* noop */ }
+            }
+
+            // 豕ｨ逶ｮ蠎苓・縺後≠繧後・繧ｺ繝ｼ繝
+            if (focusedShop) {
+                const t = pts.find(p => p.id === focusedShop);
+                if (t) { try { map.setView([t.lat, t.lng], Math.max(map.getZoom(), 15)); } catch { } }
+            }
+        })();
+    }, [shops, focusedShop, onFocus, userLoc]);
+
+    return (
+        <div className="relative w-full h-full" aria-label="蝨ｰ蝗ｳ">
+            <div ref={ref} className="absolute inset-0" />
+            <button
+                type="button"
+                className="absolute right-2 bottom-2 z-[1100] px-2 py-1 rounded bg-white/90 border text-xs shadow"
+                onClick={() => {
+                    try {
+                        const map = mapRef.current; if (!map) return;
+                        const base = userLoc ?? DEFAULT_CENTER;
+                        map.setView([base.lat, base.lng], Math.max(map.getZoom(), 14));
+                    } catch { /* noop */ }
+                }}
+            >迴ｾ蝨ｨ蝨ｰ</button>
+        </div>
+    );
+}
+
+// 蜿ｳ荳九・繝溘ル繝槭ャ繝暦ｼ亥ｰ上し繧､繧ｺ・・function MiniShopMap({ shops, focusedShop, onFocus, userLoc }: {
+    shops: Array<{ id: string; name: string; lat: number; lng: number }>;
+    focusedShop?: string;
+    onFocus: (id: string) => void;
+    userLoc?: { lat: number; lng: number };
+}) {
+    const ref = useRef<HTMLDivElement | null>(null);
+    const mapRef = useRef<any>(null);
+    const markersRef = useRef<any[]>([]);
+    const firstFitRef = useRef(false);
+    const myLocRef = useRef<any | null>(null);
+
+    useEffect(() => {
+        let disposed = false;
+        (async () => {
+            if (!ref.current || mapRef.current) return;
+            const L = await import('leaflet');
+            if (disposed) return;
+            const center: [number, number] = [34.7628, 137.3833];
+            const map = L.map(ref.current, { zoomControl: false, dragging: true, attributionControl: false }).setView(center, 13);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
+            mapRef.current = map;
+        })();
+        return () => { disposed = true; try { if (mapRef.current) { mapRef.current.remove(); mapRef.current = null; } } catch { } };
+    }, []);
+
+    useEffect(() => {
+        (async () => {
+            const map = mapRef.current; if (!map) return;
+            const L = await import('leaflet');
+            for (const m of markersRef.current) { try { m.remove(); } catch { } }
+            markersRef.current = [];
+            const pts = shops.filter(s => Number.isFinite(Number(s.lat)) && Number.isFinite(Number(s.lng)))
+                .map(s => ({ id: s.id, name: s.name, lat: Number(s.lat), lng: Number(s.lng) }));
+            for (const s of pts) {
+                const marker = L.circleMarker([s.lat, s.lng], {
+                    radius: focusedShop === s.id ? 6 : 4,
+                    color: focusedShop === s.id ? '#111827' : '#0ea5e9',
+                    weight: 2,
+                    fillColor: focusedShop === s.id ? '#111827' : '#38bdf8',
+                    fillOpacity: 0.9,
+                }).addTo(map);
+                marker.on('click', () => { try { map.panTo([s.lat, s.lng]); } catch { } onFocus(s.id); });
+                markersRef.current.push(marker);
+            }
+            if (!firstFitRef.current && pts.length > 0) {
+                firstFitRef.current = true;
+                const bounds = L.latLngBounds(pts.map(p => [p.lat, p.lng] as [number, number]));
+                try { map.fitBounds(bounds.pad(0.2)); } catch { }
+            }
+            // 豕ｨ逶ｮ蠎苓・縺後≠繧後・繝代Φ縺励※菴咲ｽｮ繧堤､ｺ縺・            if (focusedShop) {
+                const t = pts.find(p => p.id === focusedShop);
+                if (t) { try { map.panTo([t.lat, t.lng]); } catch { } }
+            }
+            // 迴ｾ蝨ｨ蝨ｰ繝槭・繧ｫ繝ｼ
+            if (myLocRef.current) { try { myLocRef.current.remove(); } catch { } }
+            if (userLoc) {
+                myLocRef.current = L.circleMarker([userLoc.lat, userLoc.lng], {
+                    radius: 4,
+                    color: '#059669',
+                    weight: 2,
+                    fillColor: '#10b981',
+                    fillOpacity: 0.9,
+                }).addTo(map);
+            }
+        })();
+    }, [shops, focusedShop, onFocus, userLoc]);
+
+    return (
+        <div className="relative w-full h-full" aria-label="繝溘ル繝槭ャ繝・>
+            <div ref={ref} className="absolute inset-0" />
+            <button
+                type="button"
+                className="absolute right-1 bottom-1 z-[1100] px-1.5 py-0.5 rounded bg-white/90 border text-[10px] shadow"
+                onClick={() => {
+                    try {
+                        const map = mapRef.current; if (!map) return;
+                        const base = userLoc ?? DEFAULT_CENTER;
+                        map.setView([base.lat, base.lng], Math.max(map.getZoom(), 14));
+                    } catch { }
+                }}
+            >迴ｾ蝨ｨ蝨ｰ</button>
+        </div>
+    );
+}
+
+// 蜈ｨ逕ｻ髱｢繧ｪ繝ｼ繝舌・繝ｬ繧､蝨ｰ蝗ｳ・亥､ｧ繧ｵ繧､繧ｺ・・function LargeShopMap({ shops, focusedShop, onFocus, userLoc }: {
+    shops: Array<{ id: string; name: string; lat: number; lng: number }>;
+    focusedShop?: string;
+    onFocus: (id: string) => void;
+    userLoc?: { lat: number; lng: number };
+}) {
+    const ref = useRef<HTMLDivElement | null>(null);
+    const mapRef = useRef<any>(null);
+    const markersRef = useRef<any[]>([]);
+    const firstFitRef = useRef(false);
+    const myLocRef = useRef<any | null>(null);
+
+    useEffect(() => {
+        let disposed = false;
+        (async () => {
+            if (!ref.current || mapRef.current) return;
+            const L = await import('leaflet');
+            if (disposed) return;
+            const center: [number, number] = [34.7628, 137.3833];
+            const map = L.map(ref.current, { zoomControl: true }).setView(center, 13);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '&copy; OpenStreetMap contributors',
+                maxZoom: 19,
+            }).addTo(map);
+            mapRef.current = map;
+        })();
+        return () => { disposed = true; try { if (mapRef.current) { mapRef.current.remove(); mapRef.current = null; } } catch { } };
+    }, []);
+
+    useEffect(() => {
+        (async () => {
+            const map = mapRef.current; if (!map) return;
+            const L = await import('leaflet');
+            for (const m of markersRef.current) { try { m.remove(); } catch { } }
+            markersRef.current = [];
+            const pts = shops.filter(s => Number.isFinite(Number(s.lat)) && Number.isFinite(Number(s.lng)))
+                .map(s => ({ id: s.id, name: s.name, lat: Number(s.lat), lng: Number(s.lng) }));
+            for (const s of pts) {
+                const marker = L.circleMarker([s.lat, s.lng], {
+                    radius: focusedShop === s.id ? 8 : 6,
+                    color: focusedShop === s.id ? '#111827' : '#2563eb',
+                    weight: 2,
+                    fillColor: focusedShop === s.id ? '#111827' : '#3b82f6',
+                    fillOpacity: 0.9,
+                }).addTo(map);
+                marker.bindTooltip(s.name);
+                marker.on('click', () => { try { map.panTo([s.lat, s.lng]); } catch { } onFocus(s.id); });
+                try { marker.bringToFront(); } catch { }
+                markersRef.current.push(marker);
+            }
+            if (!firstFitRef.current && pts.length > 0) {
+                firstFitRef.current = true;
+                const bounds = L.latLngBounds(pts.map(p => [p.lat, p.lng] as [number, number]));
+                try { map.fitBounds(bounds.pad(0.2)); } catch { }
+            }
+            if (focusedShop) {
+                const t = pts.find(p => p.id === focusedShop);
+                if (t) { try { map.setView([t.lat, t.lng], Math.max(map.getZoom(), 15)); } catch { } }
+            }
+            // 迴ｾ蝨ｨ蝨ｰ繝槭・繧ｫ繝ｼ
+            if (myLocRef.current) { try { myLocRef.current.remove(); } catch { } }
+            if (userLoc) {
+                myLocRef.current = L.circleMarker([userLoc.lat, userLoc.lng], {
+                    radius: 6,
+                    color: '#059669',
+                    weight: 2,
+                    fillColor: '#10b981',
+                    fillOpacity: 0.9,
+                }).addTo(map);
+            }
+            try { map.invalidateSize(); } catch { }
+        })();
+    }, [shops, focusedShop, onFocus, userLoc]);
+
+    return (
+        <div className="relative w-full h-full" aria-label="諡｡螟ｧ蝨ｰ蝗ｳ">
+            <div ref={ref} className="absolute inset-0" />
+            <button
+                type="button"
+                className="absolute right-3 bottom-3 z-[1100] px-3 py-1 rounded bg-white/90 border text-sm shadow"
+                onClick={() => {
+                    try {
+                        const map = mapRef.current; if (!map) return;
+                        const base = userLoc ?? DEFAULT_CENTER;
+                        map.setView([base.lat, base.lng], Math.max(map.getZoom(), 14));
+                    } catch { }
+                }}
+            >迴ｾ蝨ｨ蝨ｰ</button>
+        </div>
+    );
+}
+
+// 荳九°繧峨・繧上▲縺ｨ蜃ｺ繧九・繝ｬ繝薙Η繝ｼ蝨ｰ蝗ｳ・域ｳｨ逶ｮ蠎苓・縺ｫ霑ｽ髫擾ｼ・function BottomPeekMap({ open, shop, userLoc, onClose, onExpand, onFocus }: {
+    open: boolean;
+    shop?: Shop;
+    userLoc?: { lat: number; lng: number };
+    onClose: () => void;
+    onExpand: () => void;
+    onFocus: (id: string) => void;
+}) {
+    const base = userLoc ?? DEFAULT_CENTER;
+    const name = shop?.name ?? '';
+    const lat = Number(shop?.lat ?? NaN);
+    const lng = Number(shop?.lng ?? NaN);
+    const hasPos = Number.isFinite(lat) && Number.isFinite(lng);
+    const dist = hasPos ? haversineKm(base, { lat, lng }) : 0;
+    const dir = hasPos ? bearingTo8(bearingDeg(base, { lat, lng })) : { a: '窶｢', t: '' } as any;
+    const routeUrl = hasPos ? `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(String(lat))}%2C${encodeURIComponent(String(lng))}&travelmode=walking` : '#';
+
+    return (
+        <div className={`fixed left-0 right-0 transition-transform duration-300 z-[1400] pointer-events-none`} style={{ bottom: 56 }}>
+            <div className={`mx-auto max-w-[448px] px-4 ${open ? 'translate-y-0' : 'translate-y-full'} transition-transform duration-300`}>
+                <div className="pointer-events-auto rounded-2xl border bg-white shadow-lg overflow-hidden">
+                    <div className="p-3 flex items-center justify-between gap-2">
+                        <div className="min-w-0">
+                            <div className="text-sm font-semibold truncate">{name || '蠎苓・'}</div>
+                            {hasPos && (
+                                <div className="mt-0.5 flex items-center gap-1 text-[11px] text-zinc-600">
+                                    <span className="px-1.5 py-0.5 rounded bg-zinc-100">{dist < 1 ? `${(dist*1000)|0} m` : `${dist.toFixed(1)} km`}</span>
+                                    <span className="px-1.5 py-0.5 rounded bg-zinc-100">{dir.a} {dir.t}</span>
+                                </div>
+                            )}
+                        </div>
+                        <div className="shrink-0 flex items-center gap-2">
+                            <button type="button" className="text-xs px-2 py-1 rounded border" onClick={onExpand}>蜈ｨ逕ｻ髱｢</button>
+                            <a className="text-xs px-2 py-1 rounded border bg-zinc-50" href={routeUrl} target="_blank" rel="noopener noreferrer">邨瑚ｷｯ</a>
+                            <button type="button" className="text-xs px-2 py-1 rounded border" onClick={onClose}>髢峨§繧・/button>
+                        </div>
+                    </div>
+                    <div className="h-[180px]">
+                        <PeekMapCanvas shop={shop} userLoc={userLoc} onFocus={onFocus} />
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+function PeekMapCanvas({ shop, userLoc, onFocus }: { shop?: Shop; userLoc?: { lat: number; lng: number }; onFocus: (id: string) => void; }) {
+    const ref = useRef<HTMLDivElement | null>(null);
+    const mapRef = useRef<any>(null);
+    const markerRef = useRef<any | null>(null);
+    const myLocRef = useRef<any | null>(null);
+
+    useEffect(() => {
+        let disposed = false;
+        (async () => {
+            if (!ref.current || mapRef.current) return;
+            const L = await import('leaflet');
+            if (disposed) return;
+            const center: [number, number] = [DEFAULT_CENTER.lat, DEFAULT_CENTER.lng];
+            const map = L.map(ref.current, { zoomControl: false }).setView(center, 14);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
+            mapRef.current = map;
+            try { map.invalidateSize(); } catch { }
+            window.setTimeout(() => { try { map.invalidateSize(); } catch { } }, 50);
+        })();
+        return () => { disposed = true; try { if (mapRef.current) { mapRef.current.remove(); mapRef.current = null; } } catch { } };
+    }, []);
+
+    useEffect(() => {
+        (async () => {
+            const map = mapRef.current; if (!map) return;
+            const L = await import('leaflet');
+            if (markerRef.current) { try { markerRef.current.remove(); } catch { } markerRef.current = null; }
+            const lat = Number(shop?.lat ?? NaN);
+            const lng = Number(shop?.lng ?? NaN);
+            if (Number.isFinite(lat) && Number.isFinite(lng)) {
+                markerRef.current = L.circleMarker([lat, lng], { radius: 7, color: '#111827', weight: 2, fillColor: '#111827', fillOpacity: 0.9 }).addTo(map);
+                try { map.setView([lat, lng], Math.max(map.getZoom(), 15)); } catch { }
+            }
+            if (myLocRef.current) { try { myLocRef.current.remove(); } catch { } myLocRef.current = null; }
+            if (userLoc) {
+                myLocRef.current = L.circleMarker([userLoc.lat, userLoc.lng], { radius: 4, color: '#059669', weight: 2, fillColor: '#10b981', fillOpacity: 0.9 }).addTo(map);
+            }
+            try { map.invalidateSize(); } catch { }
+        })();
+    }, [shop, userLoc]);
+
+    return <div ref={ref} className="w-full h-full" aria-label="繝励Ξ繝薙Η繝ｼ蝨ｰ蝗ｳ" />;
+}
+
+// 蠎苓・繧ｫ繝ｼ繝牙・縺ｮ邁｡譏薙・繝ｬ繝薙Η繝ｼ蝨ｰ蝗ｳ・域ｳｨ逶ｮ繧ｫ繝ｼ繝峨・縺ｿ繝槭え繝ｳ繝茨ｼ・function InCardPeekMap({ shop, userLoc, onFocus }: { shop: Shop; userLoc?: { lat: number; lng: number }; onFocus: (id: string) => void; }) {
+    const ref = useRef<HTMLDivElement | null>(null);
+    const mapRef = useRef<any>(null);
+    const markerRef = useRef<any | null>(null);
+    const myLocRef = useRef<any | null>(null);
+
+    useEffect(() => {
+        let disposed = false;
+        (async () => {
+            if (!ref.current || mapRef.current) return;
+            const L = await import('leaflet');
+            if (disposed) return;
+            const center: [number, number] = [Number(shop.lat) || DEFAULT_CENTER.lat, Number(shop.lng) || DEFAULT_CENTER.lng];
+            const map = L.map(ref.current, { zoomControl: false, attributionControl: false }).setView(center, 15);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
+            mapRef.current = map;
+            try { map.invalidateSize(); } catch { }
+            window.setTimeout(() => { try { map.invalidateSize(); } catch { } }, 50);
+        })();
+        return () => { disposed = true; try { if (mapRef.current) { mapRef.current.remove(); mapRef.current = null; } } catch { } };
+    }, [shop?.id]);
+
+    useEffect(() => {
+        (async () => {
+            const map = mapRef.current; if (!map) return;
+            const L = await import('leaflet');
+            if (markerRef.current) { try { markerRef.current.remove(); } catch { } markerRef.current = null; }
+            const lat = Number(shop?.lat ?? NaN);
+            const lng = Number(shop?.lng ?? NaN);
+            if (Number.isFinite(lat) && Number.isFinite(lng)) {
+                markerRef.current = L.circleMarker([lat, lng], { radius: 6, color: '#2563eb', weight: 2, fillColor: '#3b82f6', fillOpacity: 0.9 }).addTo(map);
+                try { map.setView([lat, lng], Math.max(map.getZoom(), 15)); } catch { }
+            }
+            if (myLocRef.current) { try { myLocRef.current.remove(); } catch { } myLocRef.current = null; }
+            if (userLoc) {
+                myLocRef.current = L.circleMarker([userLoc.lat, userLoc.lng], { radius: 4, color: '#059669', weight: 2, fillColor: '#10b981', fillOpacity: 0.9 }).addTo(map);
+            }
+            try { map.invalidateSize(); } catch { }
+        })();
+    }, [shop, userLoc]);
+
+    return <div ref={ref} className="w-full h-full" aria-label="繧ｫ繝ｼ繝牙・蝨ｰ蝗ｳ" onClick={() => onFocus(String(shop.id))} />;
+}
+
+function TinyQR({ seed }: { seed: string }) {
+    const size = 21, dot = 6, pad = 4; let h = Array.from(seed).reduce((a, c) => ((a << 5) - a) + c.charCodeAt(0), 0) >>> 0; const bits: number[] = [];
+    for (let i = 0; i < size * size; i++) { h = (1103515245 * h + 12345) >>> 0; bits.push((h >> 15) & 1); }
+    const w = size * dot + pad * 2;
+    return (
+        <svg width={w} height={w} className="rounded bg-white shadow"><rect x={0} y={0} width={w} height={w} fill="white" />{bits.map((b, i) => b ? <rect key={i} x={pad + (i % size) * dot} y={pad + Math.floor(i / size) * dot} width={dot - 1} height={dot - 1} /> : null)}</svg>
+    );
+}
+
+function AccountView({
+    orders,
+    shopsById,
+    onDevReset,
+    onDevResetHistory,
+}: {
+    orders: Order[];
+    shopsById: Map<string, Shop>;
+    onDevReset?: () => void;
+    onDevResetHistory?: () => void;
+}) {
+
+    const [refreshTick, setRefreshTick] = useState(0);
+
+    // 笆ｼ笆ｼ 驥崎､・勁蜴ｻ・壼酔縺・code6 縺瑚､・焚縺ゅｋ蝣ｴ蜷医・ redeemed 繧貞━蜈医＠縺ｦ 1 莉ｶ縺ｫ豁｣隕丞喧 笆ｼ笆ｼ
+    const canonicalOrders = useMemo(() => {
+
+        const byCode = new Map<string, Order>();
+        for (const o of orders) {
+            const k = String(o.code6 ?? "");   // 笘・螳悟・荳閾ｴ繧ｭ繝ｼ
+            const ex = byCode.get(k);
+            if (!ex) {
+                byCode.set(k, o);
+            } else {
+                // 迚・婿縺・redeemed 縺ｪ繧・redeemed 繧貞━蜈医＠縺ｦ谿九☆
+                if (ex.status !== "redeemed" && o.status === "redeemed") {
+                    byCode.set(k, o);
+                }
+                // 縺昴ｌ莉･螟厄ｼ亥酔譬ｼ・峨・蜈亥享縺｡
+            }
+        }
+        return Array.from(byCode.values());
+    }, [orders]);
+
+    // 譛ｪ蠑墓鋤・・aid・峨・ canonical 縺ｫ蟇ｾ縺励※蛻・ｊ蜃ｺ縺・
+    const pending = useMemo(
+        () => canonicalOrders.filter(o => o.status === "paid").sort((a, b) => b.createdAt - a.createdAt),
+        [canonicalOrders, refreshTick]
+    );
+
+    const [openTicketId, setOpenTicketId] = useState<string | null>(null);
+    const [openHistoryId, setOpenHistoryId] = useState<string | null>(null);
+
+    const statusText = (s: Order["status"]) => (
+        s === 'redeemed' ? '蠑墓鋤貂医∩' : s === 'paid' ? '譛ｪ蠑墓鋤' : s === 'refunded' ? '霑秘≡貂医∩' : s
+    );
+
+    // 螻･豁ｴ繧・canonical 繧貞・縺ｫ
+    const sortedOrders = useMemo(
+        () => [...canonicalOrders].sort((a, b) => b.createdAt - a.createdAt),
+        [canonicalOrders]
+    );
+
+    const [showAllHistory, setShowAllHistory] = useState(false);
+    const MAX_COMPACT = 5;
+    const visibleOrders = showAllHistory ? sortedOrders : sortedOrders.slice(0, MAX_COMPACT);
+    const remaining = Math.max(0, sortedOrders.length - visibleOrders.length);
+
+    return (
+        <section className="mt-4 space-y-4">
+            <h2 className="text-base font-semibold">繧｢繧ｫ繧ｦ繝ｳ繝・/ 繝√こ繝・ヨ</h2>
+
+            {/* 譛ｪ蠑墓鋤繝√こ繝・ヨ・医い繧ｳ繝ｼ繝・ぅ繧ｪ繝ｳ繝ｻQR蜊倅ｸ陦ｨ遉ｺ・・*/}
+            {false && pending.length === 0 && (
+                <div className="text-sm text-zinc-500">譛ｪ蠑墓鋤縺ｮ繝√こ繝・ヨ縺ｯ縺ゅｊ縺ｾ縺帙ｓ縲・/div>
+            )}
+            {false && pending.length > 0 && (
+                <div className="space-y-3">
+                    {/* 譛ｪ蠑墓鋤縺ｮ繝√こ繝・ヨ */}
+                    <div className="flex items-center justify-between">
+                        <div className="text-sm font-semibold">譛ｪ蠑墓鋤縺ｮ繝√こ繝・ヨ</div>
+                        <div className="flex items-center gap-2">
+                            {process.env.NODE_ENV !== 'production' && onDevReset && (
+                                <button
+                                    type="button"
+                                    onClick={onDevReset}
+                                    className="text-[11px] px-2 py-1 rounded border bg-red-50 hover:bg-red-100 cursor-pointer"
+                                    title="縺薙・蠎苓・縺ｮ豕ｨ譁・ｒ縺吶∋縺ｦ蜑企勁・磯幕逋ｺ蟆ら畑・・
+                                >
+                                    繝ｪ繧ｻ繝・ヨ
+                                </button>
+                            )}
+                            <div className="text-[11px] text-zinc-500">{pending.length}莉ｶ</div>
+                        </div>
+                    </div>
+
+                    {pending.map(o => {
+                        const shopName = shopsById.get(o.shopId)?.name || o.shopId;
+                        const isOpen = openTicketId === o.id;
+                        return (
+                            <div key={o.id} className={`rounded-2xl border bg-white ${isOpen ? 'p-4' : 'p-3'}`}>
+                                {/* 繝倥ャ繝繝ｼ・医い繧ｳ繝ｼ繝・ぅ繧ｪ繝ｳ蛻・崛・・*/}
+                                <button type="button" aria-expanded={isOpen} aria-controls={`ticket-${o.id}`} className="w-full flex items-center justify-between cursor-pointer" onClick={() => setOpenTicketId(isOpen ? null : o.id)}>
+                                    <div className="flex items-center gap-2 min-w-0">
+                                        <span className="text-lg leading-none">{isOpen ? '笆ｾ' : '笆ｸ'}</span>
+                                        <div className="text-left truncate">
+                                            <div className="text-sm font-semibold truncate">{shopName}</div>
+                                            <div className="text-[11px] text-zinc-500 truncate">豕ｨ譁・分蜿ｷ {o.id}</div>
+                                        </div>
+                                    </div>
+                                    <div className="text-xs px-2 py-1 rounded bg-amber-100 shrink-0">迥ｶ諷・ {o.status}</div>
+                                </button>
+
+                                {/* 繧ｪ繝ｼ繝励Φ譎ゅ・縺ｿ隧ｳ邏ｰ謠冗判・・R縺ｯ蟶ｸ譎・譫夲ｼ・*/}
+                                {isOpen && (
+                                    <div id={`ticket-${o.id}`}>
+                                        <div className="grid grid-cols-2 gap-4 items-center mt-3">
+                                            <div>
+                                                <div className="text-xs text-zinc-500">6譯√さ繝ｼ繝・/div>
+                                                <div className="text-2xl font-mono tracking-widest">{o.code6}</div>
+                                                <div className="text-xs text-zinc-500 mt-2">蜷郁ｨ・/div>
+                                                <div className="text-base font-semibold">{currency(o.amount)}</div>
+                                                <div className="text-[11px] text-zinc-500 mt-1">{new Date(o.createdAt).toLocaleString()}</div>
+                                                <div className="mt-2">
+                                                    <button type="button" className="text-xs px-2 py-1 rounded border cursor-pointer" onClick={async () => { const ok = await safeCopy(o.code6); emitToast(ok ? 'success' : 'error', ok ? '繧ｳ繝斐・縺励∪縺励◆' : '繧ｳ繝斐・縺ｫ螟ｱ謨励＠縺ｾ縺励◆'); }}>繧ｳ繝ｼ繝峨ｒ繧ｳ繝斐・</button>
+                                                </div>
+                                            </div>
+                                            <div className="justify-self-center">
+                                                <div className="p-2 rounded bg-white shadow"><TinyQR seed={o.id} /></div>
+                                            </div>
+                                        </div>
+                                        <div className="mt-4">
+                                            <div className="text-xs text-zinc-500 mb-1">雉ｼ蜈･蜀・ｮｹ</div>
+                                            <ul className="space-y-1">
+                                                {o.lines.map((l, i) => (
+                                                    <li key={`${l.item.id}-${i}`} className="flex items-center justify-between text-sm">
+                                                        <span className="truncate mr-2">{l.item.name}</span>
+                                                        <span className="tabular-nums">ﾃ養l.qty}</span>
+                                                    </li>
+                                                ))}
+                                            </ul>
+                                        </div>
+                                        <div className="text-xs text-zinc-500 mt-3">窶ｻ 蠎鈴ｭ縺ｧ6譯√さ繝ｼ繝峨∪縺溘・QR繧呈署遉ｺ縺励※縺上□縺輔＞縲ょ女蜿門ｮ御ｺ・・蠎苓・蛛ｴ繧｢繝励Μ縺ｧ陦後ｏ繧後√せ繝・・繧ｿ繧ｹ縺・<b>redeemed</b> 縺ｫ譖ｴ譁ｰ縺輔ｌ縺ｾ縺吶・/div>
+                                    </div>
+                                )}
+                            </div>
+                        );
+                    })}
+                </div>
+            )}
+
+            {/* 豕ｨ譁・ｱ･豁ｴ・医さ繝ｳ繝代け繝茨ｼ・*/}
+            <div className="rounded-2xl border bg-white p-4">
+                <div className="flex items-center justify-between">
+                    <div className="text-sm font-semibold">豕ｨ譁・ｱ･豁ｴ</div>
+                    <div className="flex items-center gap-2">
+                        {process.env.NODE_ENV !== 'production' && onDevResetHistory && (
+                            <button
+                                type="button"
+                                onClick={onDevResetHistory}
+                                className="text-[11px] px-2 py-1 rounded border bg-red-50 hover:bg-red-100 cursor-pointer"
+                                title="螻･豁ｴ縺ｮ縺ｿ蜑企勁・磯幕逋ｺ蟆ら畑・・
+                            >
+                                繝ｪ繧ｻ繝・ヨ
+                            </button>
+                        )}
+                        <div className="text-[11px] text-zinc-500">{sortedOrders.length}莉ｶ</div>
+                    </div>
+                </div>
+
+                <ul className="mt-2 divide-y">
+                    {visibleOrders.map(o => {
+                        const isOpen = openHistoryId === o.id;
+                        const shopName = shopsById.get(o.shopId)?.name || o.shopId;
+                        return (
+                            <li key={o.id} className="py-2">
+                                <button
+                                    type="button"
+                                    className="w-full flex items-center justify-between text-sm cursor-pointer"
+                                    aria-expanded={isOpen}
+                                    aria-controls={`history-${o.id}`}
+                                    onClick={() => setOpenHistoryId(isOpen ? null : o.id)}
+                                >
+                                    <div className="min-w-0">
+                                        <div className="font-medium truncate">{shopName}</div>
+                                        <div className="text-[11px] text-zinc-500 truncate">{new Date(o.createdAt).toLocaleString()} / 豕ｨ譁・分蜿ｷ {o.id}</div>
+                                    </div>
+                                    <div className="flex items-center gap-3 shrink-0">
+                                        <span className={`text-[11px] px-2 py-0.5 rounded ${o.status === 'redeemed' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>{statusText(o.status)}</span>
+                                        <span className="font-semibold tabular-nums">{currency(o.amount)}</span>
+                                        <span className="text-xs">{isOpen ? '笆ｾ' : '笆ｸ'}</span>
+                                    </div>
+                                </button>
+
+                                {isOpen && (
+                                    <div id={`history-${o.id}`} className="mt-2 px-1 text-sm">
+                                        <div className="grid grid-cols-2 gap-4">
+                                            <div>
+                                                <div className="text-xs text-zinc-500">6譯√さ繝ｼ繝・/div>
+                                                <div className="text-base font-mono tracking-widest">{o.code6}</div>
+                                                <div className="text-xs text-zinc-500 mt-2">繧ｹ繝・・繧ｿ繧ｹ</div>
+                                                <div className="text-sm font-medium">{statusText(o.status)}</div>
+                                                <div className="text-xs text-zinc-500 mt-2">蜷郁ｨ・/div>
+                                                <div className="text-base font-semibold">{currency(o.amount)}</div>
+                                            </div>
+                                            <div>
+                                                <div className="text-xs text-zinc-500 mb-1">豕ｨ譁・・螳ｹ</div>
+                                                <ul className="space-y-1">
+                                                    {o.lines.map((l, i) => (
+                                                        <li key={`${l.item.id}-${i}`} className="flex items-center justify-between">
+                                                            <span className="truncate mr-2">{l.item.name} ﾃ・{l.qty}</span>
+                                                            <span className="tabular-nums">{currency(l.item.price * l.qty)}</span>
+                                                        </li>
+                                                    ))}
+                                                </ul>
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
+                            </li>
+                        );
+                    })}
+                </ul>
+                {remaining > 0 && !showAllHistory && (
+                    <div className="pt-3">
+                        <button type="button" className="w-full px-3 py-2 rounded border cursor-pointer" onClick={() => setShowAllHistory(true)} aria-expanded={false}>谿九ｊ{remaining}莉ｶ繧定｡ｨ遉ｺ</button>
+                    </div>
+                )}
+                {showAllHistory && sortedOrders.length > MAX_COMPACT && (
+                    <div className="pt-3">
+                        <button type="button" className="w-full px-3 py-2 rounded border cursor-pointer" onClick={() => setShowAllHistory(false)} aria-expanded={true}>蜈磯ｭ{MAX_COMPACT}莉ｶ縺縺題｡ｨ遉ｺ</button>
+                    </div>
+                )}
+            </div>
+        </section>
+    );
+}

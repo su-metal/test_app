@@ -809,7 +809,7 @@ export default function UserPilotApp() {
 
     // UI 共通
     const Tab = ({ id, label, icon }: { id: "home" | "cart" | "order" | "account"; label: string; icon: string }) => (
-        <button onClick={() => setTab(id)} className={`flex-1 py-2 text-center cursor-pointer ${tab === id ? "text-zinc-900 font-semibold" : "text-zinc-500"}`}>
+        <button onClick={() => { if (id === 'order') setOrderTarget(undefined); setTab(id); }} className={`flex-1 py-2 text-center cursor-pointer ${tab === id ? "text-zinc-900 font-semibold" : "text-zinc-500"}`}>
             <div>{icon}</div><div className="text-xs">{label}</div>
         </button>
     );
@@ -950,7 +950,7 @@ export default function UserPilotApp() {
                         </section>
                     )}
 
-                    {tab === "order" && (
+                    {tab === "order" && !orderTarget && (
                         <section className="mt-4 space-y-3">
                             <h2 className="text-base font-semibold">未引換のチケット</h2>
                             {pendingForOrderTab.length === 0 && (
@@ -1015,7 +1015,8 @@ export default function UserPilotApp() {
                             )}
                         </section>
                     )}
-                        {/*
+                    {/*
+                    {tab === "order" && orderTarget && (
                             <h2 className="text-base font-semibold">注文の最終確認</h2>
                             {!orderTarget && <p className="text-sm text-red-600">対象の店舗カートが見つかりません</p>}
                             {orderTarget && (
@@ -1067,8 +1068,67 @@ export default function UserPilotApp() {
                             )}
                         </section>
                     )}
-
-                        */}
+                    */}
+                    {tab === "order" && orderTarget && (
+                        <section className="mt-4 space-y-4">
+                            <h2 className="text-base font-semibold">注文の最終確認</h2>
+                            <div className="rounded-2xl border bg-white">
+                                <div className="p-4 border-b flex items-center justify-between">
+                                    <div className="text-sm font-semibold">{shopsById.get(orderTarget)?.name}</div>
+                                    <div className="text-sm font-semibold">{currency(shopTotal(orderTarget))}</div>
+                                </div>
+                                <div className="p-4 space-y-2">
+                                    {(cartByShop[orderTarget] || []).map((l) => (
+                                        <div key={`${l.item.id}-${orderTarget}`} className="text-sm flex items-start justify-between">
+                                            <div>
+                                                <div className="font-medium">{l.item.name} × {l.qty}</div>
+                                                <div className="text-xs text-zinc-500">受取 {l.item.pickup} / 注意 {l.item.note || "-"}</div>
+                                            </div>
+                                            <div className="tabular-nums">{currency(l.item.price * l.qty)}</div>
+                                        </div>
+                                    ))}
+                                </div>
+                                <div className="p-4 border-t space-y-2">
+                                    <div className="text-xs text-zinc-500">テストカード例: 4242… は成功。400000… は失敗（例: 4000 0000 0000 0002）。入力は数字のみ。</div>
+                                    {(() => {
+                                        const d = cardDigits.replace(/\D/g, "").slice(0, 16);
+                                        const formatted = (d.match(/.{1,4}/g)?.join(" ") ?? d);
+                                        const len = d.length;
+                                        return (
+                                            <>
+                                                <input
+                                                    className="w-full px-3 py-2 rounded border font-mono tracking-widest"
+                                                    placeholder="4242 4242 4242 4242"
+                                                    value={formatted}
+                                                    onChange={e => { const nd = e.target.value.replace(/\D/g, "").slice(0, 16); setCardDigits(nd); }}
+                                                    inputMode="numeric"
+                                                    maxLength={19}
+                                                    autoComplete="cc-number"
+                                                    aria-label="カード番号（テスト）"
+                                                    aria-describedby="card-help"
+                                                />
+                                                <div id="card-help" className="flex items-center justify-between text-[11px] text-zinc-500">
+                                                    <span>{len}/16 桁</span>
+                                                    <span>4桁ごとにスペース</span>
+                                                </div>
+                                                <div className="h-1 bg-zinc-200 rounded">
+                                                    <div className="h-1 bg-zinc-900 rounded" style={{ width: `${(len / 16) * 100}%` }} />
+                                                </div>
+                                            </>
+                                        );
+                                    })()}
+                                    <button
+                                        type="button"
+                                        className="w-full px-3 py-2 rounded border cursor-pointer disabled:opacity-40"
+                                        onClick={confirmPay}
+                                        disabled={isPaying || cardDigits.length < 16 || ((cartByShop[orderTarget]?.length ?? 0) === 0)}
+                                    >
+                                        支払いを確定する（テスト）
+                                    </button>
+                                </div>
+                            </div>
+                        </section>
+                    )}
                     {tab === "account" && (
                         <AccountView orders={orders} shopsById={shopsById} onDevReset={devResetOrdersStrict} onDevResetHistory={devResetOrderHistory} />
                     )}

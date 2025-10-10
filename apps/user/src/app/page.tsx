@@ -554,6 +554,36 @@ export default function UserPilotApp() {
         emitToast("success", `${name} のカートを空にしました`);
     };
 
+    // 全店舗分のカートを一括クリア
+    const clearAllCarts = () => {
+        if (!(typeof window !== 'undefined' && window.confirm('すべてのカートを空にしますか？'))) return;
+        if (cart.length === 0) { emitToast('info', 'カートはすでに空です'); return; }
+        setCart([]);
+        emitToast('success', 'すべてのカートを空にしました');
+    };
+
+    // 未引換チケットを一括リセット（DBとローカルを同期）
+    const devResetOrdersStrict = useCallback(async () => {
+        if (!confirm('未引換のチケットをすべてリセットします。よろしいですか？')) return;
+        try {
+            const targetIds = orders.filter(o => o.status === 'paid').map(o => o.id);
+            if (targetIds.length === 0) { emitToast('info', '未引換のチケットはありません'); return; }
+            if (supabase) {
+                const { error } = await supabase.from('orders').delete().in('id', targetIds);
+                if (error) {
+                    console.error('[orders.reset] error', error);
+                    emitToast('error', `リセットに失敗しました: ${error.message}`);
+                    return;
+                }
+            }
+            setOrders(prev => prev.filter(o => o.status !== 'paid'));
+            emitToast('success', '未引換のチケットをリセットしました');
+        } catch (e) {
+            console.error('[orders.reset] exception', e);
+            emitToast('error', `エラー: ${(e as any)?.message ?? e}`);
+        }
+    }, [supabase, orders, setOrders]);
+
     // 注文処理
     const [cardDigits, setCardDigits] = useState(""); // 数字のみ（最大16桁）
     const [orderTarget, setOrderTarget] = useState<string | undefined>(undefined);
@@ -837,7 +867,16 @@ export default function UserPilotApp() {
 
                     {tab === "cart" && (
                         <section className="mt-4 space-y-4">
-                            <h2 className="text-base font-semibold">カート（店舗別会計）</h2>
+                            <div className="flex items-center justify-between">
+                                <h2 className="text-base font-semibold">カート（店舗別会計）</h2>
+                                <button
+                                    type="button"
+                                    className="text-xs px-2 py-1 rounded border cursor-pointer disabled:opacity-40"
+                                    onClick={clearAllCarts}
+                                    disabled={cart.length === 0}
+                                    aria-disabled={cart.length === 0}
+                                >カートを全て空にする</button>
+                            </div>
                             {Object.keys(cartByShop).length === 0 && <p className="text-sm text-zinc-500">カートは空です</p>}
                             {Object.keys(cartByShop).map(sid => (
                                 <div key={sid} className="rounded-2xl border bg-white">
@@ -916,7 +955,7 @@ export default function UserPilotApp() {
                     )}
 
                     {tab === "account" && (
-                        <AccountView orders={orders} shopsById={shopsById} onDevReset={devResetOrders} />
+                        <AccountView orders={orders} shopsById={shopsById} onDevReset={devResetOrdersStrict} />
                     )}
 
                 </main>

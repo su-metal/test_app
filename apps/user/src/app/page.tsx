@@ -833,7 +833,7 @@ export default function UserPilotApp() {
         const reserved = getReserved(sid, it.id);
         const remain = Math.max(0, it.stock - reserved);
         return (
-            <div className="mt-2 inline-flex items-center rounded-full border px-2 py-1 text-sm select-none">
+            <div className="inline-flex items-center rounded-full px-2 py-1 text-sm select-none">
                 <button
                     type="button"
                     className="w-5 h-5 text-[10px] leading-none rounded-full border cursor-pointer disabled:opacity-40 flex items-center justify-center"
@@ -910,14 +910,16 @@ export default function UserPilotApp() {
                                                 <div className="absolute right-3 top-3 px-2 py-1 rounded-full bg-white/90 border text-[11px]">{s.distance.toFixed(2)} km</div>
                                             </div>
 
-                                            {/* 住所/位置の疑似行 */}
-                                            <div className="mt-3 grid grid-cols-3 gap-2">
-                                                <div className="col-span-2 flex items-center gap-2 text-sm text-zinc-700">
+                                            {/* 住所/ミニマップ（スクショ風） */}
+                                            <div className="mt-3">
+                                                <div className="flex items-center gap-2 text-sm text-zinc-700">
                                                     <span>📍</span>
-                                                    <span className="truncate">住所は未設定です</span>
+                                                    <span className="truncate">名古屋市中村区名駅1-1-1</span>
                                                 </div>
-                                                <div className="col-span-1">
-                                                    <div className="text-[11px] text-center w-full h-9 rounded border bg-[linear-gradient(0deg,transparent_24%,rgba(0,0,0,0.04)_25%,rgba(0,0,0,0.04)_26%,transparent_27%,transparent_74%,rgba(0,0,0,0.04)_75%,rgba(0,0,0,0.04)_76%,transparent_77%),linear-gradient(90deg,transparent_24%,rgba(0,0,0,0.04)_25%,rgba(0,0,0,0.04)_26%,transparent_27%,transparent_74%,rgba(0,0,0,0.04)_75%,rgba(0,0,0,0.04)_76%,transparent_77%)] bg-[length:12px_12px] flex items-center justify-center text-zinc-500">ここにあります</div>
+                                                <div className="relative mt-2">
+                                                    <div className="w-full h-28 rounded-xl border bg-[linear-gradient(0deg,transparent_24%,rgba(0,0,0,0.04)_25%,rgba(0,0,0,0.04)_26%,transparent_27%,transparent_74%,rgba(0,0,0,0.04)_75%,rgba(0,0,0,0.04)_76%,transparent_77%),linear-gradient(90deg,transparent_24%,rgba(0,0,0,0.04)_25%,rgba(0,0,0,0.04)_26%,transparent_27%,transparent_74%,rgba(0,0,0,0.04)_75%,rgba(0,0,0,0.04)_76%,transparent_77%)] bg-[length:12px_12px]"></div>
+                                                    <div className="absolute right-2 top-2 px-2 py-1 rounded bg-white/90 border text-[11px]">35.171, 136.881</div>
+                                                    <div className="absolute inset-0 flex items-center justify-center text-sm text-zinc-600"><span>📍 ここにあります</span></div>
                                                 </div>
                                             </div>
 
@@ -928,25 +930,27 @@ export default function UserPilotApp() {
                                                 <div className="text-xs px-2 py-0.5 rounded bg-zinc-100">カート {cartCount}</div>
                                             </div>
                                             {hasAny ? (
-                                                <div className="mt-3 grid grid-cols-2 gap-3">
+                                                <div className="mt-3 space-y-2">
                                                     {visibleItems.map(it => {
                                                         const remain = Math.max(0, it.stock - getReserved(s.id, it.id));
                                                         return (
-                                                            <div key={it.id} className="rounded-xl border p-2">
-                                                                <div className="aspect-[4/3] w-full overflow-hidden rounded-lg bg-zinc-100">
-                                                                    {/* 画像（なければ絵文字） */}
-                                                                    {/** TODO(req v2): DBの image_url を使う */}
-                                                                    <div className="w-full h-full flex items-center justify-center text-4xl">{it.photo}</div>
+                                                            <div key={it.id} className="flex gap-3 rounded-2xl border bg-white p-2 pr-3 items-center">
+                                                                <div className="w-24 h-24 overflow-hidden rounded-xl bg-zinc-100 flex items-center justify-center text-4xl shrink-0">
+                                                                    {/* TODO(req v2): image_url を配置 */}
+                                                                    <span>{it.photo}</span>
                                                                 </div>
-                                                                <div className="px-1 pt-2">
-                                                                    <div className="text-sm font-medium line-clamp-2">{it.name}</div>
-                                                                    <div className="text-xs text-zinc-500 flex items-center gap-1 mt-0.5">
-                                                                        <span>⏱️</span><span>受取 {it.pickup}</span>
-                                                                        <span className="ml-auto text-[11px]">在庫 {remain}</span>
+                                                                <div className="flex-1 min-w-0">
+                                                                    <div className="text-sm font-medium truncate">{it.name}</div>
+                                                                    <div className="mt-0.5 text-xs text-zinc-500 flex items-center gap-3">
+                                                                        <span className="inline-flex items-center gap-1"><span>⏰</span><span>受取 {it.pickup}</span></span>
+                                                                        <span className="ml-auto inline-flex items-center gap-1 text-[11px]">在庫 <span className="tabular-nums">{remain}</span></span>
                                                                     </div>
-                                                                    <div className="flex items-center justify-between mt-1.5">
-                                                                        <div className="text-sm font-semibold">{currency(it.price)}</div>
-                                                                        <QtyChip sid={s.id} it={it} />
+                                                                    <div className="mt-2 flex items-center justify-between">
+                                                                        <div className="text-base font-semibold">{currency(it.price)}</div>
+                                                                        {/* 数量チップ */}
+                                                                        <div className="rounded-full border px-2 py-1">
+                                                                            <QtyChip sid={s.id} it={it} />
+                                                                        </div>
                                                                     </div>
                                                                 </div>
                                                             </div>

@@ -105,8 +105,15 @@ function useSupabase() {
     if (w.__supabase) return w.__supabase;
     const url = (process.env.NEXT_PUBLIC_SUPABASE_URL as string | undefined) || w.NEXT_PUBLIC_SUPABASE_URL;
     const key = (process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY as string | undefined) || w.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    const sid = getStoreId();
     if (!url || !key) return null;
-    try { const sb = createClient(url, key); w.__supabase = sb; return sb; } catch { return null; }
+    try {
+      const sb = createClient(url, key, { global: { headers: { 'x-store-id': String(sid || '') } } });
+      (w as any).__supabase = sb;
+      return sb;
+    } catch {
+      return null;
+    }
   }, []);
 }
 
@@ -231,6 +238,13 @@ function useOrders() {
         .channel(chanName)
         .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'orders', filter: `store_id=eq.${sid}` }, (p: any) => { if (p?.new) setOrders(prev => [mapOrder(p.new as OrdersRow), ...prev]); })
         .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'orders', filter: `store_id=eq.${sid}` }, (p: any) => { if (p?.new) setOrders(prev => prev.map(o => o.id === String((p.new as OrdersRow).id) ? mapOrder(p.new as OrdersRow) : o)); })
+        // NOTE: DELETE は REPLICA IDENTITY 設定次第で old に store_id が含まれないため、フィルタを外す
+        .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'orders' }, (p: any) => {
+          const oldRow = (p?.old as any) || {};
+          const id = String(oldRow.id || '');
+          if (!id) return;
+          setOrders(prev => prev.filter(o => o.id !== id));
+        })
         .subscribe() as RealtimeChannel;
       channelRef.current = ch;
     } catch { setErr('リアルタイム購読に失敗しました'); }
@@ -247,9 +261,32 @@ function useOrders() {
     if (data) { setOrders(prev => prev.map(o => o.id === String((data as OrdersRow).id) ? mapOrder(data as OrdersRow) : o)); await decrementStocksDB(target.items); orderChan.post({ type: 'ORDER_FULFILLED', orderId: String((data as OrdersRow).id), at: Date.now() }); }
   }, [supabase, orders, decrementStocksDB, orderChan]);
 
+  const clearPending = useCallback(async () => {
+    if (!(typeof window !== 'undefined' && window.confirm('「受取待ちの注文」をすべて削除しますか？'))) return;
+    if (!supabase) { setOrders(prev => prev.filter(o => o.status !== 'PENDING')); return; }
+    const { error } = await supabase
+      .from('orders')
+      .delete()
+      .eq('store_id', getStoreId())
+      .eq('status', 'PENDING');
+    if (error) { setErr(error.message || '削除に失敗しました'); return; }
+    setOrders(prev => prev.filter(o => o.status !== 'PENDING'));
+  }, [supabase]);
+  const clearFulfilled = useCallback(async () => {
+    if (!(typeof window !== 'undefined' && window.confirm('「受け渡し済み」の注文をすべて削除しますか？'))) return;
+    if (!supabase) { setOrders(prev => prev.filter(o => o.status !== 'FULFILLED')); return; }
+    const { error } = await supabase
+      .from('orders')
+      .delete()
+      .eq('store_id', getStoreId())
+      .eq('status', 'FULFILLED');
+    if (error) { setErr(error.message || '削除に失敗しました'); return; }
+    setOrders(prev => prev.filter(o => o.status !== 'FULFILLED'));
+  }, [supabase]);
+
   const pending = useMemo(() => orders.filter(o => o.status === 'PENDING'), [orders]);
   const fulfilled = useMemo(() => orders.filter(o => o.status === 'FULFILLED'), [orders]);
-  return { ready, err, orders, pending, fulfilled, fulfill, retry: fetchAndSubscribe } as const;
+  return { ready, err, orders, pending, fulfilled, fulfill, clearPending, clearFulfilled, retry: fetchAndSubscribe } as const;
 }
 
 // ===== UI =====
@@ -387,7 +424,7 @@ function ProductForm() {
 }
 
 function OrdersPage() {
-  const { ready, err, pending, fulfilled, fulfill, retry } = useOrders();
+  const { ready, err, pending, fulfilled, fulfill, clearPending, clearFulfilled, retry } = useOrders();
   const [current, setCurrent] = useState<Order | null>(null);
   const [codeInput, setCodeInput] = useState("");
   const [codeErr, setCodeErr] = useState<string | null>(null);
@@ -411,12 +448,30 @@ function OrdersPage() {
           <StoreSwitcher />
         </div>
         <SectionTitle badge={`${pending.length}件`}>受取待ちの注文</SectionTitle>
+        <div className="flex justify-end mb-2">
+          <button
+            type="button"
+            onClick={clearPending}
+            disabled={pending.length === 0}
+            className="inline-flex items-center rounded-lg border px-3 py-1.5 text-xs text-red-600 border-red-200 hover:bg-red-50 disabled:opacity-50"
+            aria-disabled={pending.length === 0}
+          >未引換を一括削除</button>
+        </div>
         {pending.length === 0 ? (<div className="rounded-xl border bg-white p-6 text-sm text-zinc-600">現在、受取待ちの注文はありません。</div>) : (
           <div className="grid grid-cols-1 gap-4">{pending.map(o => (<OrderCard key={o.id} order={o} onHandoff={setCurrent} />))}</div>
         )}
       </section>
       <section>
         <SectionTitle badge={`${fulfilled.length}件`}>受け渡し済み</SectionTitle>
+        <div className="flex justify-end mb-2">
+          <button
+            type="button"
+            onClick={clearFulfilled}
+            disabled={fulfilled.length === 0}
+            className="inline-flex items-center rounded-lg border px-3 py-1.5 text-xs text-red-600 border-red-200 hover:bg-red-50 disabled:opacity-50"
+            aria-disabled={fulfilled.length === 0}
+          >一括削除</button>
+        </div>
         {fulfilled.length === 0 ? (<div className="rounded-xl border bg-white p-6 text-sm text-zinc-600">まだ受け渡し済みの注文はありません。</div>) : (
           <div className="grid grid-cols-1 gap-4 opacity-90">{fulfilled.map(o => (<OrderCard key={o.id} order={o} onHandoff={() => {}} />))}</div>
         )}

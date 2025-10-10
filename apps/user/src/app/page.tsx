@@ -612,6 +612,34 @@ export default function UserPilotApp() {
     const unredeemedOrders = useMemo(() => orders.filter(o => o.status === 'paid'), [orders]);
     const redeemedOrders = useMemo(() => orders.filter(o => o.status === 'redeemed'), [orders]);
 
+    // 注文ステータス表示テキスト
+    const statusText = (s: Order["status"]) => (
+        s === 'redeemed' ? '引換済み' : s === 'paid' ? '未引換' : s === 'refunded' ? '返金済み' : s
+    );
+
+    // 引換えタブ向け：code6で正規化・重複排除し、redeemed優先の正規形を作成
+    const canonicalOrdersForOrderTab = useMemo(() => {
+        const byCode = new Map<string, Order>();
+        for (const o of orders) {
+            const k = String(o.code6 ?? "");
+            const ex = byCode.get(k);
+            if (!ex) {
+                byCode.set(k, o);
+            } else {
+                if (ex.status !== 'redeemed' && o.status === 'redeemed') byCode.set(k, o);
+            }
+        }
+        return Array.from(byCode.values());
+    }, [orders]);
+
+    // 未引換のみ（新しい順）
+    const pendingForOrderTab = useMemo(
+        () => canonicalOrdersForOrderTab.filter(o => o.status === 'paid').sort((a, b) => b.createdAt - a.createdAt),
+        [canonicalOrdersForOrderTab]
+    );
+
+    const [openTicketIdOrder, setOpenTicketIdOrder] = useState<string | null>(null);
+
     const toOrder = (sid: string) => { setOrderTarget(sid); setTab("order"); };
 
     const confirmPay = useCallback(async () => {
@@ -923,7 +951,71 @@ export default function UserPilotApp() {
                     )}
 
                     {tab === "order" && (
-                        <section className="mt-4 space-y-4">
+                        <section className="mt-4 space-y-3">
+                            <h2 className="text-base font-semibold">未引換のチケット</h2>
+                            {pendingForOrderTab.length === 0 && (
+                                <div className="text-sm text-zinc-500">未引換のチケットはありません。</div>
+                            )}
+                            {pendingForOrderTab.length > 0 && (
+                                <div className="space-y-3">
+                                    <div className="flex items-center justify-between">
+                                        <div className="text-sm text-zinc-600">引換待ちのチケット</div>
+                                        <div className="text-[11px] text-zinc-500">{pendingForOrderTab.length}件</div>
+                                    </div>
+                                    {pendingForOrderTab.map(o => {
+                                        const shopName = shopsById.get(o.shopId)?.name || o.shopId;
+                                        const isOpen = openTicketIdOrder === o.id;
+                                        return (
+                                            <div key={o.id} className={`rounded-2xl border bg-white ${isOpen ? 'p-4' : 'p-3'}`}>
+                                                <button type="button" aria-expanded={isOpen} aria-controls={`ticket-${o.id}`} className="w-full flex items-center justify-between cursor-pointer" onClick={() => setOpenTicketIdOrder(isOpen ? null : o.id)}>
+                                                    <div className="flex items-center gap-2 min-w-0">
+                                                        <span className="text-lg leading-none">{isOpen ? '▾' : '▸'}</span>
+                                                        <div className="text-left truncate">
+                                                            <div className="text-sm font-semibold truncate">{shopName}</div>
+                                                            <div className="text-[11px] text-zinc-500 truncate">注文番号 {o.id}</div>
+                                                        </div>
+                                                    </div>
+                                                    <div className="text-xs px-2 py-1 rounded bg-amber-100 shrink-0">{statusText(o.status)}</div>
+                                                </button>
+                                                {isOpen && (
+                                                    <div id={`ticket-${o.id}`}>
+                                                        <div className="grid grid-cols-2 gap-4 items-center mt-3">
+                                                            <div>
+                                                                <div className="text-xs text-zinc-500">6桁コード</div>
+                                                                <div className="text-2xl font-mono tracking-widest">{o.code6}</div>
+                                                                <div className="text-xs text-zinc-500 mt-2">合計</div>
+                                                                <div className="text-base font-semibold">{currency(o.amount)}</div>
+                                                                <div className="text-[11px] text-zinc-500 mt-1">{new Date(o.createdAt).toLocaleString()}</div>
+                                                                <div className="mt-2">
+                                                                    <button type="button" className="text-xs px-2 py-1 rounded border cursor-pointer" onClick={async () => { const ok = await safeCopy(o.code6); emitToast(ok ? 'success' : 'error', ok ? 'コピーしました' : 'コピーに失敗しました'); }}>コードをコピー</button>
+                                                                </div>
+                                                            </div>
+                                                            <div className="justify-self-center">
+                                                                <div className="p-2 rounded bg-white shadow"><TinyQR seed={o.id} /></div>
+                                                            </div>
+                                                        </div>
+                                                        <div className="mt-4">
+                                                            <div className="text-xs text-zinc-500 mb-1">購入内容</div>
+                                                            <ul className="space-y-1">
+                                                                {o.lines.map((l, i) => (
+                                                                    <li key={`${l.item.id}-${i}`} className="flex items-center justify-between text-sm">
+                                                                        <span className="truncate mr-2">{l.item.name}</span>
+                                                                        <span className="tabular-nums">×{l.qty}</span>
+                                                                    </li>
+                                                                ))}
+                                                            </ul>
+                                                        </div>
+                                                        <div className="text-xs text-zinc-500 mt-3">※ 店頭で6桁コードまたはQRを提示してください。受取完了は店側アプリで行われ、ステータスが <b>redeemed</b> に更新されます。</div>
+                                                    </div>
+                                                )}
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            )}
+                        </section>
+                    )}
+                        {/*
                             <h2 className="text-base font-semibold">注文の最終確認</h2>
                             {!orderTarget && <p className="text-sm text-red-600">対象の店舗カートが見つかりません</p>}
                             {orderTarget && (
@@ -976,6 +1068,7 @@ export default function UserPilotApp() {
                         </section>
                     )}
 
+                        */}
                     {tab === "account" && (
                         <AccountView orders={orders} shopsById={shopsById} onDevReset={devResetOrdersStrict} onDevResetHistory={devResetOrderHistory} />
                     )}
@@ -986,7 +1079,7 @@ export default function UserPilotApp() {
                     <div className="max-w-[448px] mx-auto grid grid-cols-4 text-center">
                         <Tab id="home" label="ホーム" icon="🏠" />
                         <Tab id="cart" label="カート" icon="🛒" />
-                        <Tab id="order" label="注文" icon="🧾" />
+                        <Tab id="order" label="引換え" icon="🧾" />
                         <Tab id="account" label="アカウント" icon="👤" />
                     </div>
                 </footer>
@@ -1074,10 +1167,10 @@ function AccountView({
             <h2 className="text-base font-semibold">アカウント / チケット</h2>
 
             {/* 未引換チケット（アコーディオン・QR単一表示） */}
-            {pending.length === 0 && (
+            {false && pending.length === 0 && (
                 <div className="text-sm text-zinc-500">未引換のチケットはありません。</div>
             )}
-            {pending.length > 0 && (
+            {false && pending.length > 0 && (
                 <div className="space-y-3">
                     {/* 未引換のチケット */}
                     <div className="flex items-center justify-between">

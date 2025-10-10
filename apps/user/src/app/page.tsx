@@ -943,7 +943,7 @@ export default function UserPilotApp() {
                                                         const remain = Math.max(0, it.stock - getReserved(s.id, it.id));
                                                         return (
                                                             <div key={it.id} className="flex gap-3 rounded-2xl border bg-white p-2 pr-3">
-                                                                {/* 左側：詳細を開くボタン領域（内部下部に数量チップ） */}
+                                                                {/* 左側：詳細を開くボタン領域（数量チップはボタン外へ） */}
                                                                 <button type="button" onClick={() => setDetail({ shopId: s.id, item: it })} className="flex items-center gap-3 flex-1 min-w-0 text-left">
                                                                     <div className="w-24 h-24 overflow-hidden rounded-xl bg-zinc-100 flex items-center justify-center text-4xl shrink-0">
                                                                         {/* TODO(req v2): image_url を配置 */}
@@ -955,15 +955,14 @@ export default function UserPilotApp() {
                                                                             <span className="inline-flex items-center gap-1"><span>⏰</span><span>受取 {it.pickup}</span></span>
                                                                             <span className="ml-auto inline-flex items-center gap-1 text-[11px]">在庫 <span className="tabular-nums">{remain}</span></span>
                                                                         </div>
-                                                                        {/* 下段：価格 + 数量チップ（ボタン内右下、クリック時は伝播停止） */}
-                                                                        <div className="mt-2 flex items-center justify-between">
-                                                                            <div className="text-base font-semibold">{currency(it.price)}</div>
-                                                                            <div className="ml-2 rounded-full border px-2 py-1" onClick={(e) => e.stopPropagation()}>
-                                                                                <QtyChip sid={s.id} it={it} />
-                                                                            </div>
-                                                                        </div>
+                                                                        {/* 下段：価格（数量チップは外側） */}
+                                                                        <div className="mt-2 text-base font-semibold">{currency(it.price)}</div>
                                                                     </div>
                                                                 </button>
+                                                                {/* 右下：数量チップ（ボタン外、下寄せ） */}
+                                                                <div className="self-end ml-1 rounded-full border px-2 py-1" onClick={(e) => e.stopPropagation()}>
+                                                                    <QtyChip sid={s.id} it={it} />
+                                                                </div>
                                                             </div>
                                                         );
                                                     })}

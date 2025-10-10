@@ -523,6 +523,9 @@ function ProductForm() {
             <div className="text-right">
               <div className="font-semibold">{yen(p.price)}</div>
               <div className="text-xs text-zinc-500">在庫 {p.stock}</div>
+              {pending[p.id] ? (
+                <div className="mt-1 text-xs text-amber-700">変更予定: {pending[p.id].next}（現在: {pending[p.id].current}）</div>
+              ) : null}
               <button
                 type="button"
                 className="mt-1 inline-flex items-center rounded-lg border px-2 py-1 text-xs hover:bg-zinc-50 disabled:opacity-50"

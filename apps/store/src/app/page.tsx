@@ -197,7 +197,28 @@ function useProducts() {
     if (error) setPerr(error.message || '削除に失敗しました');
   }, [supabase]);
 
-  return { products, perr, ploading, add, remove, reload: load } as const;
+  const updateStock = useCallback(async (id: string, next: number) => {
+    const clamped = Math.max(0, Math.floor(Number(next || 0)));
+    // 先にローカルへ反映（楽観更新）
+    setProducts(prev => prev.map(p => p.id === id ? { ...p, stock: clamped } : p));
+    if (!supabase) return;
+    const { data, error } = await supabase
+      .from('products')
+      .update({ stock: clamped })
+      .eq('id', id)
+      .eq('store_id', getStoreId())
+      .select('*')
+      .single();
+    if (error) {
+      setPerr(error.message || '在庫更新に失敗しました');
+      // 失敗時は再読込で整合
+      await load();
+      return;
+    }
+    if (data) setProducts(prev => prev.map(p => p.id === id ? mapProduct(data as ProductsRow) : p));
+  }, [supabase, load]);
+
+  return { products, perr, ploading, add, remove, updateStock, reload: load } as const;
 }
 
 // ===== Orders =====
@@ -258,7 +279,12 @@ function useOrders() {
     if (!supabase) { setOrders(prev => prev.map(o => o.id === id ? { ...o, status: 'FULFILLED' } : o)); orderChan.post({ type: 'ORDER_FULFILLED', orderId: id, at: Date.now() }); return; }
     const { data, error } = await supabase.from('orders').update({ status: 'FULFILLED' }).eq('id', id).eq('store_id', getStoreId()).select('*').single();
     if (error) { setErr(error.message || '更新に失敗しました'); return; }
-    if (data) { setOrders(prev => prev.map(o => o.id === String((data as OrdersRow).id) ? mapOrder(data as OrdersRow) : o)); await decrementStocksDB(target.items); orderChan.post({ type: 'ORDER_FULFILLED', orderId: String((data as OrdersRow).id), at: Date.now() }); }
+    if (data) {
+      setOrders(prev => prev.map(o => o.id === String((data as OrdersRow).id) ? mapOrder(data as OrdersRow) : o));
+      // 在庫反映のタイミングは「支払い時点」に変更。受け渡し時の減算は行わない。
+      // TODO(req v2): 運用上の整合が必要ならサーバー側で冪等化/検証を行う
+      orderChan.post({ type: 'ORDER_FULFILLED', orderId: String((data as OrdersRow).id), at: Date.now() });
+    }
   }, [supabase, orders, decrementStocksDB, orderChan]);
 
   const clearPending = useCallback(async () => {
@@ -386,8 +412,35 @@ function QRScanner({ onDetect, onClose }: { onDetect: (code: string) => void; on
   );
 }
 
+function StockInline({ id, stock, disabled, onCommit }: { id: string; stock: number; disabled: boolean; onCommit: (val: number) => void }) {
+  const [val, setVal] = React.useState<string>(() => String(Math.max(0, Math.floor(Number(stock || 0)))));
+  React.useEffect(() => { setVal(String(Math.max(0, Math.floor(Number(stock || 0))))); }, [stock]);
+  const commit = React.useCallback(() => {
+    const n = Math.max(0, Math.floor(Number(val || 0)));
+    if (!Number.isFinite(n)) return;
+    onCommit(n);
+  }, [val, onCommit]);
+  return (
+    <div className="mt-1 flex items-center justify-end gap-1">
+      <input
+        type="number"
+        inputMode="numeric"
+        min={0}
+        step={1}
+        className="w-20 rounded-lg border px-2 py-1 text-xs text-right"
+        value={val}
+        onChange={e => setVal(e.target.value)}
+        onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); commit(); } }}
+        aria-label="在庫数"
+        disabled={disabled}
+      />
+      <button type="button" className="inline-flex items-center rounded-lg border px-2 py-1 text-xs hover:bg-zinc-50 disabled:opacity-50" onClick={commit} disabled={disabled}>更新</button>
+    </div>
+  );
+}
+
 function ProductForm() {
-  const { products, perr, ploading, add, remove } = useProducts();
+  const { products, perr, ploading, add, remove, updateStock } = useProducts();
   const [name, setName] = useState("");
   const [price, setPrice] = useState("");
   const [stock, setStock] = useState("");
@@ -414,6 +467,7 @@ function ProductForm() {
             <div className="text-right">
               <div className="font-semibold">{yen(p.price)}</div>
               <div className="text-xs text-zinc-500">在庫 {p.stock}</div>
+              <StockInline id={p.id} stock={p.stock} disabled={ploading} onCommit={(n) => updateStock(p.id, n)} />
               <button type="button" className="mt-2 inline-flex items-center rounded-lg border px-2 py-1 text-xs text-red-600 border-red-200 hover:bg-red-50 disabled:opacity-50" onClick={() => { if (confirm(`「${p.name}」を削除しますか？`)) remove(p.id); }} disabled={ploading} aria-label={`${p.name} を削除`}>削除</button>
             </div>
           </div>

@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 import React, { useMemo, useState, useEffect, useRef, useCallback } from "react";
 import { createClient, type RealtimeChannel } from "@supabase/supabase-js";
 
@@ -15,25 +15,25 @@ type OrderItem = {
 };
 
 type OrdersRow = {
-    id: string;
-    store_id?: string | null;
-    code: string | null;
-    customer: string | null;
-    items: OrderItem[] | null;
-    total: number | null;
-    placed_at: string | null;
-    status: OrderStatus;
+  id: string;
+  store_id?: string | null;
+  code: string | null;
+  customer: string | null;
+  items: OrderItem[] | null;
+  total: number | null;
+  placed_at: string | null;
+  status: OrderStatus;
 };
 
 type Order = {
-    id: string;
-    storeId: string;
-    code: string | null;
-    customer: string;
-    items: OrderItem[];
-    total: number;
-    placedAt: string;
-    status: OrderStatus;
+  id: string;
+  storeId: string;
+  code: string | null;
+  customer: string;
+  items: OrderItem[];
+  total: number;
+  placedAt: string;
+  status: OrderStatus;
 };
 
 type ProductsRow = {
@@ -143,7 +143,7 @@ const StoreSwitcher = React.memo(function StoreSwitcher() {
   useEffect(() => setSel(getStoreId()), []);
   const onChange = useCallback((e: React.ChangeEvent<HTMLSelectElement>) => {
     const v = e.target.value; setSel(v);
-    try { localStorage.setItem('store:selected', v); } catch {}
+    try { localStorage.setItem('store:selected', v); } catch { }
     (window as any).__STORE_ID__ = v; location.reload();
   }, []);
   return (
@@ -394,7 +394,7 @@ function QRScanner({ onDetect, onClose }: { onDetect: (code: string) => void; on
         }
       } catch (e) { setErr('カメラ起動に失敗しました'); }
     })();
-    return () => { try { if (raf) cancelAnimationFrame(raf); } catch {} try { const v = videoRef.current as any; if (v) v.pause?.(); } catch {} try { stream?.getTracks?.().forEach(t => t.stop()); } catch {} };
+    return () => { try { if (raf) cancelAnimationFrame(raf); } catch { } try { const v = videoRef.current as any; if (v) v.pause?.(); } catch { } try { stream?.getTracks?.().forEach(t => t.stop()); } catch { } };
   }, [onDetect]);
   return (
     <div className="fixed inset-0 z-[60] grid place-items-center bg-black/40 p-4" role="dialog" aria-modal="true" onClick={onClose}>
@@ -466,27 +466,31 @@ function StockAdjustModal({
   return (
     <div className="fixed inset-0 z-[60] grid place-items-center bg-black/40 p-4" role="dialog" aria-modal="true" onClick={onClose}>
       <div className="w-full max-w-md rounded-2xl bg-white shadow-xl border p-4" onClick={e => e.stopPropagation()}>
-        <div className="text-base font-semibold mb-2">在庫調整</div>
+        <div className="text-base font-semibold mb-1">在庫調整</div>
         <div className="text-sm text-zinc-600 mb-3">対象: {productName}</div>
-        <label className="block text-sm">
-          <span className="text-zinc-700">在庫数</span>
-          <input
-            type="number"
-            inputMode="numeric"
-            min={0}
-            step={1}
-            className="mt-1 w-full rounded-xl border px-3 py-2 text-sm text-right"
-            value={val}
-            onChange={e => setVal(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); commit(); } }}
-            aria-label="在庫数"
-            disabled={disabled}
-            autoFocus
-          />
-        </label>
-        <div className="mt-4 flex items-center justify-end gap-2">
-          <button onClick={onClose} className="rounded-xl border px-4 py-2 text-sm">キャンセル</button>
-          <button onClick={commit} disabled={disabled} className={`rounded-xl px-4 py-2 text-sm text-white ${disabled ? 'bg-zinc-400 cursor-not-allowed' : 'bg-zinc-900'}`}>更新</button>
+        <div className="mb-3">
+          <div className="text-xs text-zinc-600">数量</div>
+          <div className="mt-1 flex items-center justify-between gap-2">
+            <div className="text-2xl font-semibold tabular-nums">{val || "0"}</div>
+            <button type="button" className="rounded-lg border px-3 py-2 text-sm" onClick={() => setVal("0")} disabled={disabled}>0にする</button>
+          </div>
+          <div className="mt-2 grid grid-cols-3 gap-2 select-none">
+            <button type="button" className="h-12 rounded-xl bg-zinc-900 text-white text-lg font-semibold active:opacity-90" onClick={() => setVal(v => String(Math.max(0, (Number(v || 0) + 1))))} disabled={disabled}>+1</button>
+            <button type="button" className="h-12 rounded-xl bg-zinc-900 text-white text-lg font-semibold active:opacity-90" onClick={() => setVal(v => String(Math.max(0, (Number(v || 0) + 5))))} disabled={disabled}>+5</button>
+            <button type="button" className="h-12 rounded-xl bg-zinc-900 text-white text-lg font-semibold active:opacity-90" onClick={() => setVal(v => String(Math.max(0, (Number(v || 0) + 10))))} disabled={disabled}>+10</button>
+
+            <button type="button" className="h-12 rounded-xl bg-zinc-100 text-zinc-900 text-lg font-medium active:opacity-80" onClick={() => setVal(v => String(Math.max(0, (Number(v || 0) - 1))))} disabled={disabled}>-1</button>
+            <button type="button" className="h-12 rounded-xl bg-zinc-100 text-zinc-900 text-lg font-medium active:opacity-80" onClick={() => setVal(v => String(Math.max(0, (Number(v || 0) - 5))))} disabled={disabled}>-5</button>
+            <button type="button" className="h-12 rounded-xl bg-zinc-100 text-zinc-900 text-lg font-medium active:opacity-80" onClick={() => setVal(v => String(Math.max(0, (Number(v || 0) - 10))))} disabled={disabled}>-10</button>
+          </div>
+          <label className="mt-3 block text-sm">
+            <span className="text-zinc-700">直接入力</span>
+            <input type="number" inputMode="numeric" min={0} step={1} className="mt-1 w-full rounded-xl border px-3 py-3 text-base text-right" value={val} onChange={e => setVal(e.target.value)} onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); commit(); } }} aria-label="在庫数" disabled={disabled} />
+          </label>
+        </div>
+        <div className="mt-2 flex items-center justify-end gap-2">
+          <button onClick={onClose} className="rounded-xl border px-4 py-3 text-sm">キャンセル</button>
+          <button onClick={commit} disabled={disabled} className={`rounded-xl px-4 py-3 text-sm text-white ${disabled ? "bg-zinc-400 cursor-not-allowed" : "bg-zinc-900"}`}>更新</button>
         </div>
       </div>
     </div>
@@ -533,20 +537,27 @@ function ProductForm() {
                 disabled={ploading}
                 aria-label={`${p.name} の在庫を調整`}
               >在庫調整</button>
-              <button type="button" className="mt-2 inline-flex items-center rounded-lg border px-2 py-1 text-xs text-red-600 border-red-200 hover:bg-red-50 disabled:opacity-50" onClick={() => { if (confirm(`「${p.name}」を削除しますか？`)) remove(p.id); }} disabled={ploading} aria-label={`${p.name} を削除`}>削除</button>
+              <button
+                type="button"
+                className="mt-2 inline-flex items-center rounded-lg border px-2 py-1 text-xs text-red-600 border-red-200 hover:bg-red-50 disabled:opacity-50"
+                onClick={() => { if (confirm(`「${p.name}」を削除しますか？`)) remove(p.id); }}
+                disabled={ploading}
+                aria-label={`${p.name} を削除`}
+              >削除</button>
             </div>
+
+            <StockAdjustModal
+              open={!!adjust}
+              initial={adjust?.stock || 0}
+              productName={adjust?.name || ''}
+              disabled={ploading}
+              onClose={() => setAdjust(null)}
+              onCommit={(n) => { if (adjust) { setPending(prev => ({ ...prev, [adjust.id]: { id: adjust.id, name: adjust.name, current: adjust.stock, next: n } })); setAdjust(null); } }}
+            />
+
           </div>
         ))}
       </div>
-
-      <StockAdjustModal
-        open={!!adjust}
-        initial={adjust?.stock || 0}
-        productName={adjust?.name || ''}
-        disabled={ploading}
-        onClose={() => setAdjust(null)}
-        onCommit={(n) => { if (adjust) { setPending(prev => ({ ...prev, [adjust.id]: { id: adjust.id, name: adjust.name, current: adjust.stock, next: n } })); setAdjust(null); } }}
-      />
       {Object.keys(pending).length > 0 && (
         <div className="sticky bottom-4 mt-4 rounded-2xl border bg-white p-3 shadow-sm">
           <div className="flex items-center justify-between gap-2">
@@ -559,7 +570,7 @@ function ProductForm() {
         </div>
       )}
     </div>
-  );
+  )
 }
 
 function OrdersPage() {
@@ -612,7 +623,7 @@ function OrdersPage() {
           >一括削除</button>
         </div>
         {fulfilled.length === 0 ? (<div className="rounded-xl border bg-white p-6 text-sm text-zinc-600">まだ受け渡し済みの注文はありません。</div>) : (
-          <div className="grid grid-cols-1 gap-4 opacity-90">{fulfilled.map(o => (<OrderCard key={o.id} order={o} onHandoff={() => {}} />))}</div>
+          <div className="grid grid-cols-1 gap-4 opacity-90">{fulfilled.map(o => (<OrderCard key={o.id} order={o} onHandoff={() => { }} />))}</div>
         )}
       </section>
       {current && (

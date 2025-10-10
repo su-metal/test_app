@@ -188,6 +188,7 @@ export default function UserPilotApp() {
 
     const [tab, setTab] = useState<"home" | "cart" | "order" | "account">("home");
     const [focusedShop, setFocusedShop] = useState<string | undefined>(undefined);
+    const [detail, setDetail] = useState<{ shopId: string; item: Item } | null>(null);
     const supabase = useSupabase();
     type DbProduct = { id: string; store_id?: string; name: string; price?: number; stock?: number; image_url?: string; updated_at?: string };
     type DbStore = { id: string; name: string; created_at?: string };
@@ -199,6 +200,13 @@ export default function UserPilotApp() {
     // --- Hydration対策（SSRとクライアント差異を回避） ---
     const [hydrated, setHydrated] = useState(false);
     useEffect(() => setHydrated(true), []);
+    // モーダル: Esc で閉じる
+    useEffect(() => {
+        if (!detail) return;
+        const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setDetail(null); };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+    }, [detail]);
 
     const [clock, setClock] = useState<string>("");
     useEffect(() => {
@@ -934,25 +942,28 @@ export default function UserPilotApp() {
                                                     {visibleItems.map(it => {
                                                         const remain = Math.max(0, it.stock - getReserved(s.id, it.id));
                                                         return (
-                                                            <div key={it.id} className="flex gap-3 rounded-2xl border bg-white p-2 pr-3 items-center">
-                                                                <div className="w-24 h-24 overflow-hidden rounded-xl bg-zinc-100 flex items-center justify-center text-4xl shrink-0">
-                                                                    {/* TODO(req v2): image_url を配置 */}
-                                                                    <span>{it.photo}</span>
-                                                                </div>
-                                                                <div className="flex-1 min-w-0">
-                                                                    <div className="text-sm font-medium truncate">{it.name}</div>
-                                                                    <div className="mt-0.5 text-xs text-zinc-500 flex items-center gap-3">
-                                                                        <span className="inline-flex items-center gap-1"><span>⏰</span><span>受取 {it.pickup}</span></span>
-                                                                        <span className="ml-auto inline-flex items-center gap-1 text-[11px]">在庫 <span className="tabular-nums">{remain}</span></span>
+                                                            <div key={it.id} className="flex gap-3 rounded-2xl border bg-white p-2 pr-3">
+                                                                {/* 左側：詳細を開くボタン領域（内部下部に数量チップ） */}
+                                                                <button type="button" onClick={() => setDetail({ shopId: s.id, item: it })} className="flex items-center gap-3 flex-1 min-w-0 text-left">
+                                                                    <div className="w-24 h-24 overflow-hidden rounded-xl bg-zinc-100 flex items-center justify-center text-4xl shrink-0">
+                                                                        {/* TODO(req v2): image_url を配置 */}
+                                                                        <span>{it.photo}</span>
                                                                     </div>
-                                                                    <div className="mt-2 flex items-center justify-between">
-                                                                        <div className="text-base font-semibold">{currency(it.price)}</div>
-                                                                        {/* 数量チップ */}
-                                                                        <div className="rounded-full border px-2 py-1">
-                                                                            <QtyChip sid={s.id} it={it} />
+                                                                    <div className="flex-1 min-w-0">
+                                                                        <div className="text-sm font-medium truncate">{it.name}</div>
+                                                                        <div className="mt-0.5 text-xs text-zinc-500 flex items-center gap-3">
+                                                                            <span className="inline-flex items-center gap-1"><span>⏰</span><span>受取 {it.pickup}</span></span>
+                                                                            <span className="ml-auto inline-flex items-center gap-1 text-[11px]">在庫 <span className="tabular-nums">{remain}</span></span>
+                                                                        </div>
+                                                                        {/* 下段：価格 + 数量チップ（ボタン内右下、クリック時は伝播停止） */}
+                                                                        <div className="mt-2 flex items-center justify-between">
+                                                                            <div className="text-base font-semibold">{currency(it.price)}</div>
+                                                                            <div className="ml-2 rounded-full border px-2 py-1" onClick={(e) => e.stopPropagation()}>
+                                                                                <QtyChip sid={s.id} it={it} />
+                                                                            </div>
                                                                         </div>
                                                                     </div>
-                                                                </div>
+                                                                </button>
                                                             </div>
                                                         );
                                                     })}
@@ -1218,6 +1229,44 @@ export default function UserPilotApp() {
                 </div>
 
                 <ToastBar toast={toast} onClose={() => setToast(null)} />
+
+                {/* 商品詳細モーダル */}
+                {detail && (
+                    <div role="dialog" aria-modal="true" className="fixed inset-0 z-50">
+                        <div className="absolute inset-0 bg-black/40" onClick={() => setDetail(null)} />
+                        <div className="absolute inset-0 flex items-center justify-center p-4">
+                            <div className="max-w-[520px] w-full bg-white rounded-2xl overflow-hidden shadow-xl">
+                                <div className="relative">
+                                    <div className="w-full h-56 bg-zinc-100 flex items-center justify-center text-6xl">
+                                        <span>{detail.item.photo}</span>
+                                    </div>
+                                    <button type="button" aria-label="閉じる" className="absolute top-2 right-2 w-8 h-8 rounded-full bg-white/90 border flex items-center justify-center" onClick={() => setDetail(null)}>✕</button>
+                                </div>
+                                <div className="p-4 space-y-3">
+                                    <div className="text-lg font-semibold leading-tight break-words">{detail.item.name}</div>
+                                    <div className="text-sm text-zinc-600 flex items-center gap-3">
+                                        <span className="inline-flex items-center gap-1"><span>⏰</span><span>受取 {detail.item.pickup}</span></span>
+                                        <span className="inline-flex items-center gap-1"><span>🏷️</span><span className="tabular-nums">{currency(detail.item.price)}</span></span>
+                                        <span className="ml-auto inline-flex items-center gap-1"><span>在庫</span><span className="tabular-nums">{Math.max(0, detail.item.stock - getReserved(detail.shopId, detail.item.id))}</span></span>
+                                    </div>
+                                    <div className="text-sm text-zinc-700 bg-zinc-50 rounded-xl p-3">
+                                        {detail.item.note ? detail.item.note : 'お店のおすすめ商品です。数量限定のため、お早めにお求めください。'}
+                                    </div>
+                                    <div className="flex items-center justify-between pt-2">
+                                        <div className="text-base font-semibold">{currency(detail.item.price)}</div>
+                                        <div className="rounded-full border px-2 py-1">
+                                            <QtyChip sid={detail.shopId} it={detail.item} />
+                                        </div>
+                                    </div>
+                                    <div className="grid grid-cols-2 gap-2 pt-1">
+                                        <button type="button" className="px-3 py-2 rounded-xl border" onClick={() => setDetail(null)}>閉じる</button>
+                                        <button type="button" className="px-3 py-2 rounded-xl border bg-zinc-900 text-white" onClick={() => { addToCart(detail.shopId, detail.item); emitToast('success', 'カートに追加しました'); setDetail(null); }}>カートに追加</button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                )}
             </div >
         </MinimalErrorBoundary >
     );

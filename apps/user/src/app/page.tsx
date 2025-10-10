@@ -729,6 +729,17 @@ export default function UserPilotApp() {
                 };
                 setOrders(prev => [localOrder, ...prev]);
 
+                // 在庫を「支払い時点」でDBに反映（テスト運用）
+                // TODO(req v2): 原子的減算のためサーバーRPC等へ移行
+                try {
+                    await Promise.all(linesSnapshot.map(async (l) => {
+                        const { data: prod } = await supabase.from('products').select('id, stock').eq('id', l.item.id).single();
+                        const cur = Math.max(0, Number((prod as any)?.stock ?? 0));
+                        const next = Math.max(0, cur - l.qty);
+                        await supabase.from('products').update({ stock: next }).eq('id', l.item.id);
+                    }));
+                } catch {/* noop */}
+
             } else {
                 // Supabase未設定時のフォールバック（従来のローカル動作）
                 const localOrder: Order = {

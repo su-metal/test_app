@@ -617,6 +617,7 @@ export default function UserPilotApp() {
     // 注文処理
     const [cardDigits, setCardDigits] = useState(""); // 数字のみ（最大16桁）
     const [orderTarget, setOrderTarget] = useState<string | undefined>(undefined);
+    const [paymentMethod, setPaymentMethod] = useState<"card" | "paypay">("card"); // 支払方法（テスト）
     const unredeemedOrders = useMemo(() => orders.filter(o => o.status === 'paid'), [orders]);
     const redeemedOrders = useMemo(() => orders.filter(o => o.status === 'redeemed'), [orders]);
 
@@ -659,8 +660,15 @@ export default function UserPilotApp() {
             const sid = orderTarget;
 
             // カード検証
-            const card = validateTestCard(cardDigits);
-            if (!card.ok) { emitToast("error", card.msg); return; }
+            let payBrand = "TEST";
+            if (paymentMethod === "card") {
+                const card = validateTestCard(cardDigits);
+                if (!card.ok) { emitToast("error", card.msg); return; }
+                payBrand = card.brand || "TEST";
+            } else {
+                // TODO(req v2): PayPay 本実装。現状はテストとして即時成功扱い。
+                payBrand = "PayPay";
+            }
 
             // 対象店舗のカートをスナップショット
             const linesSnapshot = (cartByShop[sid] || []).map(l => ({ ...l }));
@@ -788,13 +796,14 @@ export default function UserPilotApp() {
                 setTab("account");
             });
 
+            const card = { brand: payBrand } as const; // テスト用: 旧トースト文言互換
             setCardDigits("");
             emitToast("success", `注文が完了しました。カード: ${card.brand || "TEST"}`);
         } finally {
             isPayingRef.current = false;
             setIsPaying(false);
         }
-    }, [orderTarget, isPaying, cardDigits, cartByShop, itemsById, shops, cart, userEmail, supabase]);
+    }, [orderTarget, isPaying, cardDigits, cartByShop, itemsById, shops, cart, userEmail, supabase, paymentMethod]);
 
     // --- 開発用：この店舗の注文をすべてリセット（削除） ---
     const devResetOrders = useCallback(async () => {
@@ -951,7 +960,7 @@ export default function UserPilotApp() {
                                                                     </div>
                                                                     <div className="flex-1 min-w-0">
                                                                         <div className="text-sm font-medium truncate">{it.name}</div>
-                                                                        <div className="mt-0.5 text-xs text-zinc-500 flex items-center gap-3">
+                                                                        <div className="mt-0.5 text-xs text-zinc-500 flex items-center justify-between gap-3 w-full whitespace-nowrap">
                                                                             <span className="inline-flex items-center gap-1"><span>⏰</span><span>受取 {it.pickup}</span></span>
                                                                             <span className="ml-auto inline-flex items-center gap-1 text-[11px]">在庫 <span className="tabular-nums">{remain}</span></span>
                                                                         </div>
@@ -1083,6 +1092,21 @@ export default function UserPilotApp() {
                                                                 ))}
                                                             </ul>
                                                         </div>
+                                                        {/* TODO(req v2): 本番ではこの削除機能を無効化/非表示にする（テスト運用限定） */}
+                                                        <div className="mt-3 flex items-center gap-2">
+                                                            <button
+                                                                type="button"
+                                                                className="text-xs px-2 py-1 rounded border border-red-300 text-red-700 cursor-pointer"
+                                                                onClick={(e) => {
+                                                                    e.stopPropagation();
+                                                                    if (!confirm('このチケットを削除しますか？（ローカルのみ削除）')) return;
+                                                                    setOrders(prev => prev.filter(x => !(String(x.id) === String(o.id) && x.status === 'paid')));
+                                                                    emitToast('success', 'チケットを削除しました');
+                                                                }}
+                                                            >
+                                                                このチケットを削除
+                                                            </button>
+                                                        </div>
                                                         <div className="text-xs text-zinc-500 mt-3">※ 店頭で6桁コードまたはQRを提示してください。受取完了は店側アプリで行われ、ステータスが <b>redeemed</b> に更新されます。</div>
                                                     </div>
                                                 )}
@@ -1167,6 +1191,34 @@ export default function UserPilotApp() {
                                     ))}
                                 </div>
                                 <div className="p-4 border-t space-y-2">
+                                    {/* 支払い方法 */}
+                                    <div className="grid grid-cols-2 gap-2" role="group" aria-label="支払い方法">
+                                        {(() => {
+                                            const base = "w-full px-3 py-2 rounded border cursor-pointer text-sm";
+                                            const active = "bg-zinc-900 text-white border-zinc-900";
+                                            const inactive = "bg-white text-zinc-700";
+                                            return (
+                                                <>
+                                                    <button
+                                                        type="button"
+                                                        className={`${base} ${paymentMethod === 'card' ? active : inactive}`}
+                                                        aria-pressed={paymentMethod === 'card'}
+                                                        onClick={() => setPaymentMethod('card')}
+                                                    >
+                                                        クレカ
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        className={`${base} ${paymentMethod === 'paypay' ? active : inactive}`}
+                                                        aria-pressed={paymentMethod === 'paypay'}
+                                                        onClick={() => setPaymentMethod('paypay')}
+                                                    >
+                                                        PayPay
+                                                    </button>
+                                                </>
+                                            );
+                                        })()}
+                                    </div>
                                     <div className="text-xs text-zinc-500">テストカード例: 4242… は成功。400000… は失敗（例: 4000 0000 0000 0002）。入力は数字のみ。</div>
                                     {(() => {
                                         const d = cardDigits.replace(/\D/g, "").slice(0, 16);
@@ -1199,7 +1251,11 @@ export default function UserPilotApp() {
                                         type="button"
                                         className="w-full px-3 py-2 rounded border cursor-pointer disabled:opacity-40"
                                         onClick={confirmPay}
-                                        disabled={isPaying || cardDigits.length < 16 || ((cartByShop[orderTarget]?.length ?? 0) === 0)}
+                                        disabled={
+                                            isPaying ||
+                                            ((cartByShop[orderTarget]?.length ?? 0) === 0) ||
+                                            (paymentMethod === 'card' && cardDigits.length < 16)
+                                        }
                                     >
                                         支払いを確定する（テスト）
                                     </button>

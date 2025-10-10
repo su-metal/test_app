@@ -496,6 +496,7 @@ function StockAdjustModal({
 function ProductForm() {
   const { products, perr, ploading, add, remove, updateStock } = useProducts();
   const [adjust, setAdjust] = useState<null | { id: string; name: string; stock: number }>(null);
+  const [pending, setPending] = useState<Record<string, { id: string; name: string; current: number; next: number }>>({});
   const [name, setName] = useState("");
   const [price, setPrice] = useState("");
   const [stock, setStock] = useState("");
@@ -541,8 +542,19 @@ function ProductForm() {
         productName={adjust?.name || ''}
         disabled={ploading}
         onClose={() => setAdjust(null)}
-        onCommit={(n) => { if (adjust) { updateStock(adjust.id, n); setAdjust(null); } }}
+        onCommit={(n) => { if (adjust) { setPending(prev => ({ ...prev, [adjust.id]: { id: adjust.id, name: adjust.name, current: adjust.stock, next: n } })); setAdjust(null); } }}
       />
+      {Object.keys(pending).length > 0 && (
+        <div className="sticky bottom-4 mt-4 rounded-2xl border bg-white p-3 shadow-sm">
+          <div className="flex items-center justify-between gap-2">
+            <div className="text-sm">未反映の在庫変更 {Object.keys(pending).length} 件</div>
+            <div className="flex items-center gap-2">
+              <button className="rounded-xl border px-3 py-1.5 text-sm" onClick={() => setPending({})} disabled={ploading}>すべて取消</button>
+              <button className="rounded-xl bg-zinc-900 text-white px-3 py-1.5 text-sm disabled:opacity-50" disabled={ploading} onClick={async () => { const items = Object.values(pending); for (const it of items) { await updateStock(it.id, it.next); } setPending({}); }}>在庫を反映する</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

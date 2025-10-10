@@ -584,6 +584,28 @@ export default function UserPilotApp() {
         }
     }, [supabase, orders, setOrders]);
 
+    // 注文履歴のみを一括リセット（ローカル優先、可能ならDBも削除）
+    const devResetOrderHistory = useCallback(async () => {
+        if (!confirm('注文履歴をすべてリセットします。よろしいですか？')) return;
+        try {
+            const targetIds = orders.filter(o => o.status === 'redeemed').map(o => o.id);
+            if (targetIds.length === 0) { emitToast('info', '注文履歴はありません'); return; }
+            if (supabase) {
+                const { error } = await supabase.from('orders').delete().in('id', targetIds);
+                if (error) {
+                    console.error('[orders.resetHistory] error', error);
+                    emitToast('error', `リセットに失敗しました: ${error.message}`);
+                    return;
+                }
+            }
+            setOrders(prev => prev.filter(o => o.status !== 'redeemed'));
+            emitToast('success', '注文履歴をリセットしました');
+        } catch (e) {
+            console.error('[orders.resetHistory] exception', e);
+            emitToast('error', `エラー: ${(e as any)?.message ?? e}`);
+        }
+    }, [supabase, orders, setOrders]);
+
     // 注文処理
     const [cardDigits, setCardDigits] = useState(""); // 数字のみ（最大16桁）
     const [orderTarget, setOrderTarget] = useState<string | undefined>(undefined);
@@ -955,7 +977,7 @@ export default function UserPilotApp() {
                     )}
 
                     {tab === "account" && (
-                        <AccountView orders={orders} shopsById={shopsById} onDevReset={devResetOrdersStrict} />
+                        <AccountView orders={orders} shopsById={shopsById} onDevReset={devResetOrdersStrict} onDevResetHistory={devResetOrderHistory} />
                     )}
 
                 </main>
@@ -993,10 +1015,12 @@ function AccountView({
     orders,
     shopsById,
     onDevReset,
+    onDevResetHistory,
 }: {
     orders: Order[];
     shopsById: Map<string, Shop>;
     onDevReset?: () => void;
+    onDevResetHistory?: () => void;
 }) {
 
     const [refreshTick, setRefreshTick] = useState(0);
@@ -1133,12 +1157,12 @@ function AccountView({
                 <div className="flex items-center justify-between">
                     <div className="text-sm font-semibold">注文履歴</div>
                     <div className="flex items-center gap-2">
-                        {process.env.NODE_ENV !== 'production' && onDevReset && (
+                        {process.env.NODE_ENV !== 'production' && onDevResetHistory && (
                             <button
                                 type="button"
-                                onClick={onDevReset}
+                                onClick={onDevResetHistory}
                                 className="text-[11px] px-2 py-1 rounded border bg-red-50 hover:bg-red-100 cursor-pointer"
-                                title="この店舗の注文をすべて削除（開発専用）"
+                                title="履歴のみ削除（開発専用）"
                             >
                                 リセット
                             </button>

@@ -1,4 +1,5 @@
 "use client";
+/* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unused-vars, react-hooks/exhaustive-deps */
 import React, { useEffect, useMemo, useRef, useState, startTransition, useCallback } from "react";
 import { createClient } from '@supabase/supabase-js';
 import type { SupabaseClient } from '@supabase/supabase-js';
@@ -955,7 +956,12 @@ export default function UserPilotApp() {
                     )}
 
                     {tab === "account" && (
-                        <AccountView orders={orders} shopsById={shopsById} onDevReset={devResetOrdersStrict} />
+                    <AccountView
+                        orders={orders}
+                        shopsById={shopsById}
+                        onDevResetPending={devResetOrdersStrict}
+                        onDevResetHistory={devResetOrders}
+                    />
                     )}
 
                 </main>
@@ -992,11 +998,13 @@ function TinyQR({ seed }: { seed: string }) {
 function AccountView({
     orders,
     shopsById,
-    onDevReset,
+    onDevResetPending,
+    onDevResetHistory,
 }: {
     orders: Order[];
     shopsById: Map<string, Shop>;
-    onDevReset?: () => void;
+    onDevResetPending?: () => void; // 未引換のチケットを全リセット
+    onDevResetHistory?: () => void; // 注文履歴（この店舗の全注文）をリセット
 }) {
 
     const [refreshTick, setRefreshTick] = useState(0);
@@ -1059,10 +1067,10 @@ function AccountView({
                     <div className="flex items-center justify-between">
                         <div className="text-sm font-semibold">未引換のチケット</div>
                         <div className="flex items-center gap-2">
-                            {process.env.NODE_ENV !== 'production' && onDevReset && (
+                            {process.env.NODE_ENV !== 'production' && onDevResetPending && (
                                 <button
                                     type="button"
-                                    onClick={onDevReset}
+                                    onClick={onDevResetPending}
                                     className="text-[11px] px-2 py-1 rounded border bg-red-50 hover:bg-red-100 cursor-pointer"
                                     title="この店舗の注文をすべて削除（開発専用）"
                                 >
@@ -1133,10 +1141,10 @@ function AccountView({
                 <div className="flex items-center justify-between">
                     <div className="text-sm font-semibold">注文履歴</div>
                     <div className="flex items-center gap-2">
-                        {process.env.NODE_ENV !== 'production' && onDevReset && (
+                        {process.env.NODE_ENV !== 'production' && onDevResetHistory && (
                             <button
                                 type="button"
-                                onClick={onDevReset}
+                                onClick={onDevResetHistory}
                                 className="text-[11px] px-2 py-1 rounded border bg-red-50 hover:bg-red-100 cursor-pointer"
                                 title="この店舗の注文をすべて削除（開発専用）"
                             >

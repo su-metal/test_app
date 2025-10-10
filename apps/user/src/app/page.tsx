@@ -808,11 +808,15 @@ export default function UserPilotApp() {
     }, [supabase, storeId, setOrders]);
 
     // UI 共通
-    const Tab = ({ id, label, icon }: { id: "home" | "cart" | "order" | "account"; label: string; icon: string }) => (
-        <button onClick={() => { if (id === 'order') setOrderTarget(undefined); setTab(id); }} className={`flex-1 py-2 text-center cursor-pointer ${tab === id ? "text-zinc-900 font-semibold" : "text-zinc-500"}`}>
-            <div>{icon}</div><div className="text-xs">{label}</div>
-        </button>
-    );
+    const Tab = ({ id, label, icon }: { id: "home" | "cart" | "order" | "account"; label: string; icon: string }) => {
+        const isActive = (tab === id) && !(id === 'order' && !!orderTarget);
+        const cls = `flex-1 py-2 text-center cursor-pointer ${isActive ? "text-zinc-900 font-semibold" : "text-zinc-500"}`;
+        return (
+            <button onClick={() => { if (id === 'order') setOrderTarget(undefined); setTab(id); }} className={cls}>
+                <div>{icon}</div><div className="text-xs">{label}</div>
+            </button>
+        );
+    };
 
     const QtyChip = ({ sid, it }: { sid: string; it: Item }) => {
         const reserved = getReserved(sid, it.id);

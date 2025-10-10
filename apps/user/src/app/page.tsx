@@ -214,11 +214,10 @@ export default function UserPilotApp() {
         (async () => {
             const q = supabase
                 .from("products")
-                .select("id, store_id, name, price, stock, updated_at")
-                .gt("stock", 0);
+                .select("*");
             // 店舗を環境変数で絞る（設定がある場合のみ）
-            const storeId = process.env.NEXT_PUBLIC_STORE_ID;
-            const { data, error } = storeId ? await q.eq("store_id", storeId).limit(50) : await q.limit(50);
+            // 全店舗を対象に取得（store_id での絞り込みを廃止）
+            const { data, error } = await q.limit(200);
 
             console.log("[products:list]", { data, error });
             console.log("[products:peek]", data?.slice(0, 3)?.map(p => ({ name: p.name, stock: p.stock, quantity: (p as any).quantity, stock_count: (p as any).stock_count })));
@@ -231,6 +230,31 @@ export default function UserPilotApp() {
                 setDbProducts(data ?? []);
             }
         })();
+    }, [supabase]);
+
+    // products の Realtime 反映（INSERT/UPDATE/DELETE）全店舗対象
+    useEffect(() => {
+        if (!supabase) return;
+        try {
+            const ch = (supabase as any)
+                .channel(`products-realtime-all`)
+                .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'products' }, (p: any) => {
+                    const row = p?.new; if (!row) return;
+                    setDbProducts(prev => [row, ...prev.filter(x => String(x.id) !== String(row.id))]);
+                })
+                .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'products' }, (p: any) => {
+                    const row = p?.new; if (!row) return;
+                    setDbProducts(prev => prev.map(x => String(x.id) === String(row.id) ? row : x));
+                })
+                .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'products' }, (p: any) => {
+                    const row = p?.old; if (!row) return;
+                    setDbProducts(prev => prev.filter(x => String(x.id) !== String(row.id)));
+                })
+                .subscribe();
+            return () => { try { (supabase as any).removeChannel(ch); } catch { } };
+        } catch {
+            /* noop */
+        }
     }, [supabase]);
 
 
@@ -575,7 +599,7 @@ export default function UserPilotApp() {
             }
 
             const orderPayload = {
-                store_id: storeId, // ★ 重要：DBの orders.store_id（uuid）
+                store_id: sid as any, // 購入店舗の id（stores.id）を保存
                 code: to6(oid),
                 customer: userEmail || "guest@example.com",
                 items: linesSnapshot.map(l => ({
@@ -1044,6 +1068,17 @@ function AccountView({
                                             <div className="justify-self-center">
                                                 <div className="p-2 rounded bg-white shadow"><TinyQR seed={o.id} /></div>
                                             </div>
+                                        </div>
+                                        <div className="mt-4">
+                                            <div className="text-xs text-zinc-500 mb-1">購入内容</div>
+                                            <ul className="space-y-1">
+                                                {o.lines.map((l, i) => (
+                                                    <li key={`${l.item.id}-${i}`} className="flex items-center justify-between text-sm">
+                                                        <span className="truncate mr-2">{l.item.name}</span>
+                                                        <span className="tabular-nums">×{l.qty}</span>
+                                                    </li>
+                                                ))}
+                                            </ul>
                                         </div>
                                         <div className="text-xs text-zinc-500 mt-3">※ 店頭で6桁コードまたはQRを提示してください。受取完了は店舗側アプリで行われ、ステータスが <b>redeemed</b> に更新されます。</div>
                                     </div>

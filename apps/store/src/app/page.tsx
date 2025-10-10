@@ -15,23 +15,25 @@ type OrderItem = {
 };
 
 type OrdersRow = {
-  id: string;
-  code: string | null;
-  customer: string | null;
-  items: OrderItem[] | null;
-  total: number | null;
-  placed_at: string | null;
-  status: OrderStatus;
+    id: string;
+    store_id?: string | null;
+    code: string | null;
+    customer: string | null;
+    items: OrderItem[] | null;
+    total: number | null;
+    placed_at: string | null;
+    status: OrderStatus;
 };
 
 type Order = {
-  id: string;
-  code: string | null;
-  customer: string;
-  items: OrderItem[];
-  total: number;
-  placedAt: string;
-  status: OrderStatus;
+    id: string;
+    storeId: string;
+    code: string | null;
+    customer: string;
+    items: OrderItem[];
+    total: number;
+    placedAt: string;
+    status: OrderStatus;
 };
 
 type ProductsRow = {
@@ -67,16 +69,30 @@ const since = (iso: string) => {
 const storeTake = (price: number | string) => Math.floor(Number(price || 0) * 0.8);
 function useMounted() { const [m, sm] = useState(false); useEffect(() => sm(true), []); return m; }
 
+// 6桁コード正規化（非数字除去し6桁に丸める）
+// 注意: 入力側は「6桁入力必須」。比較時のみ期待値はゼロ埋め許容。
+function normalizeCode6(v: unknown): string {
+  const digits = String(v ?? "").replace(/\D/g, "");
+  if (digits.length === 6) return digits;
+  if (digits.length < 6) return digits.padStart(6, "0");
+  return digits.slice(-6);
+}
+
 // 正規化
 function mapOrder(r: OrdersRow): Order {
+  const raw = String(r.status || '').toUpperCase();
+  const status: OrderStatus = (raw === 'FULFILLED' || raw === 'REDEEMED' || raw === 'COMPLETED')
+    ? 'FULFILLED'
+    : 'PENDING'; // 'PAID' を含むその他は PENDING とみなす
   return {
     id: String(r.id),
+    storeId: String((r as any).store_id ?? ''),
     code: r.code ?? null,
     customer: r.customer ?? "匿名",
     items: Array.isArray(r.items) ? r.items : [],
     total: Number(r.total ?? 0),
     placedAt: r.placed_at ?? new Date().toISOString(),
-    status: r.status,
+    status,
   };
 }
 function mapProduct(r: ProductsRow): Product { return { id: String(r.id), name: r.name, price: Number(r.price ?? 0), stock: Math.max(0, Number(r.stock ?? 0)) }; }
@@ -287,6 +303,52 @@ const OrderCard = React.memo(function OrderCard({ order, onHandoff }: { order: O
   );
 });
 
+// 簡易QRスキャナ（BarcodeDetector対応ブラウザのみ）
+function QRScanner({ onDetect, onClose }: { onDetect: (code: string) => void; onClose: () => void; }) {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => {
+    let stream: MediaStream | undefined; let detector: any; let raf: number | undefined;
+    (async () => {
+      try {
+        const supports = typeof window !== 'undefined' && 'BarcodeDetector' in window;
+        if (supports) {
+          detector = new (window as any).BarcodeDetector({ formats: ['qr_code', 'ean_13', 'code_128'] });
+        }
+        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+        const v = videoRef.current; if (!v) return; (v as any).srcObject = stream; await v.play();
+        if (detector) {
+          const loop = async () => {
+            try {
+              const codes = await detector.detect(v);
+              if (codes && codes.length > 0) {
+                const raw = String(codes[0].rawValue ?? codes[0].rawText ?? '');
+                onDetect(normalizeCode6(raw));
+              } else { raf = requestAnimationFrame(loop); }
+            } catch { raf = requestAnimationFrame(loop); }
+          };
+          raf = requestAnimationFrame(loop);
+        }
+      } catch (e) { setErr('カメラ起動に失敗しました'); }
+    })();
+    return () => { try { if (raf) cancelAnimationFrame(raf); } catch {} try { const v = videoRef.current as any; if (v) v.pause?.(); } catch {} try { stream?.getTracks?.().forEach(t => t.stop()); } catch {} };
+  }, [onDetect]);
+  return (
+    <div className="fixed inset-0 z-[60] grid place-items-center bg-black/40 p-4" role="dialog" aria-modal="true" onClick={onClose}>
+      <div className="w-full max-w-md rounded-2xl bg-white shadow-xl border p-4" onClick={e => e.stopPropagation()}>
+        <div className="text-base font-semibold mb-2">QRを読み取る</div>
+        <div className="aspect-[4/3] bg-black/80 rounded-xl overflow-hidden mb-3">
+          <video ref={videoRef} className="w-full h-full object-contain" muted playsInline />
+        </div>
+        {err ? <div className="text-sm text-red-600 mb-2">{err}</div> : null}
+        <div className="text-right">
+          <button className="rounded-xl border px-4 py-2 text-sm" onClick={onClose}>閉じる</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ProductForm() {
   const { products, perr, ploading, add, remove } = useProducts();
   const [name, setName] = useState("");
@@ -305,7 +367,7 @@ function ProductForm() {
         <button className="rounded-xl bg-zinc-900 text-white px-3 py-2 text-sm" disabled={ploading}>追加</button>
       </form>
       {perr ? <div className="text-sm text-red-600">{perr}</div> : null}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+      <div className="grid grid-cols-1 gap-2">
         {products.map(p => (
           <div key={p.id} className="rounded-xl border p-3 text-sm flex items-center justify-between">
             <div className="space-y-0.5">
@@ -327,20 +389,36 @@ function ProductForm() {
 function OrdersPage() {
   const { ready, err, pending, fulfilled, fulfill, retry } = useOrders();
   const [current, setCurrent] = useState<Order | null>(null);
+  const [codeInput, setCodeInput] = useState("");
+  const [codeErr, setCodeErr] = useState<string | null>(null);
+  const [scanOpen, setScanOpen] = useState(false);
+  // 店舗名の表示用にマスタ取得
+  const { stores } = useStores();
+  const storeMap = useMemo(() => new Map(stores.map(s => [String(s.id), s.name])), [stores]);
+  const currentStoreName = storeMap.get(getStoreId()) || getStoreId();
+  // 期待値はゼロ埋めで6桁化（DBの表記ゆらぎ吸収）
+  const expectedCode = normalizeCode6(current?.code ?? "");
+  // 入力は6桁必須（ゼロ埋めしない）
+  const inputDigits = String(codeInput ?? '').replace(/\D/g, '');
+  const storeOk = !!current && current.storeId === getStoreId();
+  const canFulfill = storeOk && expectedCode.length === 6 && inputDigits.length === 6 && inputDigits === expectedCode;
   return (
-    <main className="mx-auto max-w-4xl px-4 py-5 space-y-8">
+    <main className="mx-auto max-w-[480px] px-4 py-5 space-y-6">
       {!ready && (<div className="rounded-xl border bg-white p-4 text-sm text-zinc-600">読み込み中…</div>)}
       {err ? (<div className="rounded-xl border bg-red-50 p-4 text-sm text-red-700 flex items-center justify-between"><span>{err}</span><button onClick={retry} className="rounded-lg bg-red-600 text-white px-3 py-1 text-xs">リトライ</button></div>) : null}
       <section>
+        <div className="mb-2 flex justify-end">
+          <StoreSwitcher />
+        </div>
         <SectionTitle badge={`${pending.length}件`}>受取待ちの注文</SectionTitle>
         {pending.length === 0 ? (<div className="rounded-xl border bg-white p-6 text-sm text-zinc-600">現在、受取待ちの注文はありません。</div>) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">{pending.map(o => (<OrderCard key={o.id} order={o} onHandoff={setCurrent} />))}</div>
+          <div className="grid grid-cols-1 gap-4">{pending.map(o => (<OrderCard key={o.id} order={o} onHandoff={setCurrent} />))}</div>
         )}
       </section>
       <section>
         <SectionTitle badge={`${fulfilled.length}件`}>受け渡し済み</SectionTitle>
         {fulfilled.length === 0 ? (<div className="rounded-xl border bg-white p-6 text-sm text-zinc-600">まだ受け渡し済みの注文はありません。</div>) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 opacity-90">{fulfilled.map(o => (<OrderCard key={o.id} order={o} onHandoff={() => {}} />))}</div>
+          <div className="grid grid-cols-1 gap-4 opacity-90">{fulfilled.map(o => (<OrderCard key={o.id} order={o} onHandoff={() => {}} />))}</div>
         )}
       </section>
       {current && (
@@ -348,14 +426,58 @@ function OrdersPage() {
           <div className="w-full max-w-md rounded-2xl bg-white shadow-xl border p-5" onClick={e => e.stopPropagation()}>
             <div className="mb-3">
               <div className="text-base font-semibold">コード照合</div>
-              <div className="text-sm text-zinc-600">注文ID {current.id} / 顧客 {current.customer}</div>
+              <div className="text-sm text-zinc-600">注文ID {current.id} / 顧客 {current.customer} / 店舗 {storeMap.get(current.storeId) || current.storeId}</div>
+              <div className="mt-3 space-y-2">
+                <label className="block text-sm">
+                  <span className="text-zinc-700">6桁コード</span>
+                  <input
+                    className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                    placeholder="000000"
+                    inputMode="numeric"
+                    value={codeInput}
+                    onChange={e => { setCodeInput(e.target.value); setCodeErr(null); }}
+                    autoFocus
+                  />
+                </label>
+                <div className="flex items-center gap-2">
+                  <button type="button" className="rounded-lg border px-3 py-1.5 text-sm" onClick={() => setScanOpen(true)}>QRで読み取り</button>
+                  {expectedCode ? (
+                    <span className="text-xs text-zinc-500">照合対象: •••••{expectedCode.slice(-1)}</span>
+                  ) : (
+                    <span className="text-xs text-red-600">コード未登録の注文です</span>
+                  )}
+                  {!storeOk && current ? (
+                    <span className="text-xs text-red-600">店舗が一致しません（注文: {storeMap.get(current.storeId) || current.storeId} / 現在: {currentStoreName}）</span>
+                  ) : null}
+                </div>
+                {codeErr ? <div className="text-sm text-red-600">{codeErr}</div> : null}
+              </div>
             </div>
             <div className="mt-4 flex items-center justify-end gap-2">
               <button onClick={() => setCurrent(null)} className="rounded-xl border px-4 py-2 text-sm">キャンセル</button>
-              <button onClick={() => { fulfill(current.id); setCurrent(null); }} className="rounded-xl bg-zinc-900 text-white px-4 py-2 text-sm">受け渡し</button>
+              <button
+                onClick={() => {
+                  const raw = String(codeInput ?? '').replace(/\D/g, '');
+                  if (!expectedCode || expectedCode.length !== 6) { setCodeErr('この注文にはコードが登録されていません'); return; }
+                  if (!storeOk) { setCodeErr('店舗が一致しません'); return; }
+                  if (raw.length !== 6) { setCodeErr('6桁のコードを入力してください'); return; }
+                  if (raw !== expectedCode) { setCodeErr('コードが一致しません'); return; }
+                  fulfill(current.id);
+                  setCurrent(null); setCodeInput(""); setCodeErr(null);
+                }}
+                className={`rounded-xl px-4 py-2 text-sm text-white ${canFulfill ? 'bg-zinc-900' : 'bg-zinc-400 cursor-not-allowed'}`}
+                disabled={!canFulfill}
+              >受け渡し</button>
             </div>
           </div>
         </div>
+      )}
+
+      {scanOpen && (
+        <QRScanner
+          onDetect={(raw) => { setCodeInput(raw); setCodeErr(null); setScanOpen(false); }}
+          onClose={() => setScanOpen(false)}
+        />
       )}
     </main>
   );
@@ -375,12 +497,11 @@ export default function StoreApp() {
   return (
     <div className="min-h-screen bg-zinc-50">
       <header className="sticky top-0 z-40 bg-white/80 backdrop-blur supports-[backdrop-filter]:bg-white/60 border-b">
-        <div className="mx-auto max-w-4xl px-4 py-3 flex items-center justify-between">
-          <div className="text-base font-semibold tracking-tight">店側アプリ</div>
-          <nav className="flex items-center gap-2 text-sm">
-            <StoreSwitcher />
-            <a href="#/orders" className={`px-3 py-1.5 rounded-lg border ${routeForUI === 'orders' ? 'bg-zinc-900 text-white border-zinc-900' : 'bg-white text-zinc-700 hover:bg-zinc-50'}`} suppressHydrationWarning>注文管理</a>
-            <a href="#/products" className={`px-3 py-1.5 rounded-lg border ${routeForUI === 'products' ? 'bg-zinc-900 text-white border-zinc-900' : 'bg-white text-zinc-700 hover:bg-zinc-50'}`} suppressHydrationWarning>商品管理</a>
+        <div className="mx-auto max-w-[480px] px-4 py-3 flex items-center justify-between gap-2">
+          <div className="text-base font-semibold tracking-tight shrink-0">店側アプリ</div>
+          <nav className="flex flex-wrap items-center gap-1 gap-y-1 text-sm">
+            <a href="#/orders" className={`px-3 py-1.5 rounded-lg border shrink-0 ${routeForUI === 'orders' ? 'bg-zinc-900 text-white border-zinc-900' : 'bg-white text-zinc-700 hover:bg-zinc-50'}`} suppressHydrationWarning>注文管理</a>
+            <a href="#/products" className={`px-3 py-1.5 rounded-lg border shrink-0 ${routeForUI === 'products' ? 'bg-zinc-900 text-white border-zinc-900' : 'bg-white text-zinc-700 hover:bg-zinc-50'}`} suppressHydrationWarning>商品管理</a>
           </nav>
         </div>
       </header>
@@ -388,4 +509,3 @@ export default function StoreApp() {
     </div>
   );
 }
-

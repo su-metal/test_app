@@ -304,20 +304,21 @@ export default function UserPilotApp() {
         return "https://www.google.com/maps";
     };
 
-    // DBから products を読む（在庫あり／特定店舗のみ）
+    // DBから products を読む（全店舗分を取得し、後段で store_id ごとにグルーピング）
     useEffect(() => {
         if (!supabase) return;
         (async () => {
             const q = supabase
                 .from("products")
-                .select("*");
-            // 店舗を環境変数で絞る（設定がある場合のみ）
-            // 全店舗を対象に取得（store_id での絞り込みを廃止）
+                .select("*"); // ★ 店舗で絞らない（ここで絞ると他店舗が空になる）
+
+            // 必要なら在庫>0や公開フラグで絞ってOK（例）
+            // .gt("stock", 0).eq("is_published", true)
+
             const { data, error } = await q.limit(200);
 
             console.log("[products:list]", { data, error });
-            console.log("[products:peek]", data?.slice(0, 3)?.map(p => ({ name: p.name, stock: p.stock, quantity: (p as any).quantity, stock_count: (p as any).stock_count })));
-
+            // ...
             if (error) {
                 console.error("[products:list] error", error);
                 emitToast("error", `商品取得に失敗: ${error.message}`);
@@ -328,7 +329,9 @@ export default function UserPilotApp() {
         })();
     }, [supabase]);
 
-    // products の Realtime 反映（INSERT/UPDATE/DELETE）全店舗対象
+
+
+    // products の Realtime 反映（全店舗対象。後段のグルーピングで store_id ごとに整理）
     useEffect(() => {
         if (!supabase) return;
         try {
@@ -352,6 +355,9 @@ export default function UserPilotApp() {
             /* noop */
         }
     }, [supabase]);
+
+
+
 
 
     // DBから stores を読む（全件・上限あり）

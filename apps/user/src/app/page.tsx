@@ -129,7 +129,7 @@ function validateTestCard(cardRaw: string) {
 
 // ---- 型 ----
 interface Item { id: string; name: string; price: number; stock: number; pickup: string; note: string; photo: string }
-interface Shop { id: string; name: string; lat: number; lng: number; zoomOnPin: number; closed: boolean; items: Item[] }
+interface Shop { id: string; name: string; lat: number; lng: number; zoomOnPin: number; closed: boolean; items: Item[], address?: string; }
 interface CartLine { shopId: string; item: Item; qty: number }
 interface Order { id: string; userEmail: string; shopId: string; amount: number; status: "paid" | "redeemed" | "refunded"; code6: string; createdAt: number; lines: CartLine[] }
 
@@ -184,6 +184,69 @@ class MinimalErrorBoundary extends React.Component<React.PropsWithChildren, { ha
     }
 }
 
+
+// 店舗カードが完全に画面外に出たら onLeave を発火するラッパー
+function CardObserver({
+    observe,
+    onLeave,
+    children,
+}: {
+    observe: boolean;              // 監視するか（詳細が開いているときだけ true）
+    onLeave: () => void;           // カードが画面外に出た時のコールバック（= 閉じる）
+    children: React.ReactNode;     // 店舗カードの中身（既存のカード丸ごと）
+}) {
+    const ref = React.useRef<HTMLDivElement | null>(null);
+
+    React.useEffect(() => {
+        if (!observe || !ref.current) return;
+
+        const el = ref.current;
+        const io = new IntersectionObserver(
+            (entries) => {
+                const e = entries[0];
+                // 1pxでも見えていれば isIntersecting = true
+                // 完全に画面外に出た瞬間だけ false になる
+                if (!e.isIntersecting) onLeave();
+            },
+            { root: null, threshold: 0 }
+        );
+
+        io.observe(el);
+        return () => io.disconnect();
+    }, [observe, onLeave]);
+
+    return <div ref={ref}>{children}</div>;
+}
+
+
+// 丸いピン（スクショ寄せ・塗りつぶし）
+const IconMapPin = ({ className = "" }: { className?: string }) => (
+    <svg viewBox="0 0 24 24" aria-hidden="true" className={className}>
+        <path
+            d="M12 22s7-5.33 7-12a7 7 0 1 0-14 0c0 6.67 7 12 7 12z"
+            fill="currentColor"
+        />
+        <circle cx="12" cy="10" r="2.8" fill="#fff" />
+    </svg>
+);
+
+// 斜め矢印（外部リンク）
+const IconExternal = ({ className = "" }: { className?: string }) => (
+    <svg viewBox="0 0 24 24" aria-hidden="true" className={className}>
+        <path
+            d="M14 3h7v7h-2V6.41l-9.29 9.3-1.42-1.42 9.3-9.29H14V3z"
+            fill="currentColor"
+        />
+        <path
+            d="M19 19H5V5h7V3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7h-2v7z"
+            fill="currentColor"
+            opacity=".35"
+        />
+    </svg>
+);
+
+
+
 export default function UserPilotApp() {
 
     // 永続化
@@ -222,6 +285,14 @@ export default function UserPilotApp() {
         const id = setInterval(tick, 30_000);
         return () => clearInterval(id);
     }, []);
+
+    // Googleマップの遷移先URLを生成（lat/lng優先、なければ住所）
+    const googleMapsUrlForShop = (s: Shop) => {
+        const hasLL = typeof s.lat === "number" && typeof s.lng === "number";
+        if (hasLL) return `https://www.google.com/maps/search/?api=1&query=${s.lat},${s.lng}`;
+        if (s.address) return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(s.address)}`;
+        return "https://www.google.com/maps";
+    };
 
     // DBから products を読む（在庫あり／特定店舗のみ）
     useEffect(() => {
@@ -279,7 +350,7 @@ export default function UserPilotApp() {
         (async () => {
             const { data, error } = await supabase
                 .from("stores")
-                .select("id, name, created_at, lat, lng")
+                .select("id, name, created_at, lat, lng, address")
                 .order("created_at", { ascending: true })
                 .limit(200);
             if (error) {
@@ -315,6 +386,7 @@ export default function UserPilotApp() {
             zoomOnPin: 16,
             closed: false,
             items: (byStore.get(String(st.id)) || []).map(mapToItem),
+            address: typeof st.address === "string" ? st.address : undefined,
         }));
 
         setShops(prev => (JSON.stringify(prev) === JSON.stringify(built) ? prev : built));
@@ -972,168 +1044,175 @@ export default function UserPilotApp() {
                                     const isOpen = !!metaOpen[s.id];
 
                                     return (
-                                        <div
+                                        <CardObserver
                                             key={s.id}
-                                            className={`relative rounded-2xl border bg-white p-4 ${!hasAny ? "opacity-70" : ""
-                                                } ${focusedShop === s.id ? "ring-2 ring-zinc-900" : ""}`}
+                                            observe={isOpen}
+                                            onLeave={() => {
+                                                // カード全体が完全に画面外へ出た瞬間に閉じる
+                                                setMetaOpen(prev => ({ ...prev, [s.id]: false }));
+                                            }}
                                         >
-                                            {/* ヒーロー画像 */}
-                                            <div className="relative">
-                                                <img
-                                                    src={
-                                                        idx % 3 === 0
-                                                            ? "https://images.unsplash.com/photo-1495474472287-4d71bcdd2085?q=80&w=1200&auto=format&fit=crop"
-                                                            : idx % 3 === 1
-                                                                ? "https://images.unsplash.com/photo-1475855581690-80accde3ae2b?q=80&w=1200&auto=format&fit=crop"
-                                                                : "https://images.unsplash.com/photo-1460306855393-0410f61241c7?q=80&w=1200&auto=format&fit=crop"
-                                                    }
-                                                    alt={s.name}
-                                                    className="w-full h-44 object-cover rounded-2xl"
-                                                />
-                                                <div className="absolute left-3 top-3 px-2 py-1 rounded bg-black/60 text-white text-xs">
-                                                    {s.name}
-                                                </div>
-                                                <div className="absolute right-3 top-3 px-2 py-1 rounded-full bg-white/90 border text-[11px]">
-                                                    {s.distance.toFixed(2)} km
-                                                </div>
-                                            </div>
-
-                                            {hasAny ? (
-                                                <div className="mt-3 space-y-2">
-                                                    {visibleItems.map(it => {
-                                                        const remain = Math.max(0, it.stock - getReserved(s.id, it.id));
-                                                        return (
-                                                            <div
-                                                                key={it.id}
-                                                                className="relative flex gap-3 rounded-2xl border bg-white p-2 pr-3"
-                                                            >
-                                                                {/* 左側：詳細を開くボタン領域（数量チップはボタン外へ） */}
-                                                                <button
-                                                                    type="button"
-                                                                    onClick={() => setDetail({ shopId: s.id, item: it })}
-                                                                    className="flex items-center gap-3 flex-1 min-w-0 text-left"
-                                                                >
-                                                                    <div className="relative w-24 h-24 overflow-hidden rounded-xl bg-zinc-100 flex items-center justify-center text-4xl shrink-0">
-                                                                        {/* TODO(req v2): image_url を配置 */}
-                                                                        <span>{it.photo}</span>
-
-                                                                        {/* サムネ右上：のこり n 個 */}
-                                                                        <span
-                                                                            className={[
-                                                                                "absolute top-1 right-1",
-                                                                                "inline-flex items-center gap-1",
-                                                                                "text-[10px] leading-none whitespace-nowrap",
-                                                                                "rounded-full border px-1.5 py-0.5",
-                                                                                "backdrop-blur-[2px] ring-1 ring-white/70",
-                                                                                remain === 0
-                                                                                    ? "bg-red-50 text-red-600 border-red-200"
-                                                                                    : remain <= 3
-                                                                                        ? "bg-amber-50 text-amber-700 border-amber-200"
-                                                                                        : "bg-emerald-50 text-emerald-700 border-emerald-200",
-                                                                            ].join(" ")}
-                                                                        >
-                                                                            <span className="opacity-80">のこり</span>
-                                                                            <span className="tabular-nums font-semibold">{remain}</span>
-                                                                            <span className="opacity-80">個</span>
-                                                                        </span>
-                                                                    </div>
-
-                                                                    <div className="flex-1 min-w-0">
-                                                                        {/* タイトル：常に2行ぶんの高さを確保 */}
-                                                                        <div className="w-full text-sm font-medium leading-tight break-words line-clamp-2 min-h-[2.5rem]">
-                                                                            {it.name}
-                                                                        </div>
-
-                                                                        {/* 受取時刻（右側に chips を置かない） */}
-                                                                        <div className="mt-0.5 text-xs text-zinc-500 flex items-center gap-1 w-full">
-                                                                            <span>⏰</span>
-                                                                            <span className="truncate">受取 {it.pickup}</span>
-                                                                        </div>
-
-                                                                        {/* 下段：価格（数量チップは外側） */}
-                                                                        <div className="mt-2 text-base font-semibold">{currency(it.price)}</div>
-                                                                    </div>
-                                                                </button>
-
-                                                                {/* 右下：数量チップ（ボタン外、下寄せ） */}
-                                                                <div
-                                                                    className="absolute bottom-2 right-2 rounded-full px-2 py-1"
-                                                                    onClick={(e) => e.stopPropagation()}
-                                                                >
-                                                                    <QtyChip sid={s.id} it={it} />
-                                                                </div>
-                                                            </div>
-                                                        );
-                                                    })}
-                                                </div>
-                                            ) : (
-                                                <div className="mt-3">
-                                                    <div className="rounded-xl border border-dashed p-4 text-center text-sm text-zinc-500 bg-zinc-50">
-                                                        {s.items.length === 0
-                                                            ? "登録商品がありません。"
-                                                            : "現在、販売可能な商品はありません。"}
+                                            <div
+                                                className={`relative rounded-2xl border bg-white p-4 ${!hasAny ? "opacity-70" : ""
+                                                    } ${focusedShop === s.id ? "ring-2 ring-zinc-900" : ""}`}
+                                            >
+                                                {/* ヒーロー画像 */}
+                                                <div className="relative">
+                                                    <img
+                                                        src={
+                                                            idx % 3 === 0
+                                                                ? "https://images.unsplash.com/photo-1495474472287-4d71bcdd2085?q=80&w=1200&auto=format&fit=crop"
+                                                                : idx % 3 === 1
+                                                                    ? "https://images.unsplash.com/photo-1475855581690-80accde3ae2b?q=80&w=1200&auto=format&fit=crop"
+                                                                    : "https://images.unsplash.com/photo-1460306855393-0410f61241c7?q=80&w=1200&auto=format&fit=crop"
+                                                        }
+                                                        alt={s.name}
+                                                        className="w-full h-44 object-cover rounded-2xl"
+                                                    />
+                                                    <div className="absolute left-3 top-3 px-2 py-1 rounded bg-black/60 text-white text-xs">
+                                                        {s.name}
+                                                    </div>
+                                                    <div className="absolute right-3 top-3 px-2 py-1 rounded-full bg-white/90 border text-[11px]">
+                                                        {s.distance.toFixed(2)} km
                                                     </div>
                                                 </div>
-                                            )}
 
-                                            {/* カートボタン（スクショ風） */}
-                                            <div className="mt-3 grid grid-cols-[1fr_auto] gap-2 items-center">
-                                                <button
-                                                    type="button"
-                                                    className="w-full px-3 py-2 rounded-xl border cursor-pointer disabled:opacity-40 bg-white"
-                                                    disabled={(qtyByShop[s.id] || 0) === 0}
-                                                    onClick={() => setTab("cart")}
-                                                >
-                                                    カートを見る（{qtyByShop[s.id] || 0}）
-                                                </button>
-                                                <button
-                                                    type="button"
-                                                    className="px-3 py-2 rounded-xl border cursor-pointer disabled:opacity-40 text-zinc-700"
-                                                    disabled={(qtyByShop[s.id] || 0) === 0}
-                                                    onClick={() => clearShopCart(s.id)}
-                                                    title="カートを空にする"
-                                                >
-                                                    🗑️
-                                                </button>
-                                            </div>
+                                                {hasAny ? (
+                                                    <div className="mt-3 space-y-2">
+                                                        {visibleItems.map(it => {
+                                                            const remain = Math.max(0, it.stock - getReserved(s.id, it.id));
+                                                            return (
+                                                                <div
+                                                                    key={it.id}
+                                                                    className="relative flex gap-3 rounded-2xl border bg-white p-2 pr-3"
+                                                                >
+                                                                    {/* 左側：詳細を開くボタン領域（数量チップはボタン外へ） */}
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => setDetail({ shopId: s.id, item: it })}
+                                                                        className="flex items-center gap-3 flex-1 min-w-0 text-left"
+                                                                    >
+                                                                        <div className="relative w-24 h-24 overflow-hidden rounded-xl bg-zinc-100 flex items-center justify-center text-4xl shrink-0">
+                                                                            {/* TODO(req v2): image_url を配置 */}
+                                                                            <span>{it.photo}</span>
 
-                                            {/* ▼ 開閉CTA：デフォルト閉 ＆ トグル */}
-                                            <div className="mt-2">
-                                                <button
-                                                    type="button"
-                                                    onClick={() => setMetaOpen(prev => ({ ...prev, [s.id]: !prev[s.id] }))}
-                                                    className="w-full inline-flex items-center justify-center gap-2 text-sm text-zinc-700 px-3 py-2 rounded-xl border bg-white hover:bg-zinc-50"
-                                                    aria-expanded={isOpen}
-                                                    aria-controls={`shop-meta-${s.id}`}
-                                                >
-                                                    <span>{isOpen ? "店舗詳細を閉じる" : "店舗詳細を表示"}</span>
-                                                    <span className={`transition-transform ${isOpen ? "rotate-180" : ""}`}>⌄</span>
-                                                </button>
-                                            </div>
+                                                                            {/* サムネ右上：のこり n 個 */}
+                                                                            <span
+                                                                                className={[
+                                                                                    "absolute top-1 right-1",
+                                                                                    "inline-flex items-center gap-1",
+                                                                                    "text-[10px] leading-none whitespace-nowrap",
+                                                                                    "rounded-full border px-1.5 py-0.5",
+                                                                                    "backdrop-blur-[2px] ring-1 ring-white/70",
+                                                                                    remain === 0
+                                                                                        ? "bg-red-50 text-red-600 border-red-200"
+                                                                                        : remain <= 3
+                                                                                            ? "bg-amber-50 text-amber-700 border-amber-200"
+                                                                                            : "bg-emerald-50 text-emerald-700 border-emerald-200",
+                                                                                ].join(" ")}
+                                                                            >
+                                                                                <span className="opacity-80">のこり</span>
+                                                                                <span className="tabular-nums font-semibold">{remain}</span>
+                                                                                <span className="opacity-80">個</span>
+                                                                            </span>
+                                                                        </div>
 
-                                            {/* 店舗メタ情報（折りたたみ本体） */}
-                                            {isOpen && (
-                                                <div
-                                                    id={`shop-meta-${s.id}`}
-                                                    className="mt-3 pt-3"
-                                                >
-                                                    <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-700">
-                                                        {/* 営業時間 */}
-                                                        <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1">
-                                                            <span>🕒</span>
-                                                            <span>営業時間</span>
-                                                            <span className="font-medium">{m.hours ?? "—"}</span>
-                                                        </span>
+                                                                        <div className="flex-1 min-w-0">
+                                                                            {/* タイトル：常に2行ぶんの高さを確保 */}
+                                                                            <div className="w-full text-sm font-medium leading-tight break-words line-clamp-2 min-h-[2.5rem]">
+                                                                                {it.name}
+                                                                            </div>
 
-                                                        {/* 定休日 */}
-                                                        <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1">
-                                                            <span>📅</span>
-                                                            <span>定休日</span>
-                                                            <span className="font-medium">{m.holiday ?? "—"}</span>
-                                                        </span>
+                                                                            {/* 受取時刻（右側に chips を置かない） */}
+                                                                            <div className="mt-0.5 text-xs text-zinc-500 flex items-center gap-1 w-full">
+                                                                                <span>⏰</span>
+                                                                                <span className="truncate">受取 {it.pickup}</span>
+                                                                            </div>
 
-                                                        {/* 決済方法（必要なら復帰） */}
-                                                        {/* <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1">
+                                                                            {/* 下段：価格（数量チップは外側） */}
+                                                                            <div className="mt-2 text-base font-semibold">{currency(it.price)}</div>
+                                                                        </div>
+                                                                    </button>
+
+                                                                    {/* 右下：数量チップ（ボタン外、下寄せ） */}
+                                                                    <div
+                                                                        className="absolute bottom-2 right-2 rounded-full px-2 py-1"
+                                                                        onClick={(e) => e.stopPropagation()}
+                                                                    >
+                                                                        <QtyChip sid={s.id} it={it} />
+                                                                    </div>
+                                                                </div>
+                                                            );
+                                                        })}
+                                                    </div>
+                                                ) : (
+                                                    <div className="mt-3">
+                                                        <div className="rounded-xl border border-dashed p-4 text-center text-sm text-zinc-500 bg-zinc-50">
+                                                            {s.items.length === 0
+                                                                ? "登録商品がありません。"
+                                                                : "現在、販売可能な商品はありません。"}
+                                                        </div>
+                                                    </div>
+                                                )}
+
+                                                {/* カートボタン（スクショ風） */}
+                                                <div className="mt-3 grid grid-cols-[1fr_auto] gap-2 items-center">
+                                                    <button
+                                                        type="button"
+                                                        className="w-full px-3 py-2 rounded-xl border cursor-pointer disabled:opacity-40 bg-white"
+                                                        disabled={(qtyByShop[s.id] || 0) === 0}
+                                                        onClick={() => setTab("cart")}
+                                                    >
+                                                        カートを見る（{qtyByShop[s.id] || 0}）
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        className="px-3 py-2 rounded-xl border cursor-pointer disabled:opacity-40 text-zinc-700"
+                                                        disabled={(qtyByShop[s.id] || 0) === 0}
+                                                        onClick={() => clearShopCart(s.id)}
+                                                        title="カートを空にする"
+                                                    >
+                                                        🗑️
+                                                    </button>
+                                                </div>
+
+                                                {/* ▼ 開閉CTA：デフォルト閉 ＆ トグル */}
+                                                <div className="mt-2">
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => setMetaOpen(prev => ({ ...prev, [s.id]: !prev[s.id] }))}
+                                                        className="w-full inline-flex items-center justify-center gap-2 text-sm text-zinc-700 px-3 py-2 rounded-xl border bg-white hover:bg-zinc-50"
+                                                        aria-expanded={isOpen}
+                                                        aria-controls={`shop-meta-${s.id}`}
+                                                    >
+                                                        <span>{isOpen ? "店舗詳細を閉じる" : "店舗詳細を表示"}</span>
+                                                        <span className={`transition-transform ${isOpen ? "rotate-180" : ""}`}>⌄</span>
+                                                    </button>
+                                                </div>
+
+                                                {/* 店舗メタ情報（折りたたみ本体） */}
+                                                {isOpen && (
+                                                    <div
+                                                        id={`shop-meta-${s.id}`}
+                                                        className="mt-3 pt-3"
+                                                    >
+                                                        <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-700">
+                                                            {/* 営業時間 */}
+                                                            <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1">
+                                                                <span>🕒</span>
+                                                                <span>営業時間</span>
+                                                                <span className="font-medium">{m.hours ?? "—"}</span>
+                                                            </span>
+
+                                                            {/* 定休日 */}
+                                                            <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1">
+                                                                <span>📅</span>
+                                                                <span>定休日</span>
+                                                                <span className="font-medium">{m.holiday ?? "—"}</span>
+                                                            </span>
+
+                                                            {/* 決済方法（必要なら復帰） */}
+                                                            {/* <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1">
                 <span>💳</span>
                 <span>決済</span>
                 <span className="font-medium">
@@ -1141,20 +1220,20 @@ export default function UserPilotApp() {
                 </span>
               </span> */}
 
-                                                        {/* カテゴリ */}
-                                                        <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1">
-                                                            <span>🏷️</span>
-                                                            <span className="font-medium">{m.category ?? "—"}</span>
-                                                        </span>
+                                                            {/* カテゴリ */}
+                                                            <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1">
+                                                                <span>🏷️</span>
+                                                                <span className="font-medium">{m.category ?? "—"}</span>
+                                                            </span>
 
-                                                        {/* 距離 */}
-                                                        <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1">
-                                                            <span>🚶</span>
-                                                            <span className="font-medium">{s.distance.toFixed(2)} km</span>
-                                                        </span>
+                                                            {/* 距離 */}
+                                                            <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1">
+                                                                <span>🚶</span>
+                                                                <span className="font-medium">{s.distance.toFixed(2)} km</span>
+                                                            </span>
 
-                                                        {/* 最安・在庫（必要なら復帰） */}
-                                                        {/* <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1">
+                                                            {/* 最安・在庫（必要なら復帰） */}
+                                                            {/* <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1">
                 <span>💰</span>
                 <span>最安</span>
                 <span className="font-semibold">{hasAny ? currency(minPrice) : "—"}</span>
@@ -1164,42 +1243,55 @@ export default function UserPilotApp() {
                 <span>在庫</span>
                 <span className="tabular-nums font-semibold">{remainingTotal}</span>
               </span> */}
-                                                    </div>
-
-                                                    {/* 住所/ミニマップ（スクショ風） */}
-                                                    <div className="mt-3">
-                                                        <div className="flex items-center gap-2 text-sm text-zinc-700">
-                                                            <span>📍</span>
-                                                            <span className="truncate">名古屋市中村区名駅1-1-1</span>
                                                         </div>
-                                                        <div className="relative mt-2">
-                                                            <div className="relative mt-2">
-                                                                <MapView lat={s.lat} lng={s.lng} name={s.name} />
+
+                                                        {/* 住所/ミニマップ（スクショ風） */}
+                                                        <div className="mt-3">
+                                                            <div className="flex items-center gap-2 text-sm text-zinc-700">
+                                                                <span>📍</span>
+                                                                <span className="truncate flex-1">{s.address ?? "住所未登録"}</span>
+                                                                <a
+                                                                    href={googleMapsUrlForShop(s)}
+                                                                    target="_blank"
+                                                                    rel="noopener noreferrer"
+                                                                    className="ml-2 inline-flex items-center gap-2 px-3 py-1.5 rounded-full border text-[13px] font-semibold text-[#6b0f0f] border-[#6b0f0f] hover:bg-[#6b0f0f]/5"
+                                                                    aria-label="Googleマップで開く"
+                                                                >
+                                                                    <IconMapPin className="w-4 h-4" />
+                                                                    <span>MAP</span>
+                                                                    <IconExternal className="w-4 h-4 text-zinc-400" />
+                                                                </a>
+
                                                             </div>
 
-                                                            {/* <div className="absolute right-2 top-2 px-2 py-1 rounded bg-white/90 border text-[11px]">
+                                                            <div className="relative mt-2">
+                                                                <div className="relative mt-2">
+                                                                    <MapView lat={s.lat} lng={s.lng} name={s.name} />
+                                                                </div>
+
+                                                                {/* <div className="absolute right-2 top-2 px-2 py-1 rounded bg-white/90 border text-[11px]">
                                                                 35.171, 136.881
                                                             </div>
                                                             <div className="absolute inset-0 flex items-center justify-center text-sm text-zinc-600 pointer-events-none">
                                                                 <span>📍 ここにあります</span>
                                                             </div> */}
+                                                            </div>
                                                         </div>
                                                     </div>
-                                                </div>
-                                            )}
+                                                )}
 
-                                            {!hasAny && (
-                                                <div
-                                                    className="pointer-events-none absolute inset-0 rounded-2xl bg-black/5"
-                                                    aria-hidden="true"
-                                                />
-                                            )}
-                                        </div>
+                                                {!hasAny && (
+                                                    <div
+                                                        className="pointer-events-none absolute inset-0 rounded-2xl bg-black/5"
+                                                        aria-hidden="true"
+                                                    />
+                                                )}
+                                            </div>
+
+                                        </CardObserver>
                                     );
                                 })}
                             </div>
-
-
                         </section>
                     )}
 

@@ -129,7 +129,7 @@ function validateTestCard(cardRaw: string) {
 
 // ---- 型 ----
 interface Item { id: string; name: string; price: number; stock: number; pickup: string; note: string; photo: string }
-interface Shop { id: string; name: string; lat: number; lng: number; zoomOnPin: number; closed: boolean; items: Item[], address?: string; }
+interface Shop { id: string; name: string; lat: number; lng: number; zoomOnPin: number; closed: boolean; items: Item[], address?: string; cover_image_path?: string | null; }
 interface CartLine { shopId: string; item: Item; qty: number }
 interface Order { id: string; userEmail: string; shopId: string; amount: number; status: "paid" | "redeemed" | "refunded"; code6: string; createdAt: number; lines: CartLine[] }
 
@@ -260,7 +260,7 @@ export default function UserPilotApp() {
     const [detail, setDetail] = useState<{ shopId: string; item: Item } | null>(null);
     const supabase = useSupabase();
     type DbProduct = { id: string; store_id?: string; name: string; price?: number; stock?: number; image_url?: string; updated_at?: string };
-    type DbStore = { id: string; name: string; created_at?: string; lat?: number; lng?: number; address?: string };
+    type DbStore = { id: string; name: string; created_at?: string; lat?: number; lng?: number; address?: string; cover_image_path?: string | null };
 
     const [dbProducts, setDbProducts] = useState<DbProduct[]>([]);
     const [dbStores, setDbStores] = useState<DbStore[]>([]);
@@ -350,7 +350,7 @@ export default function UserPilotApp() {
         (async () => {
             const { data, error } = await supabase
                 .from("stores")
-                .select("id, name, created_at, lat, lng, address")
+                .select("id, name, created_at, lat, lng, address, cover_image_path")
                 .order("created_at", { ascending: true })
                 .limit(200);
             if (error) {
@@ -387,6 +387,7 @@ export default function UserPilotApp() {
             closed: false,
             items: (byStore.get(String(st.id)) || []).map(mapToItem),
             address: typeof st.address === "string" ? st.address : undefined,
+            cover_image_path: st.cover_image_path ?? null,
         }));
 
         setShops(prev => (JSON.stringify(prev) === JSON.stringify(built) ? prev : built));
@@ -1060,11 +1061,13 @@ export default function UserPilotApp() {
                                                 <div className="relative">
                                                     <img
                                                         src={
-                                                            idx % 3 === 0
-                                                                ? "https://images.unsplash.com/photo-1495474472287-4d71bcdd2085?q=80&w=1200&auto=format&fit=crop"
-                                                                : idx % 3 === 1
-                                                                    ? "https://images.unsplash.com/photo-1475855581690-80accde3ae2b?q=80&w=1200&auto=format&fit=crop"
-                                                                    : "https://images.unsplash.com/photo-1460306855393-0410f61241c7?q=80&w=1200&auto=format&fit=crop"
+                                                            s.cover_image_path
+                                                                ? `${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/public-images/${s.cover_image_path}`
+                                                                : idx % 3 === 0
+                                                                    ? "https://images.unsplash.com/photo-1495474472287-4d71bcdd2085?q=80&w=1200&auto=format&fit=crop"
+                                                                    : idx % 3 === 1
+                                                                        ? "https://images.unsplash.com/photo-1475855581690-80accde3ae2b?q=80&w=1200&auto=format&fit=crop"
+                                                                        : "https://images.unsplash.com/photo-1460306855393-0410f61241c7?q=80&w=1200&auto=format&fit=crop"
                                                         }
                                                         alt={s.name}
                                                         className="w-full h-44 object-cover rounded-2xl"

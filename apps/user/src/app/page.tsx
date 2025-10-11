@@ -907,56 +907,106 @@ export default function UserPilotApp() {
                                 <div className="basis-full text-[11px] text-zinc-500 mt-1">ピンをタップすると下の店舗がハイライト</div>
                             </div>
 
+
+
                             <div className="grid grid-cols-1 gap-3">
                                 {shopsSorted.map((s, idx) => {
-                                    const visibleItems = s.items.filter(it => { const r = getReserved(s.id, it.id); const remain = Math.max(0, it.stock - r); return it.stock > 0 && (remain > 0 || r > 0); });
+                                    // 表示用メタ情報を正規化（s.meta が無くても動く）
+                                    const m = (() => {
+                                        const anyS = s as any;
+                                        const open = anyS.open ?? anyS.open_time ?? anyS?.meta?.open;
+                                        const close = anyS.close ?? anyS.close_time ?? anyS?.meta?.close;
+
+                                        const hours =
+                                            anyS.hours ??
+                                            anyS?.meta?.hours ??
+                                            (open && close ? `${open}-${close}` : undefined);
+
+                                        const holiday = anyS.holiday ?? anyS.closed ?? anyS?.meta?.holiday;
+                                        const payments = Array.isArray(anyS.payments)
+                                            ? anyS.payments
+                                            : Array.isArray(anyS?.meta?.payments)
+                                                ? anyS.meta.payments
+                                                : undefined;
+                                        const payment = anyS.payment ?? anyS?.meta?.payment;
+                                        const category = anyS.category ?? anyS?.meta?.category;
+
+                                        return { hours, holiday, payments, payment, category };
+                                    })();
+
+                                    const visibleItems = s.items.filter(it => {
+                                        const r = getReserved(s.id, it.id);
+                                        const remain = Math.max(0, it.stock - r);
+                                        return it.stock > 0 && (remain > 0 || r > 0);
+                                    });
                                     const hasAny = visibleItems.length > 0;
-                                    const remainingTotal = visibleItems.reduce((a, it) => a + Math.max(0, it.stock - getReserved(s.id, it.id)), 0);
+                                    const remainingTotal = visibleItems.reduce(
+                                        (a, it) => a + Math.max(0, it.stock - getReserved(s.id, it.id)),
+                                        0
+                                    );
                                     const minPrice = hasAny ? Math.min(...visibleItems.map(it => it.price)) : 0;
                                     const cartCount = qtyByShop[s.id] || 0;
+
                                     return (
-                                        <div key={s.id} className={`relative rounded-2xl border bg-white p-4 ${!hasAny ? 'opacity-70' : ''} ${focusedShop === s.id ? "ring-2 ring-zinc-900" : ""}`}>
+                                        <div
+                                            key={s.id}
+                                            className={`relative rounded-2xl border bg-white p-4 ${!hasAny ? "opacity-70" : ""
+                                                } ${focusedShop === s.id ? "ring-2 ring-zinc-900" : ""}`}
+                                        >
                                             {/* ヒーロー画像 */}
                                             <div className="relative">
                                                 <img
-                                                    src={idx % 3 === 0 ? 'https://images.unsplash.com/photo-1495474472287-4d71bcdd2085?q=80&w=1200&auto=format&fit=crop' : idx % 3 === 1 ? 'https://images.unsplash.com/photo-1475855581690-80accde3ae2b?q=80&w=1200&auto=format&fit=crop' : 'https://images.unsplash.com/photo-1460306855393-0410f61241c7?q=80&w=1200&auto=format&fit=crop'}
+                                                    src={
+                                                        idx % 3 === 0
+                                                            ? "https://images.unsplash.com/photo-1495474472287-4d71bcdd2085?q=80&w=1200&auto=format&fit=crop"
+                                                            : idx % 3 === 1
+                                                                ? "https://images.unsplash.com/photo-1475855581690-80accde3ae2b?q=80&w=1200&auto=format&fit=crop"
+                                                                : "https://images.unsplash.com/photo-1460306855393-0410f61241c7?q=80&w=1200&auto=format&fit=crop"
+                                                    }
                                                     alt={s.name}
                                                     className="w-full h-44 object-cover rounded-2xl"
                                                 />
-                                                <div className="absolute left-3 top-3 px-2 py-1 rounded bg-black/60 text-white text-xs">{s.name}</div>
-                                                <div className="absolute right-3 top-3 px-2 py-1 rounded-full bg-white/90 border text-[11px]">{s.distance.toFixed(2)} km</div>
+                                                <div className="absolute left-3 top-3 px-2 py-1 rounded bg-black/60 text-white text-xs">
+                                                    {s.name}
+                                                </div>
+                                                <div className="absolute right-3 top-3 px-2 py-1 rounded-full bg-white/90 border text-[11px]">
+                                                    {s.distance.toFixed(2)} km
+                                                </div>
                                             </div>
 
-                                            {/* 住所/ミニマップ（スクショ風） */}
-                                            <div className="mt-3">
-                                                <div className="flex items-center gap-2 text-sm text-zinc-700">
-                                                    <span>📍</span>
-                                                    <span className="truncate">名古屋市中村区名駅1-1-1</span>
-                                                </div>
-                                                <div className="relative mt-2">
-                                                    <div className="w-full h-28 rounded-xl border bg-[linear-gradient(0deg,transparent_24%,rgba(0,0,0,0.04)_25%,rgba(0,0,0,0.04)_26%,transparent_27%,transparent_74%,rgba(0,0,0,0.04)_75%,rgba(0,0,0,0.04)_76%,transparent_77%),linear-gradient(90deg,transparent_24%,rgba(0,0,0,0.04)_25%,rgba(0,0,0,0.04)_26%,transparent_27%,transparent_74%,rgba(0,0,0,0.04)_75%,rgba(0,0,0,0.04)_76%,transparent_77%)] bg-[length:12px_12px]"></div>
-                                                    <div className="absolute right-2 top-2 px-2 py-1 rounded bg-white/90 border text-[11px]">35.171, 136.881</div>
-                                                    <div className="absolute inset-0 flex items-center justify-center text-sm text-zinc-600"><span>📍 ここにあります</span></div>
-                                                </div>
-                                            </div>
+
 
                                             {/* 概要 */}
-                                            <div className="mt-3 flex items-center justify-between text-sm">
-                                                <div className="text-zinc-700">最安 <span className="font-semibold">{hasAny ? currency(minPrice) : '—'}</span></div>
-                                                <div className="text-zinc-700">在庫 <span className="tabular-nums font-semibold">{remainingTotal}</span></div>
+                                            {/* <div className="mt-3 flex items-center justify-between text-sm">
+                                                <div className="text-zinc-700">
+                                                    最安 <span className="font-semibold">{hasAny ? currency(minPrice) : "—"}</span>
+                                                </div>
+                                                <div className="text-zinc-700">
+                                                    在庫 <span className="tabular-nums font-semibold">{remainingTotal}</span>
+                                                </div>
                                                 <div className="text-xs px-2 py-0.5 rounded bg-zinc-100">カート {cartCount}</div>
-                                            </div>
+                                            </div> */}
+
                                             {hasAny ? (
                                                 <div className="mt-3 space-y-2">
                                                     {visibleItems.map(it => {
                                                         const remain = Math.max(0, it.stock - getReserved(s.id, it.id));
                                                         return (
-                                                            <div key={it.id} className="relative flex gap-3 rounded-2xl border bg-white p-2 pr-3">
+                                                            <div
+                                                                key={it.id}
+                                                                className="relative flex gap-3 rounded-2xl border bg-white p-2 pr-3"
+                                                            >
                                                                 {/* 左側：詳細を開くボタン領域（数量チップはボタン外へ） */}
-                                                                <button type="button" onClick={() => setDetail({ shopId: s.id, item: it })} className="flex items-center gap-3 flex-1 min-w-0 text-left">
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => setDetail({ shopId: s.id, item: it })}
+                                                                    className="flex items-center gap-3 flex-1 min-w-0 text-left"
+                                                                >
                                                                     <div className="relative w-24 h-24 overflow-hidden rounded-xl bg-zinc-100 flex items-center justify-center text-4xl shrink-0">
                                                                         {/* TODO(req v2): image_url を配置 */}
                                                                         <span>{it.photo}</span>
+
+                                                                        {/* サムネ右上：のこり n 個 */}
                                                                         <span
                                                                             className={[
                                                                                 "absolute top-1 right-1",
@@ -976,20 +1026,27 @@ export default function UserPilotApp() {
                                                                             <span className="opacity-80">個</span>
                                                                         </span>
                                                                     </div>
+
                                                                     <div className="flex-1 min-w-0">
-                                                                        <div className="w-full text-sm font-medium leading-tight break-words line-clamp-2 min-h-[2.5rem]">{it.name}</div>
-
-                                                                        <div className="mt-0.5 text-xs text-zinc-500 flex items-center justify-between gap-3 w-full whitespace-nowrap">
-                                                                            <span className="inline-flex items-center gap-1"><span>⏰</span><span>受取 {it.pickup}</span></span>
-
+                                                                        {/* タイトル：常に2行ぶんの高さを確保 */}
+                                                                        <div className="w-full text-sm font-medium leading-tight break-words line-clamp-2 min-h-[2.5rem]">
+                                                                            {it.name}
                                                                         </div>
+
+                                                                        {/* 受取時刻（右側に chips を置かない） */}
+                                                                        <div className="mt-0.5 text-xs text-zinc-500 flex items-center gap-1 w-full">
+                                                                            <span>⏰</span>
+                                                                            <span className="truncate">受取 {it.pickup}</span>
+                                                                        </div>
+
                                                                         {/* 下段：価格（数量チップは外側） */}
                                                                         <div className="mt-2 text-base font-semibold">{currency(it.price)}</div>
                                                                     </div>
                                                                 </button>
+
                                                                 {/* 右下：数量チップ（ボタン外、下寄せ） */}
                                                                 <div
-                                                                    className="absolute bottom-2 right-2 rounded-full  px-2 py-1"
+                                                                    className="absolute bottom-2 right-2 rounded-full px-2 py-1"
                                                                     onClick={(e) => e.stopPropagation()}
                                                                 >
                                                                     <QtyChip sid={s.id} it={it} />
@@ -1001,26 +1058,113 @@ export default function UserPilotApp() {
                                             ) : (
                                                 <div className="mt-3">
                                                     <div className="rounded-xl border border-dashed p-4 text-center text-sm text-zinc-500 bg-zinc-50">
-                                                        {s.items.length === 0 ? '登録商品がありません。' : '現在、販売可能な商品はありません。'}
+                                                        {s.items.length === 0
+                                                            ? "登録商品がありません。"
+                                                            : "現在、販売可能な商品はありません。"}
                                                     </div>
                                                 </div>
                                             )}
+
                                             {/* カートボタン（スクショ風） */}
                                             <div className="mt-3 grid grid-cols-[1fr_auto] gap-2 items-center">
-                                                <button type="button" className="w-full px-3 py-2 rounded-xl border cursor-pointer disabled:opacity-40 bg-white" disabled={(qtyByShop[s.id] || 0) === 0} onClick={() => setTab("cart")}>
+                                                <button
+                                                    type="button"
+                                                    className="w-full px-3 py-2 rounded-xl border cursor-pointer disabled:opacity-40 bg-white"
+                                                    disabled={(qtyByShop[s.id] || 0) === 0}
+                                                    onClick={() => setTab("cart")}
+                                                >
                                                     カートを見る（{qtyByShop[s.id] || 0}）
                                                 </button>
-                                                <button type="button" className="px-3 py-2 rounded-xl border cursor-pointer disabled:opacity-40 text-zinc-700" disabled={(qtyByShop[s.id] || 0) === 0} onClick={() => clearShopCart(s.id)} title="カートを空にする">
+                                                <button
+                                                    type="button"
+                                                    className="px-3 py-2 rounded-xl border cursor-pointer disabled:opacity-40 text-zinc-700"
+                                                    disabled={(qtyByShop[s.id] || 0) === 0}
+                                                    onClick={() => clearShopCart(s.id)}
+                                                    title="カートを空にする"
+                                                >
                                                     🗑️
                                                 </button>
                                             </div>
+
                                             {!hasAny && (
-                                                <div className="pointer-events-none absolute inset-0 rounded-2xl bg-black/5" aria-hidden="true" />
+                                                <div
+                                                    className="pointer-events-none absolute inset-0 rounded-2xl bg-black/5"
+                                                    aria-hidden="true"
+                                                />
                                             )}
+
+                                            {/* 店舗メタ情報（カード下部） */}
+                                            <div className="mt-4 pt-3 ">
+                                                <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-700">
+                                                    {/* 営業時間 */}
+                                                    <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1">
+                                                        <span>🕒</span>
+                                                        <span>営業時間</span>
+                                                        <span className="font-medium">{m.hours ?? "—"}</span>
+                                                    </span>
+
+                                                    {/* 定休日 */}
+                                                    <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1">
+                                                        <span>📅</span>
+                                                        <span>定休日</span>
+                                                        <span className="font-medium">{m.holiday ?? "—"}</span>
+                                                    </span>
+
+                                                    {/* 決済方法 */}
+                                                    {/* <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1">
+                                                        <span>💳</span>
+                                                        <span>決済</span>
+                                                        <span className="font-medium">
+                                                            {m.payments?.join(" / ") ?? (m.payment ?? "—")}
+                                                        </span>
+                                                    </span> */}
+
+                                                    {/* カテゴリ */}
+                                                    <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1">
+                                                        <span>🏷️</span>
+                                                        <span className="font-medium">{m.category ?? "—"}</span>
+                                                    </span>
+
+                                                    {/* 距離 */}
+                                                    <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1">
+                                                        <span>🚶</span>
+                                                        <span className="font-medium">{s.distance.toFixed(2)} km</span>
+                                                    </span>
+
+                                                    {/* 最安・在庫 */}
+                                                    {/* <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1">
+                                                        <span>💰</span>
+                                                        <span>最安</span>
+                                                        <span className="font-semibold">{hasAny ? currency(minPrice) : "—"}</span>
+                                                    </span>
+                                                    <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1">
+                                                        <span>📦</span>
+                                                        <span>在庫</span>
+                                                        <span className="tabular-nums font-semibold">{remainingTotal}</span>
+                                                    </span> */}
+                                                </div>
+                                            </div>
+                                            {/* 住所/ミニマップ（スクショ風） */}
+                                            <div className="mt-3">
+                                                <div className="flex items-center gap-2 text-sm text-zinc-700">
+                                                    <span>📍</span>
+                                                    <span className="truncate">名古屋市中村区名駅1-1-1</span>
+                                                </div>
+                                                <div className="relative mt-2">
+                                                    <div className="w-full h-28 rounded-xl border bg-[linear-gradient(0deg,transparent_24%,rgba(0,0,0,0.04)_25%,rgba(0,0,0,0.04)_26%,transparent_27%,transparent_74%,rgba(0,0,0,0.04)_75%,rgba(0,0,0,0.04)_76%,transparent_77%),linear-gradient(90deg,transparent_24%,rgba(0,0,0,0.04)_25%,rgba(0,0,0,0.04)_26%,transparent_27%,transparent_74%,rgba(0,0,0,0.04)_75%,rgba(0,0,0,0.04)_76%,transparent_77%)] bg-[length:12px_12px]"></div>
+                                                    <div className="absolute right-2 top-2 px-2 py-1 rounded bg-white/90 border text-[11px]">
+                                                        35.171, 136.881
+                                                    </div>
+                                                    <div className="absolute inset-0 flex items-center justify-center text-sm text-zinc-600">
+                                                        <span>📍 ここにあります</span>
+                                                    </div>
+                                                </div>
+                                            </div>
                                         </div>
                                     );
                                 })}
                             </div>
+
                         </section>
                     )}
 

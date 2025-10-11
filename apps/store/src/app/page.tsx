@@ -43,6 +43,7 @@ type ProductsRow = {
   price: number | null;
   stock: number | null;
   updated_at: string | null;
+  image_url?: string | null;
 };
 
 type Product = {
@@ -50,6 +51,7 @@ type Product = {
   name: string;
   price: number;
   stock: number;
+  image_url?: string | null;
 };
 
 // ===== Util =====
@@ -95,7 +97,15 @@ function mapOrder(r: OrdersRow): Order {
     status,
   };
 }
-function mapProduct(r: ProductsRow): Product { return { id: String(r.id), name: r.name, price: Number(r.price ?? 0), stock: Math.max(0, Number(r.stock ?? 0)) }; }
+function mapProduct(r: ProductsRow): Product {
+  return {
+    id: String(r.id),
+    name: r.name,
+    price: Number(r.price ?? 0),
+    stock: Math.max(0, Number(r.stock ?? 0)),
+    image_url: (r as any).image_url ?? null, // ← 追加
+  };
+}
 
 // ===== Supabase クライアント =====
 function useSupabase() {
@@ -497,14 +507,45 @@ function StockAdjustModal({
   );
 }
 
+
+function useImageUpload() {
+  const supabase = useSupabase();
+
+  const uploadProductImage = useCallback(async (productId: string, file: File) => {
+    if (!supabase) throw new Error("Supabase 未初期化");
+    const ext = file.name.split(".").pop() || "jpg";
+    const path = `products/${productId}/${Date.now()}.${ext}`;
+    const { error: upErr } = await supabase.storage.from("public-images").upload(path, file, {
+      cacheControl: "3600",
+      upsert: true,
+    });
+    if (upErr) throw upErr;
+
+    // DB の image_url 更新（相対パスを保存）
+    const { error: upDbErr } = await supabase
+      .from("products")
+      .update({ image_url: path })
+      .eq("id", productId)
+      .eq("store_id", getStoreId());
+    if (upDbErr) throw upDbErr;
+
+    return path; // 呼び出し側で UI 更新に使用
+  }, [supabase]);
+
+  return { uploadProductImage };
+}
+
+
 function ProductForm() {
-  const { products, perr, ploading, add, remove, updateStock } = useProducts();
+  const { products, perr, ploading, add, remove, updateStock, reload } = useProducts();
   const [adjust, setAdjust] = useState<null | { id: string; name: string; stock: number }>(null);
   const [pending, setPending] = useState<Record<string, { id: string; name: string; current: number; next: number }>>({});
   const [name, setName] = useState("");
   const [price, setPrice] = useState("");
   const [stock, setStock] = useState("");
   const take = storeTake(Number(price || 0));
+  const { uploadProductImage } = useImageUpload();
+  const [uploadingId, setUploadingId] = useState<string | null>(null);
 
   return (
     <div className="rounded-2xl border bg-white p-4 space-y-3">
@@ -518,46 +559,133 @@ function ProductForm() {
       </form>
       {perr ? <div className="text-sm text-red-600">{perr}</div> : null}
       <div className="grid grid-cols-1 gap-2">
-        {products.map(p => (
-          <div key={p.id} className="rounded-xl border p-3 text-sm flex items-center justify-between">
-            <div className="space-y-0.5">
-              <div className="font-medium">{p.name}</div>
-              <div className="text-zinc-600 text-xs">店側受取額 {yen(storeTake(p.price))}</div>
-            </div>
-            <div className="text-right">
-              <div className="font-semibold">{yen(p.price)}</div>
-              <div className="text-xs text-zinc-500">在庫 {p.stock}</div>
-              {pending[p.id] ? (
-                <div className="mt-1 text-xs text-amber-700">変更予定: {pending[p.id].next}（現在: {pending[p.id].current}）</div>
-              ) : null}
-              <button
-                type="button"
-                className="mt-1 inline-flex items-center rounded-lg border px-2 py-1 text-xs hover:bg-zinc-50 disabled:opacity-50"
-                onClick={() => setAdjust({ id: p.id, name: p.name, stock: p.stock })}
-                disabled={ploading}
-                aria-label={`${p.name} の在庫を調整`}
-              >在庫調整</button>
-              <button
-                type="button"
-                className="mt-2 inline-flex items-center rounded-lg border px-2 py-1 text-xs text-red-600 border-red-200 hover:bg-red-50 disabled:opacity-50"
-                onClick={() => { if (confirm(`「${p.name}」を削除しますか？`)) remove(p.id); }}
-                disabled={ploading}
-                aria-label={`${p.name} を削除`}
-              >削除</button>
-            </div>
+        {products.map((p) => {
+          const inputId = `product-image-${p.id}`;
+          return (
+            <div
+              key={p.id}
+              className="rounded-2xl border px-4 py-3 flex items-center justify-between gap-4"
+            >
+              {/* 左：商品名・受取額・サムネ（タップでアップロード／変更） */}
+              <div className="flex-1 min-w-0">
+                <div className="space-y-0.5">
+                  <div className="font-medium truncate">{p.name}</div>
+                  <div className="text-zinc-600 text-xs">店側受取額 {yen(storeTake(p.price))}</div>
 
-            <StockAdjustModal
-              open={!!adjust}
-              initial={adjust?.stock || 0}
-              productName={adjust?.name || ''}
-              disabled={ploading}
-              onClose={() => setAdjust(null)}
-              onCommit={(n) => { if (adjust) { setPending(prev => ({ ...prev, [adjust.id]: { id: adjust.id, name: adjust.name, current: adjust.stock, next: n } })); setAdjust(null); } }}
-            />
+                  <div className="mt-2">
+                    {/* 非表示 input（サムネを押すと開く） */}
+                    <input
+                      id={inputId}
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={async (e) => {
+                        const file = e.target.files?.[0];
+                        if (!file) return;
+                        try {
+                          setUploadingId(p.id);
+                          await uploadProductImage(p.id, file);
+                          await reload(); // 最新を反映
+                        } catch (err: any) {
+                          alert(`アップロードに失敗しました: ${err?.message ?? err}`);
+                        } finally {
+                          setUploadingId(null);
+                          e.currentTarget.value = ""; // 同じファイルを選び直せるように
+                        }
+                      }}
+                      disabled={ploading || uploadingId === p.id}
+                    />
 
-          </div>
-        ))}
+                    {/* サムネ本体（label で input を開く） */}
+                    <label
+                      htmlFor={inputId}
+                      className="relative block w-24 h-24 overflow-hidden rounded-lg border bg-zinc-50 cursor-pointer group"
+                      aria-label={`${p.name} の画像をアップロード/変更`}
+                      title="タップして画像をアップロード/変更"
+                    >
+                      {p.image_url ? (
+                        <img
+                          src={`${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/public-images/${p.image_url}`}
+                          alt={`${p.name} の画像`}
+                          className="w-full h-full object-cover transition-transform group-hover:scale-[1.02]"
+                          loading="lazy"
+                          decoding="async"
+                        />
+                      ) : (
+                        <div className="w-full h-full grid place-items-center text-xs text-zinc-500">
+                          画像なし
+                          <div className="text-[10px] mt-0.5">タップで追加</div>
+                        </div>
+                      )}
+
+                      {/* ホバー時の薄いオーバーレイ */}
+                      <div className="pointer-events-none absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity bg-black/5" />
+
+                      {/* アップロード中のオーバーレイ */}
+                      {uploadingId === p.id && (
+                        <div className="absolute inset-0 grid place-items-center text-xs bg-white/70">
+                          更新中…
+                        </div>
+                      )}
+
+                      {/* 画像あり時の「変更」チップ */}
+                      {p.image_url && (
+                        <span className="pointer-events-none absolute bottom-1 right-1 text-[10px] px-1 rounded bg-white/85 shadow-sm opacity-0 group-hover:opacity-100">
+                          変更
+                        </span>
+                      )}
+                    </label>
+                  </div>
+                </div>
+              </div>
+
+              {/* 右：価格・在庫・操作 */}
+              <div className="text-right shrink-0">
+                <div className="text-sm font-semibold">{yen(p.price)}</div>
+                <div className="text-xs text-zinc-500">在庫 {p.stock}</div>
+
+                <div className="mt-2 flex items-center gap-2 justify-end">
+                  <button
+                    onClick={async () => {
+                      const v = prompt("在庫数を入力", String(p.stock));
+                      if (v == null) return;
+                      const n = Number(v);
+                      if (!Number.isFinite(n) || n < 0) {
+                        alert("0以上の整数を入力してください。");
+                        return;
+                      }
+                      try {
+                        await updateStock(p.id, Math.floor(n));
+                      } catch (e: any) {
+                        alert(`在庫更新に失敗しました: ${e?.message ?? e}`);
+                      }
+                    }}
+                    className="px-3 py-1 rounded-lg border text-xs hover:bg-zinc-50"
+                  >
+                    在庫調整
+                  </button>
+
+                  <button
+                    onClick={async () => {
+                      if (!confirm(`「${p.name}」を削除しますか？`)) return;
+                      try {
+                        await remove(p.id);
+                      } catch (e: any) {
+                        alert(`削除に失敗しました: ${e?.message ?? e}`);
+                      }
+                    }}
+                    className="px-3 py-1 rounded-lg border text-xs text-red-600 bg-red-50 hover:bg-red-100"
+                  >
+                    削除
+                  </button>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+
       </div>
+
       {Object.keys(pending).length > 0 && (
         <div className="sticky bottom-4 mt-4 rounded-2xl border bg-white p-3 shadow-sm">
           <div className="flex items-center justify-between gap-2">

@@ -2,6 +2,12 @@
 import React, { useEffect, useMemo, useRef, useState, startTransition, useCallback } from "react";
 import { createClient } from '@supabase/supabase-js';
 import type { SupabaseClient } from '@supabase/supabase-js';
+import 'leaflet/dist/leaflet.css';
+import dynamic from "next/dynamic";
+
+// page.tsx より抜粋（MapViewの使用部分）
+const MapView = dynamic(() => import("@/components/MapView"), { ssr: false });
+
 
 
 let __sb__: SupabaseClient | null = null;
@@ -191,7 +197,8 @@ export default function UserPilotApp() {
     const [detail, setDetail] = useState<{ shopId: string; item: Item } | null>(null);
     const supabase = useSupabase();
     type DbProduct = { id: string; store_id?: string; name: string; price?: number; stock?: number; image_url?: string; updated_at?: string };
-    type DbStore = { id: string; name: string; created_at?: string };
+    type DbStore = { id: string; name: string; created_at?: string; lat?: number; lng?: number; address?: string };
+
     const [dbProducts, setDbProducts] = useState<DbProduct[]>([]);
     const [dbStores, setDbStores] = useState<DbStore[]>([]);
 
@@ -272,7 +279,7 @@ export default function UserPilotApp() {
         (async () => {
             const { data, error } = await supabase
                 .from("stores")
-                .select("id, name, created_at")
+                .select("id, name, created_at, lat, lng")
                 .order("created_at", { ascending: true })
                 .limit(200);
             if (error) {
@@ -299,7 +306,16 @@ export default function UserPilotApp() {
             const stock = Math.max(0, Number(rawStock) || 0);
             return { id: String(p.id), name: String(p.name ?? "不明"), price: Math.max(0, Number(p.price ?? 0) || 0), stock, pickup: "18:00-20:00", note: "", photo: "🛍️" };
         };
-        const built: Shop[] = dbStores.map((st) => ({ id: String(st.id), name: String(st.name ?? "店舗"), lat: 0, lng: 0, zoomOnPin: 16, closed: false, items: (byStore.get(String(st.id)) || []).map(mapToItem) }));
+        const fallback = { lat: 35.171, lng: 136.881 }; // 名古屋駅など任意
+        const built: Shop[] = dbStores.map((st) => ({
+            id: String(st.id),
+            name: String(st.name ?? "店舗"),
+            lat: typeof st.lat === "number" ? st.lat : fallback.lat,
+            lng: typeof st.lng === "number" ? st.lng : fallback.lng,
+            zoomOnPin: 16,
+            closed: false,
+            items: (byStore.get(String(st.id)) || []).map(mapToItem),
+        }));
 
         setShops(prev => (JSON.stringify(prev) === JSON.stringify(built) ? prev : built));
     }, [dbStores, dbProducts, setShops]);
@@ -846,6 +862,8 @@ export default function UserPilotApp() {
         );
     };
 
+
+
     const QtyChip = ({ sid, it }: { sid: string; it: Item }) => {
         const reserved = getReserved(sid, it.id);
         const remain = Math.max(0, it.stock - reserved);
@@ -853,7 +871,7 @@ export default function UserPilotApp() {
             <div className="inline-flex items-center rounded-full px-2 py-1 text-sm select-none">
                 <button
                     type="button"
-                    className="w-5 h-5 text-[10px] leading-none rounded-full border cursor-pointer disabled:opacity-40 flex items-center justify-center"
+                    className="w-6 h-6 text-[10px] leading-none rounded-full border cursor-pointer disabled:opacity-40 flex items-center justify-center"
                     disabled={reserved <= 0}
                     onClick={() => changeQty(sid, it, -1)}
                     aria-label="数量を減らす"
@@ -861,7 +879,7 @@ export default function UserPilotApp() {
                 <span className="mx-3 min-w-[1.5rem] text-center tabular-nums">{reserved}</span>
                 <button
                     type="button"
-                    className="w-5 h-5 text-[10px] leading-none rounded-full border cursor-pointer disabled:opacity-40 flex items-center justify-center"
+                    className="w-6 h-6 text-[10px] leading-none rounded-full border cursor-pointer disabled:opacity-40 flex items-center justify-center"
                     disabled={remain <= 0}
                     onClick={() => changeQty(sid, it, +1)}
                     aria-label="数量を増やす"
@@ -869,6 +887,10 @@ export default function UserPilotApp() {
             </div>
         );
     };
+
+    // 店舗カード詳細メタ開閉
+    const [metaOpen, setMetaOpen] = useState<Record<string, boolean>>({});
+
 
     // SSR時は描画を保留してクライアントで初回描画
     if (!hydrated) return null;
@@ -897,7 +919,7 @@ export default function UserPilotApp() {
                         <section className="mt-4 space-y-4">
                             <h2 className="text-base font-semibold">近くのお店</h2>
                             {/* 店舗チップ群（ピン） */}
-                            <div className="rounded-2xl border bg-white p-3 flex flex-wrap gap-2 text-sm">
+                            {/* <div className="rounded-2xl border bg-white p-3 flex flex-wrap gap-2 text-sm">
                                 {shopsSorted.map((s) => (
                                     <button key={`chip-${s.id}`} onClick={() => setFocusedShop(s.id)} className={`px-3 py-1 rounded-full border cursor-pointer flex items-center gap-1 ${focusedShop === s.id ? 'bg-zinc-900 text-white border-zinc-900' : 'bg-white'}`}>
                                         <span>📍</span>
@@ -905,7 +927,7 @@ export default function UserPilotApp() {
                                     </button>
                                 ))}
                                 <div className="basis-full text-[11px] text-zinc-500 mt-1">ピンをタップすると下の店舗がハイライト</div>
-                            </div>
+                            </div> */}
 
 
 
@@ -947,6 +969,8 @@ export default function UserPilotApp() {
                                     const minPrice = hasAny ? Math.min(...visibleItems.map(it => it.price)) : 0;
                                     const cartCount = qtyByShop[s.id] || 0;
 
+                                    const isOpen = !!metaOpen[s.id];
+
                                     return (
                                         <div
                                             key={s.id}
@@ -973,19 +997,6 @@ export default function UserPilotApp() {
                                                     {s.distance.toFixed(2)} km
                                                 </div>
                                             </div>
-
-
-
-                                            {/* 概要 */}
-                                            {/* <div className="mt-3 flex items-center justify-between text-sm">
-                                                <div className="text-zinc-700">
-                                                    最安 <span className="font-semibold">{hasAny ? currency(minPrice) : "—"}</span>
-                                                </div>
-                                                <div className="text-zinc-700">
-                                                    在庫 <span className="tabular-nums font-semibold">{remainingTotal}</span>
-                                                </div>
-                                                <div className="text-xs px-2 py-0.5 rounded bg-zinc-100">カート {cartCount}</div>
-                                            </div> */}
 
                                             {hasAny ? (
                                                 <div className="mt-3 space-y-2">
@@ -1086,84 +1097,108 @@ export default function UserPilotApp() {
                                                 </button>
                                             </div>
 
+                                            {/* ▼ 開閉CTA：デフォルト閉 ＆ トグル */}
+                                            <div className="mt-2">
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setMetaOpen(prev => ({ ...prev, [s.id]: !prev[s.id] }))}
+                                                    className="w-full inline-flex items-center justify-center gap-2 text-sm text-zinc-700 px-3 py-2 rounded-xl border bg-white hover:bg-zinc-50"
+                                                    aria-expanded={isOpen}
+                                                    aria-controls={`shop-meta-${s.id}`}
+                                                >
+                                                    <span>{isOpen ? "店舗詳細を閉じる" : "店舗詳細を表示"}</span>
+                                                    <span className={`transition-transform ${isOpen ? "rotate-180" : ""}`}>⌄</span>
+                                                </button>
+                                            </div>
+
+                                            {/* 店舗メタ情報（折りたたみ本体） */}
+                                            {isOpen && (
+                                                <div
+                                                    id={`shop-meta-${s.id}`}
+                                                    className="mt-3 pt-3"
+                                                >
+                                                    <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-700">
+                                                        {/* 営業時間 */}
+                                                        <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1">
+                                                            <span>🕒</span>
+                                                            <span>営業時間</span>
+                                                            <span className="font-medium">{m.hours ?? "—"}</span>
+                                                        </span>
+
+                                                        {/* 定休日 */}
+                                                        <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1">
+                                                            <span>📅</span>
+                                                            <span>定休日</span>
+                                                            <span className="font-medium">{m.holiday ?? "—"}</span>
+                                                        </span>
+
+                                                        {/* 決済方法（必要なら復帰） */}
+                                                        {/* <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1">
+                <span>💳</span>
+                <span>決済</span>
+                <span className="font-medium">
+                  {m.payments?.join(" / ") ?? (m.payment ?? "—")}
+                </span>
+              </span> */}
+
+                                                        {/* カテゴリ */}
+                                                        <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1">
+                                                            <span>🏷️</span>
+                                                            <span className="font-medium">{m.category ?? "—"}</span>
+                                                        </span>
+
+                                                        {/* 距離 */}
+                                                        <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1">
+                                                            <span>🚶</span>
+                                                            <span className="font-medium">{s.distance.toFixed(2)} km</span>
+                                                        </span>
+
+                                                        {/* 最安・在庫（必要なら復帰） */}
+                                                        {/* <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1">
+                <span>💰</span>
+                <span>最安</span>
+                <span className="font-semibold">{hasAny ? currency(minPrice) : "—"}</span>
+              </span>
+              <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1">
+                <span>📦</span>
+                <span>在庫</span>
+                <span className="tabular-nums font-semibold">{remainingTotal}</span>
+              </span> */}
+                                                    </div>
+
+                                                    {/* 住所/ミニマップ（スクショ風） */}
+                                                    <div className="mt-3">
+                                                        <div className="flex items-center gap-2 text-sm text-zinc-700">
+                                                            <span>📍</span>
+                                                            <span className="truncate">名古屋市中村区名駅1-1-1</span>
+                                                        </div>
+                                                        <div className="relative mt-2">
+                                                            <div className="relative mt-2">
+                                                                <MapView lat={s.lat} lng={s.lng} name={s.name} />
+                                                            </div>
+
+                                                            {/* <div className="absolute right-2 top-2 px-2 py-1 rounded bg-white/90 border text-[11px]">
+                                                                35.171, 136.881
+                                                            </div>
+                                                            <div className="absolute inset-0 flex items-center justify-center text-sm text-zinc-600 pointer-events-none">
+                                                                <span>📍 ここにあります</span>
+                                                            </div> */}
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            )}
+
                                             {!hasAny && (
                                                 <div
                                                     className="pointer-events-none absolute inset-0 rounded-2xl bg-black/5"
                                                     aria-hidden="true"
                                                 />
                                             )}
-
-                                            {/* 店舗メタ情報（カード下部） */}
-                                            <div className="mt-4 pt-3 ">
-                                                <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-700">
-                                                    {/* 営業時間 */}
-                                                    <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1">
-                                                        <span>🕒</span>
-                                                        <span>営業時間</span>
-                                                        <span className="font-medium">{m.hours ?? "—"}</span>
-                                                    </span>
-
-                                                    {/* 定休日 */}
-                                                    <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1">
-                                                        <span>📅</span>
-                                                        <span>定休日</span>
-                                                        <span className="font-medium">{m.holiday ?? "—"}</span>
-                                                    </span>
-
-                                                    {/* 決済方法 */}
-                                                    {/* <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1">
-                                                        <span>💳</span>
-                                                        <span>決済</span>
-                                                        <span className="font-medium">
-                                                            {m.payments?.join(" / ") ?? (m.payment ?? "—")}
-                                                        </span>
-                                                    </span> */}
-
-                                                    {/* カテゴリ */}
-                                                    <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1">
-                                                        <span>🏷️</span>
-                                                        <span className="font-medium">{m.category ?? "—"}</span>
-                                                    </span>
-
-                                                    {/* 距離 */}
-                                                    <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1">
-                                                        <span>🚶</span>
-                                                        <span className="font-medium">{s.distance.toFixed(2)} km</span>
-                                                    </span>
-
-                                                    {/* 最安・在庫 */}
-                                                    {/* <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1">
-                                                        <span>💰</span>
-                                                        <span>最安</span>
-                                                        <span className="font-semibold">{hasAny ? currency(minPrice) : "—"}</span>
-                                                    </span>
-                                                    <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1">
-                                                        <span>📦</span>
-                                                        <span>在庫</span>
-                                                        <span className="tabular-nums font-semibold">{remainingTotal}</span>
-                                                    </span> */}
-                                                </div>
-                                            </div>
-                                            {/* 住所/ミニマップ（スクショ風） */}
-                                            <div className="mt-3">
-                                                <div className="flex items-center gap-2 text-sm text-zinc-700">
-                                                    <span>📍</span>
-                                                    <span className="truncate">名古屋市中村区名駅1-1-1</span>
-                                                </div>
-                                                <div className="relative mt-2">
-                                                    <div className="w-full h-28 rounded-xl border bg-[linear-gradient(0deg,transparent_24%,rgba(0,0,0,0.04)_25%,rgba(0,0,0,0.04)_26%,transparent_27%,transparent_74%,rgba(0,0,0,0.04)_75%,rgba(0,0,0,0.04)_76%,transparent_77%),linear-gradient(90deg,transparent_24%,rgba(0,0,0,0.04)_25%,rgba(0,0,0,0.04)_26%,transparent_27%,transparent_74%,rgba(0,0,0,0.04)_75%,rgba(0,0,0,0.04)_76%,transparent_77%)] bg-[length:12px_12px]"></div>
-                                                    <div className="absolute right-2 top-2 px-2 py-1 rounded bg-white/90 border text-[11px]">
-                                                        35.171, 136.881
-                                                    </div>
-                                                    <div className="absolute inset-0 flex items-center justify-center text-sm text-zinc-600">
-                                                        <span>📍 ここにあります</span>
-                                                    </div>
-                                                </div>
-                                            </div>
                                         </div>
                                     );
                                 })}
                             </div>
+
 
                         </section>
                     )}

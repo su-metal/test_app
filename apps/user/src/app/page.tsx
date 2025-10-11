@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 import React, { useEffect, useMemo, useRef, useState, startTransition, useCallback } from "react";
 import { createClient } from '@supabase/supabase-js';
 import type { SupabaseClient } from '@supabase/supabase-js';
@@ -454,7 +454,7 @@ export default function UserPilotApp() {
                     });
                     return changed ? next : prev;
                 });
-            } catch {/* noop */}
+            } catch {/* noop */ }
         };
 
         // 即時 + 周期的に確認（4秒毎）。画面操作や注文更新で依存キーが変わると自動で張り替え
@@ -754,7 +754,7 @@ export default function UserPilotApp() {
                         const next = Math.max(0, cur - l.qty);
                         await supabase.from('products').update({ stock: next }).eq('id', l.item.id);
                     }));
-                } catch {/* noop */}
+                } catch {/* noop */ }
 
             } else {
                 // Supabase未設定時のフォールバック（従来のローカル動作）
@@ -951,25 +951,47 @@ export default function UserPilotApp() {
                                                     {visibleItems.map(it => {
                                                         const remain = Math.max(0, it.stock - getReserved(s.id, it.id));
                                                         return (
-                                                            <div key={it.id} className="flex gap-3 rounded-2xl border bg-white p-2 pr-3">
+                                                            <div key={it.id} className="relative flex gap-3 rounded-2xl border bg-white p-2 pr-3">
                                                                 {/* 左側：詳細を開くボタン領域（数量チップはボタン外へ） */}
                                                                 <button type="button" onClick={() => setDetail({ shopId: s.id, item: it })} className="flex items-center gap-3 flex-1 min-w-0 text-left">
-                                                                    <div className="w-24 h-24 overflow-hidden rounded-xl bg-zinc-100 flex items-center justify-center text-4xl shrink-0">
+                                                                    <div className="relative w-24 h-24 overflow-hidden rounded-xl bg-zinc-100 flex items-center justify-center text-4xl shrink-0">
                                                                         {/* TODO(req v2): image_url を配置 */}
                                                                         <span>{it.photo}</span>
+                                                                        <span
+                                                                            className={[
+                                                                                "absolute top-1 right-1",
+                                                                                "inline-flex items-center gap-1",
+                                                                                "text-[10px] leading-none whitespace-nowrap",
+                                                                                "rounded-full border px-1.5 py-0.5",
+                                                                                "backdrop-blur-[2px] ring-1 ring-white/70",
+                                                                                remain === 0
+                                                                                    ? "bg-red-50 text-red-600 border-red-200"
+                                                                                    : remain <= 3
+                                                                                        ? "bg-amber-50 text-amber-700 border-amber-200"
+                                                                                        : "bg-emerald-50 text-emerald-700 border-emerald-200",
+                                                                            ].join(" ")}
+                                                                        >
+                                                                            <span className="opacity-80">のこり</span>
+                                                                            <span className="tabular-nums font-semibold">{remain}</span>
+                                                                            <span className="opacity-80">個</span>
+                                                                        </span>
                                                                     </div>
                                                                     <div className="flex-1 min-w-0">
-                                                                        <div className="text-sm font-medium truncate">{it.name}</div>
+                                                                        <div className="w-full text-sm font-medium leading-tight break-words line-clamp-2 min-h-[2.5rem]">{it.name}</div>
+
                                                                         <div className="mt-0.5 text-xs text-zinc-500 flex items-center justify-between gap-3 w-full whitespace-nowrap">
                                                                             <span className="inline-flex items-center gap-1"><span>⏰</span><span>受取 {it.pickup}</span></span>
-                                                                            <span className="ml-auto inline-flex items-center gap-1 text-[11px]">在庫 <span className="tabular-nums">{remain}</span></span>
+
                                                                         </div>
                                                                         {/* 下段：価格（数量チップは外側） */}
                                                                         <div className="mt-2 text-base font-semibold">{currency(it.price)}</div>
                                                                     </div>
                                                                 </button>
                                                                 {/* 右下：数量チップ（ボタン外、下寄せ） */}
-                                                                <div className="self-end ml-1 rounded-full border px-2 py-1" onClick={(e) => e.stopPropagation()}>
+                                                                <div
+                                                                    className="absolute bottom-2 right-2 rounded-full  px-2 py-1"
+                                                                    onClick={(e) => e.stopPropagation()}
+                                                                >
                                                                     <QtyChip sid={s.id} it={it} />
                                                                 </div>
                                                             </div>

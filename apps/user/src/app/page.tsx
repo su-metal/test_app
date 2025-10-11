@@ -128,7 +128,17 @@ function validateTestCard(cardRaw: string) {
 }
 
 // ---- 型 ----
-interface Item { id: string; name: string; price: number; stock: number; pickup: string; note: string; photo: string }
+interface Item {
+    id: string;
+    name: string;
+    price: number;
+    stock: number;
+    pickup: string;
+    note: string;
+    photo: string;
+    image_url?: string; // ← 追加
+}
+
 interface Shop { id: string; name: string; lat: number; lng: number; zoomOnPin: number; closed: boolean; items: Item[], address?: string; cover_image_path?: string | null; }
 interface CartLine { shopId: string; item: Item; qty: number }
 interface Order { id: string; userEmail: string; shopId: string; amount: number; status: "paid" | "redeemed" | "refunded"; code6: string; createdAt: number; lines: CartLine[] }
@@ -375,8 +385,19 @@ export default function UserPilotApp() {
         const mapToItem = (p: any): Item => {
             const rawStock = (p?.stock ?? p?.quantity ?? p?.stock_count ?? 0);
             const stock = Math.max(0, Number(rawStock) || 0);
-            return { id: String(p.id), name: String(p.name ?? "不明"), price: Math.max(0, Number(p.price ?? 0) || 0), stock, pickup: "18:00-20:00", note: "", photo: "🛍️" };
+
+            return {
+                id: String(p.id),
+                name: String(p.name ?? "不明"),
+                price: Math.max(0, Number(p.price ?? 0) || 0),
+                stock,
+                pickup: "18:00-20:00",
+                note: "",
+                photo: "🛍️",
+                image_url: p?.image_url ? String(p.image_url) : undefined, // ← 追加（相対パス）
+            };
         };
+
         const fallback = { lat: 35.171, lng: 136.881 }; // 名古屋駅など任意
         const built: Shop[] = dbStores.map((st) => ({
             id: String(st.id),
@@ -1096,8 +1117,17 @@ export default function UserPilotApp() {
                                                                         className="flex items-center gap-3 flex-1 min-w-0 text-left"
                                                                     >
                                                                         <div className="relative w-24 h-24 overflow-hidden rounded-xl bg-zinc-100 flex items-center justify-center text-4xl shrink-0">
-                                                                            {/* TODO(req v2): image_url を配置 */}
-                                                                            <span>{it.photo}</span>
+                                                                            {it.image_url ? (
+                                                                                <img
+                                                                                    src={`${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/public-images/${it.image_url}`}
+                                                                                    alt={it.name}
+                                                                                    className="w-full h-full object-cover"
+                                                                                    loading="lazy"
+                                                                                    decoding="async"
+                                                                                />
+                                                                            ) : (
+                                                                                <span>{it.photo}</span>
+                                                                            )}
 
                                                                             {/* サムネ右上：のこり n 個 */}
                                                                             <span

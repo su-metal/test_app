@@ -163,6 +163,7 @@ Supabase データベース構成（現行実装に基づく）
   - `created_at` timestamptz: 作成日時（NOTE: ドキュメント表記は `timestampz` だが `timestamptz` が正）。
   - `lat` float8: 店舗緯度。
   - `lng` float8: 店舗経度。
+  - `cover_image_path` text: 店舗写真。
   - インデックス: `id`（PK）。
   - 関連: `products.store_id` / `orders.store_id` と論理的に紐付く（外部キーは運用要件に応じて付与）。
 
@@ -188,6 +189,10 @@ Supabase データベース構成（現行実装に基づく）
   - `status` text: 店側は `PENDING`/`FULFILLED` を使用。
   - インデックス: `store_id`, `status`, `code`。
   - Realtime: `postgres_changes (UPDATE)` を有効化。`REPLICA IDENTITY FULL` 推奨。
+
+  - バケット: `public-images`
+  - `stores` 店舗画像
+  - `products` 商品画像
 
 - RLS/ポリシー（最小）
 

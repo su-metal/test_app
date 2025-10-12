@@ -392,6 +392,13 @@ export default function UserPilotApp() {
             const rawStock = (p?.stock ?? p?.quantity ?? p?.stock_count ?? 0);
             const stock = Math.max(0, Number(rawStock) || 0);
 
+            // ★ サムネは main → sub1 → sub2 の優先順
+            const primary =
+                p?.main_image_path ??
+                p?.sub_image_path1 ??
+                p?.sub_image_path2 ??
+                null;
+
             return {
                 id: String(p.id),
                 name: String(p.name ?? "不明"),
@@ -400,9 +407,10 @@ export default function UserPilotApp() {
                 pickup: "18:00-20:00",
                 note: "",
                 photo: "🛍️",
-                image_url: p?.image_url ? String(p.image_url) : undefined, // ← 追加（相対パス）
+                image_url: primary ? String(primary) : undefined, // ← 差し替え
             };
         };
+
 
         const fallback = { lat: 35.171, lng: 136.881 }; // 名古屋駅など任意
         const built: Shop[] = dbStores.map((st) => ({

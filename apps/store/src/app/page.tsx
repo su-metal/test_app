@@ -127,6 +127,26 @@ function useSupabase() {
   }, []);
 }
 
+// --- ここから追加（匿名ログインで authenticated ロールを確保） ---
+function useEnsureAuth() {
+  const sb = useSupabase();
+  useEffect(() => {
+    (async () => {
+      if (!sb) return;
+      try {
+        const { data: { session } } = await sb.auth.getSession();
+        if (!session) {
+          await sb.auth.signInAnonymously(); // Supabase Auth で Anonymous を有効化しておく
+        }
+      } catch (e) {
+        console.error("[auth] ensure auth error", e);
+      }
+    })();
+  }, [sb]);
+}
+// --- ここまで追加 ---
+
+
 // ===== Stores =====
 type StoreRow = { id: string; name: string; created_at?: string };
 function useStores() {
@@ -513,30 +533,65 @@ function useImageUpload() {
 
   const uploadProductImage = useCallback(async (productId: string, file: File) => {
     if (!supabase) throw new Error("Supabase 未初期化");
-    const ext = file.name.split(".").pop() || "jpg";
-    const path = `products/${productId}/${Date.now()}.${ext}`;
-    const { error: upErr } = await supabase.storage.from("public-images").upload(path, file, {
-      cacheControl: "3600",
-      upsert: true,
-    });
-    if (upErr) throw upErr;
 
-    // DB の image_url 更新（相対パスを保存）
-    const { error: upDbErr } = await supabase
+    // 1) 事前に該当商品の store_id と旧パスを取得（store 突合 & 旧ファイル掃除用）
+    const { data: before, error: fetchErr } = await supabase
+      .from("products")
+      .select("store_id, image_url")
+      .eq("id", productId)
+      .single();
+
+    if (fetchErr) throw fetchErr;
+    const sid = getStoreId();
+    if (!before) throw new Error("対象商品が存在しません");
+    if (!sid) throw new Error("店舗IDが未設定です（NEXT_PUBLIC_STORE_ID）");
+    if (String(before.store_id ?? "") !== String(sid)) {
+      throw new Error("他店舗の商品は更新できません");
+    }
+
+    // 2) 拡張子判定 & 保存先パス（products/<productId>/<timestamp>.<ext>）
+    const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
+    const path = `products/${productId}/${Date.now()}.${ext}`;
+
+    // 3) Storage へアップロード（public-images）
+    const up = await supabase.storage.from("public-images").upload(path, file, {
+      cacheControl: "3600",
+      upsert: true, // 同名時は上書き（※実際は timestamp なので衝突しない想定）
+    });
+    if (up.error) {
+      console.error("[upload] storage error", up.error);
+      throw up.error;
+    }
+
+    // 4) DB を更新（store_id で二重に絞る）
+    const upd = await supabase
       .from("products")
       .update({ image_url: path })
       .eq("id", productId)
-      .eq("store_id", getStoreId());
-    if (upDbErr) throw upDbErr;
+      .eq("store_id", sid);
+    if (upd.error) {
+      console.error("[upload] db error", upd.error);
+      // DB 失敗時はアップした新ファイルを掃除
+      await supabase.storage.from("public-images").remove([path]).catch(() => { });
+      throw upd.error;
+    }
 
-    return path; // 呼び出し側で UI 更新に使用
+    // 5) 旧ファイルを掃除（失敗は握り潰し）
+    const oldPath = (before as any)?.image_url as string | null;
+    if (oldPath && oldPath !== path) {
+      await supabase.storage.from("public-images").remove([oldPath]).catch(() => { });
+    }
+
+    return path;
   }, [supabase]);
 
   return { uploadProductImage };
 }
 
 
+
 function ProductForm() {
+  useEnsureAuth(); // ★ 追加：匿名ログインで authenticated を確保
   const { products, perr, ploading, add, remove, updateStock, reload } = useProducts();
   const [adjust, setAdjust] = useState<null | { id: string; name: string; stock: number }>(null);
   const [pending, setPending] = useState<Record<string, { id: string; name: string; current: number; next: number }>>({});

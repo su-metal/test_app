@@ -1419,9 +1419,8 @@ export default function UserPilotApp() {
                                 <div key={sid} className="rounded-2xl border bg-white">
                                     <div className="p-4 border-b flex items-center justify-between">
                                         <div className="text-sm font-semibold">{shopsById.get(sid)?.name || sid}</div>
-                                        <div className="text-sm font-semibold">{currency(shopTotal(sid))}</div>
                                     </div>
-                                    <div className="p-4 space-y-2">
+                                    <div className="p-4 divide-y divide-zinc-200">
                                         {(cartByShop[sid] || []).map((l) => {
                                             const reserved = getReserved(sid, l.item.id);
                                             const remain = Math.max(0, l.item.stock - reserved);
@@ -1429,46 +1428,68 @@ export default function UserPilotApp() {
                                             return (
                                                 <div
                                                     key={`${l.item.id}-${sid}`}
-                                                    className="flex items-center justify-between gap-3"
+                                                    className="flex items-center justify-between gap-3 py-3"
                                                 >
-                                                    {/* 左：商品名 + メタ情報（受取/のこり） */}
+                                                    {/* 左：商品名 + メタ情報（受取 → のこり → 商品単価） */}
                                                     <div className="min-w-0 flex-1">
                                                         <div className="truncate text-sm font-medium">
                                                             {l.item.name}
                                                         </div>
-                                                        <div className="mt-1 flex items-center gap-2 text-[11px] text-zinc-600">
-                                                            <span className="inline-flex items-center gap-1">
-                                                                <span>⏰</span>
-                                                                <span className="truncate">受取 {l.item.pickup}</span>
-                                                            </span>
-                                                            <span
-                                                                className="inline-flex items-center gap-1 px-1.5 py-[2px] rounded-full bg-zinc-100 text-zinc-700"
-                                                                title={`在庫 ${l.item.stock} / 予約済 ${reserved}`}
-                                                            >
-                                                                <span>のこり</span>
-                                                                <span className="tabular-nums">{remain}</span>
-                                                                <span>個</span>
+
+
+
+                                                        {/* 1) 受取時間 */}
+                                                        <div className="mt-1 text-xs text-zinc-700 flex items-center gap-1">
+                                                            <span>⏰</span>
+                                                            <span className="truncate">受取 {l.item.pickup}</span>
+                                                        </div>
+
+                                                        {/* 3) 商品単価 */}
+                                                        <div className="mt-1 text-xs text-zinc-700">
+                                                            {/* <span>商品単価</span> */}
+                                                            <span className="ml-1 tabular-nums font-semibold text-zinc-900">
+                                                                {currency(l.item.price)}
                                                             </span>
                                                         </div>
                                                     </div>
 
-                                                    {/* 右：数量変更 + 小計 */}
-                                                    <div className="flex items-center gap-3 shrink-0">
+                                                    <div className="flex flex-col items-end gap-1 shrink-0">
+                                                        {/* のこり n 個（text-xsで統一） */}
+                                                        <span
+                                                            className="inline-flex items-center gap-1 px-1.5 py-[2px] rounded-full bg-zinc-100 text-zinc-700 text-xs"
+                                                            title={`在庫 ${l.item.stock} / 予約済 ${reserved}`}
+                                                        >
+                                                            <span>のこり</span>
+                                                            <span className="tabular-nums">{remain}</span>
+                                                            <span>個</span>
+                                                        </span>
+
+                                                        {/* 数量増減チップ */}
                                                         <div onClick={(e) => e.stopPropagation()}>
                                                             <QtyChip sid={sid} it={l.item} />
-                                                        </div>
-                                                        <div className="tabular-nums text-sm font-semibold">
-                                                            {currency(l.item.price * l.qty)}
                                                         </div>
                                                     </div>
                                                 </div>
                                             );
+
                                         })}
 
                                     </div>
 
-                                    <div className="p-4 border-t">
-                                        <button type="button" className="w-full px-3 py-2 rounded bg-zinc-900 text-white cursor-pointer" onClick={() => toOrder(sid)}>注文画面へ</button>
+                                    <div className="px-4 pt-3">
+                                        <div className="flex items-center justify-between text-sm">
+                                            <span className="font-medium">合計金額</span>
+                                            <span className="tabular-nums font-bold text-lg">{currency(shopTotal(sid))}</span>
+                                        </div>
+                                    </div>
+                                    <div className="p-4 border-t mt-2">
+                                        <button
+                                            type="button"
+                                            className="w-full px-3 py-2 rounded bg-zinc-900 text-white cursor-pointer"
+                                            onClick={() => toOrder(sid)}
+                                        >
+                                            注文画面へ
+                                        </button>
                                     </div>
                                 </div>
                             ))}

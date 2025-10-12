@@ -115,6 +115,27 @@ function useLocalStorageState<T>(key: string, initial: T | (() => T)) {
     return [state, setState] as const;
 }
 
+// 背景スクロールをロック（<html>に適用：iOS対策）
+function useLockBodyScroll(locked: boolean) {
+    useEffect(() => {
+        const el = document.documentElement; // <html>
+        const prevOverflow = el.style.overflow;
+        const prevPaddingRight = el.style.paddingRight;
+
+        if (locked) {
+            // スクロールバー分のズレ防止（必要な場合のみ）
+            const scrollbarW = window.innerWidth - document.documentElement.clientWidth;
+            el.style.overflow = "hidden";
+            if (scrollbarW > 0) el.style.paddingRight = `${scrollbarW}px`;
+        }
+        return () => {
+            el.style.overflow = prevOverflow;
+            el.style.paddingRight = prevPaddingRight;
+        };
+    }, [locked]);
+}
+
+
 // ---- テストカード検証（簡易） ----
 function sanitizeCard(input: string) { return input.replace(/\s|-/g, ""); }
 function validateTestCard(cardRaw: string) {
@@ -270,6 +291,7 @@ export default function UserPilotApp() {
     const [tab, setTab] = useState<"home" | "cart" | "order" | "account">("home");
     const [focusedShop, setFocusedShop] = useState<string | undefined>(undefined);
     const [detail, setDetail] = useState<{ shopId: string; item: Item } | null>(null);
+    useLockBodyScroll(!!detail); // ← 追加：モーダル開閉に連動してスクロール停止
     const detailImages = useMemo<string[]>(() => {
         if (!detail?.item) return [];
         return [
@@ -996,7 +1018,7 @@ export default function UserPilotApp() {
             <div className="inline-flex items-center rounded-full px-2 py-1 text-sm select-none">
                 <button
                     type="button"
-                    className="w-6 h-6 text-[10px] leading-none rounded-full border cursor-pointer disabled:opacity-40 flex items-center justify-center"
+                    className="w-8 h-8 text-[10px] leading-none rounded-full border cursor-pointer disabled:opacity-40 flex items-center justify-center"
                     disabled={reserved <= 0}
                     onClick={() => changeQty(sid, it, -1)}
                     aria-label="数量を減らす"
@@ -1004,7 +1026,7 @@ export default function UserPilotApp() {
                 <span className="mx-3 min-w-[1.5rem] text-center tabular-nums">{reserved}</span>
                 <button
                     type="button"
-                    className="w-6 h-6 text-[10px] leading-none rounded-full border cursor-pointer disabled:opacity-40 flex items-center justify-center"
+                    className="w-8 h-8 text-[10px] leading-none rounded-full border cursor-pointer disabled:opacity-40 flex items-center justify-center"
                     disabled={remain <= 0}
                     onClick={() => changeQty(sid, it, +1)}
                     aria-label="数量を増やす"
@@ -1124,7 +1146,7 @@ export default function UserPilotApp() {
                                                         alt={s.name}
                                                         className="w-full h-44 object-cover rounded-2xl"
                                                     />
-                                                    <div className="absolute left-3 top-3 px-2 py-1 rounded bg-black/60 text-white text-xs">
+                                                    <div className="absolute left-3 top-3 px-2 py-1 rounded bg-black/60 text-white text-sm">
                                                         {s.name}
                                                     </div>
                                                     <div className="absolute right-3 top-3 px-2 py-1 rounded-full bg-white/90 border text-[11px]">
@@ -1145,38 +1167,44 @@ export default function UserPilotApp() {
                                                                         {/* サムネ（main_image_path）→ ギャラリー */}
                                                                         <button
                                                                             type="button"
-                                                                            onClick={() => {
-                                                                                const paths = [
-                                                                                    it.main_image_path,
-                                                                                    it.sub_image_path1,
-                                                                                    it.sub_image_path2,
-                                                                                ].filter((x): x is string => !!x);
-
-                                                                                if (paths.length === 0) {
-                                                                                    // ★ フォールバック：画像が無い商品は詳細モーダルを開く
-                                                                                    setDetail({ shopId: s.id, item: it });
-                                                                                    return;
+                                                                            role="button"
+                                                                            tabIndex={0}
+                                                                            aria-label={`${it.name} の画像を開く`}
+                                                                            onKeyDown={(e) => {
+                                                                                if (e.key === "Enter" || e.key === " ") {
+                                                                                    e.preventDefault();
+                                                                                    (e.currentTarget as HTMLButtonElement).click();
                                                                                 }
-
-                                                                                // ★ 画像がある商品はギャラリーを開く
-                                                                                setGallery({ name: it.name, paths });
+                                                                            }}
+                                                                            onClick={() => {
+                                                                                setDetail({ shopId: s.id, item: it });
                                                                                 setGIndex(0);
                                                                             }}
-
-                                                                            className="relative w-24 h-24 overflow-hidden rounded-xl bg-zinc-100 flex items-center justify-center shrink-0 border cursor-pointer group"
+                                                                            className="relative w-24 h-24 overflow-hidden rounded-xl bg-zinc-100 flex items-center justify-center shrink-0 border cursor-pointer group focus:outline-none focus:ring-2 focus:ring-zinc-900/50"
                                                                             title="画像を開く"
                                                                         >
                                                                             {it.main_image_path ? (
                                                                                 <img
                                                                                     src={`${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/public-images/${it.main_image_path}`}
                                                                                     alt={it.name}
-                                                                                    className="w-full h-full object-cover transition-transform group-hover:scale-[1.02]"
+                                                                                    className="w-full h-full object-cover transition-transform group-hover:scale-[1.02] pointer-events-none"
                                                                                     loading="lazy"
                                                                                     decoding="async"
                                                                                 />
                                                                             ) : (
-                                                                                <span className="text-4xl">{it.photo ?? "🛍️"}</span>
+                                                                                <span className="text-4xl pointer-events-none">{it.photo ?? "🛍️"}</span>
                                                                             )}
+
+                                                                            {/* ▼ のこり個数チップ（クリックを邪魔しない） */}
+                                                                            <span
+                                                                                aria-hidden="true"
+                                                                                className="pointer-events-none absolute left-1.5 bottom-1.5 px-1.5 py-[2px] rounded-full text-[10px] leading-none bg-black/65 text-white backdrop-blur-sm shadow-sm"
+                                                                            >
+                                                                                のこり <span className="tabular-nums">{Math.max(0, it.stock - getReserved(s.id, it.id))}</span> 個
+                                                                            </span>
+
+                                                                            {/* クリックを邪魔しない薄いオーバーレイ（必要なら） */}
+                                                                            <span className="pointer-events-none absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity bg-black/5" />
                                                                         </button>
 
                                                                         {/* テキスト側 → 詳細モーダルを開く */}
@@ -1185,7 +1213,7 @@ export default function UserPilotApp() {
                                                                             onClick={() => setDetail({ shopId: s.id, item: it })}
                                                                             className="flex-1 min-w-0 text-left"
                                                                         >
-                                                                            <div className="w-full text-sm font-medium leading-tight break-words line-clamp-2 min-h-[2.5rem]">
+                                                                            <div className="w-full text-md font-bold leading-tight break-words line-clamp-2 min-h-[2.5rem]">
                                                                                 {it.name}
                                                                             </div>
                                                                             <div className="mt-0.5 text-xs text-zinc-500 flex items-center gap-1 w-full">
@@ -1199,7 +1227,7 @@ export default function UserPilotApp() {
 
                                                                     {/* 右下：数量チップ（ボタン外、下寄せ） */}
                                                                     <div
-                                                                        className="absolute bottom-2 right-2 rounded-full px-2 py-1"
+                                                                        className="absolute bottom-0 right-1 rounded-full px-2 py-1"
                                                                         onClick={(e) => e.stopPropagation()}
                                                                     >
                                                                         <QtyChip sid={s.id} it={it} />
@@ -1733,7 +1761,7 @@ export default function UserPilotApp() {
                                     </div>
                                     <div className="flex items-center justify-between pt-2">
                                         <div className="text-base font-semibold">{currency(detail.item.price)}</div>
-                                        <div className="rounded-full border px-2 py-1">
+                                        <div className="rounded-full  px-2 py-1">
                                             <QtyChip sid={detail.shopId} it={detail.item} />
                                         </div>
                                     </div>

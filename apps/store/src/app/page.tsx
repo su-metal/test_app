@@ -630,6 +630,13 @@ function ProductForm() {
   const take = storeTake(Number(price || 0));
   const { uploadProductImage } = useImageUpload();
   const [uploadingId, setUploadingId] = useState<string | null>(null);
+  // ▼▼ ギャラリー（モーダル）用 state
+  const [gallery, setGallery] = useState<null | {
+    id: string;
+    name: string;
+    paths: string[]; // [main, sub1, sub2] の有効なものだけを詰める
+  }>(null);
+  const [gIndex, setGIndex] = useState(0);
 
   return (
     <div className="rounded-2xl border bg-white p-4 space-y-3">
@@ -784,6 +791,8 @@ function ProductForm() {
     </div>
   )
 }
+
+
 
 function OrdersPage() {
   const { ready, err, pending, fulfilled, fulfill, clearPending, clearFulfilled, retry } = useOrders();

@@ -2,6 +2,20 @@
 import React, { useMemo, useState, useEffect, useRef, useCallback } from "react";
 import { createClient, type RealtimeChannel } from "@supabase/supabase-js";
 
+// --- Toast helper（暫定。UIトーストを入れるまでの代替） ---
+function emitToast(type: "success" | "error" | "info", message: string) {
+  try {
+    if (type === "error") console.error(message);
+    if (typeof window !== "undefined") {
+      // 成功時だけ alert、他はコンソールに出す簡易版
+      if (type === "success") alert(message);
+    }
+  } catch {
+    /* noop */
+  }
+}
+
+
 // 要件: 店側 UI（注文一覧、受け渡し、商品管理）。日本語文言で統一。
 // TODO(req v2): DB スキーマ型は生成定義に切替（supabase gen types）。
 
@@ -43,7 +57,9 @@ type ProductsRow = {
   price: number | null;
   stock: number | null;
   updated_at: string | null;
-  image_url?: string | null;
+  main_image_path: string | null;
+  sub_image_path1: string | null;
+  sub_image_path2: string | null;
 };
 
 type Product = {
@@ -51,7 +67,9 @@ type Product = {
   name: string;
   price: number;
   stock: number;
-  image_url?: string | null;
+  main_image_path: string | null;
+  sub_image_path1: string | null;
+  sub_image_path2: string | null;
 };
 
 // ===== Util =====
@@ -103,7 +121,9 @@ function mapProduct(r: ProductsRow): Product {
     name: r.name,
     price: Number(r.price ?? 0),
     stock: Math.max(0, Number(r.stock ?? 0)),
-    image_url: (r as any).image_url ?? null, // ← 追加
+    main_image_path: r.main_image_path ?? null,
+    sub_image_path1: r.sub_image_path1 ?? null,
+    sub_image_path2: r.sub_image_path2 ?? null,
   };
 }
 
@@ -531,17 +551,22 @@ function StockAdjustModal({
 function useImageUpload() {
   const supabase = useSupabase();
 
-  const uploadProductImage = useCallback(async (productId: string, file: File) => {
+  type Slot = "main" | "sub1" | "sub2";
+  const colOf = (slot: Slot) =>
+    slot === "main" ? "main_image_path" :
+      slot === "sub1" ? "sub_image_path1" : "sub_image_path2";
+
+  const uploadProductImage = useCallback(async (productId: string, file: File, slot: Slot) => {
     if (!supabase) throw new Error("Supabase 未初期化");
 
-    // 1) 事前に該当商品の store_id と旧パスを取得（store 突合 & 旧ファイル掃除用）
+    // 事前に store_id と既存パスを取得（安全性＆旧ファイル掃除）
     const { data: before, error: fetchErr } = await supabase
       .from("products")
-      .select("store_id, image_url")
+      .select("store_id, main_image_path, sub_image_path1, sub_image_path2")
       .eq("id", productId)
       .single();
-
     if (fetchErr) throw fetchErr;
+
     const sid = getStoreId();
     if (!before) throw new Error("対象商品が存在しません");
     if (!sid) throw new Error("店舗IDが未設定です（NEXT_PUBLIC_STORE_ID）");
@@ -549,35 +574,36 @@ function useImageUpload() {
       throw new Error("他店舗の商品は更新できません");
     }
 
-    // 2) 拡張子判定 & 保存先パス（products/<productId>/<timestamp>.<ext>）
     const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
-    const path = `products/${productId}/${Date.now()}.${ext}`;
+    const path = `products/${productId}/${slot}-${Date.now()}.${ext}`;
 
-    // 3) Storage へアップロード（public-images）
+    // 1) Storage へアップロード
     const up = await supabase.storage.from("public-images").upload(path, file, {
       cacheControl: "3600",
-      upsert: true, // 同名時は上書き（※実際は timestamp なので衝突しない想定）
+      upsert: true,
     });
     if (up.error) {
       console.error("[upload] storage error", up.error);
       throw up.error;
     }
 
-    // 4) DB を更新（store_id で二重に絞る）
+    // 2) DB を更新（更新する列だけ差し替え、store_id で二重限定）
+    const col = colOf(slot);
     const upd = await supabase
       .from("products")
-      .update({ image_url: path })
+      .update({ [col]: path })
       .eq("id", productId)
       .eq("store_id", sid);
     if (upd.error) {
       console.error("[upload] db error", upd.error);
-      // DB 失敗時はアップした新ファイルを掃除
       await supabase.storage.from("public-images").remove([path]).catch(() => { });
       throw upd.error;
     }
 
-    // 5) 旧ファイルを掃除（失敗は握り潰し）
-    const oldPath = (before as any)?.image_url as string | null;
+    // 3) 旧ファイル掃除（該当スロットのみ）
+    const oldPath =
+      slot === "main" ? before.main_image_path :
+        slot === "sub1" ? before.sub_image_path1 : before.sub_image_path2;
     if (oldPath && oldPath !== path) {
       await supabase.storage.from("public-images").remove([oldPath]).catch(() => { });
     }
@@ -590,9 +616,12 @@ function useImageUpload() {
 
 
 
+
 function ProductForm() {
   useEnsureAuth(); // ★ 追加：匿名ログインで authenticated を確保
   const { products, perr, ploading, add, remove, updateStock, reload } = useProducts();
+  // ★ 画像のキャッシュ破り用バージョン
+  const [imgVer, setImgVer] = useState(0);
   const [adjust, setAdjust] = useState<null | { id: string; name: string; stock: number }>(null);
   const [pending, setPending] = useState<Record<string, { id: string; name: string; current: number; next: number }>>({});
   const [name, setName] = useState("");
@@ -601,6 +630,13 @@ function ProductForm() {
   const take = storeTake(Number(price || 0));
   const { uploadProductImage } = useImageUpload();
   const [uploadingId, setUploadingId] = useState<string | null>(null);
+  // ▼▼ ギャラリー（モーダル）用 state
+  const [gallery, setGallery] = useState<null | {
+    id: string;
+    name: string;
+    paths: string[]; // [main, sub1, sub2] の有効なものだけを詰める
+  }>(null);
+  const [gIndex, setGIndex] = useState(0);
 
   return (
     <div className="rounded-2xl border bg-white p-4 space-y-3">
@@ -621,78 +657,78 @@ function ProductForm() {
               key={p.id}
               className="rounded-2xl border px-4 py-3 flex items-center justify-between gap-4"
             >
-              {/* 左：商品名・受取額・サムネ（タップでアップロード／変更） */}
-              <div className="flex-1 min-w-0">
-                <div className="space-y-0.5">
-                  <div className="font-medium truncate">{p.name}</div>
-                  <div className="text-zinc-600 text-xs">店側受取額 {yen(storeTake(p.price))}</div>
-
-                  <div className="mt-2">
-                    {/* 非表示 input（サムネを押すと開く） */}
-                    <input
-                      id={inputId}
-                      type="file"
-                      accept="image/*"
-                      className="hidden"
-                      onChange={async (e) => {
-                        const file = e.target.files?.[0];
-                        if (!file) return;
-                        try {
-                          setUploadingId(p.id);
-                          await uploadProductImage(p.id, file);
-                          await reload(); // 最新を反映
-                        } catch (err: any) {
-                          alert(`アップロードに失敗しました: ${err?.message ?? err}`);
-                        } finally {
-                          setUploadingId(null);
-                          e.currentTarget.value = ""; // 同じファイルを選び直せるように
-                        }
-                      }}
-                      disabled={ploading || uploadingId === p.id}
-                    />
-
-                    {/* サムネ本体（label で input を開く） */}
-                    <label
-                      htmlFor={inputId}
-                      className="relative block w-24 h-24 overflow-hidden rounded-lg border bg-zinc-50 cursor-pointer group"
-                      aria-label={`${p.name} の画像をアップロード/変更`}
-                      title="タップして画像をアップロード/変更"
-                    >
-                      {p.image_url ? (
-                        <img
-                          src={`${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/public-images/${p.image_url}`}
-                          alt={`${p.name} の画像`}
-                          className="w-full h-full object-cover transition-transform group-hover:scale-[1.02]"
-                          loading="lazy"
-                          decoding="async"
-                        />
-                      ) : (
-                        <div className="w-full h-full grid place-items-center text-xs text-zinc-500">
-                          画像なし
-                          <div className="text-[10px] mt-0.5">タップで追加</div>
-                        </div>
-                      )}
-
-                      {/* ホバー時の薄いオーバーレイ */}
-                      <div className="pointer-events-none absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity bg-black/5" />
-
-                      {/* アップロード中のオーバーレイ */}
-                      {uploadingId === p.id && (
-                        <div className="absolute inset-0 grid place-items-center text-xs bg-white/70">
-                          更新中…
-                        </div>
-                      )}
-
-                      {/* 画像あり時の「変更」チップ */}
-                      {p.image_url && (
-                        <span className="pointer-events-none absolute bottom-1 right-1 text-[10px] px-1 rounded bg-white/85 shadow-sm opacity-0 group-hover:opacity-100">
-                          変更
-                        </span>
-                      )}
-                    </label>
-                  </div>
-                </div>
+              {/* --- ここからサムネ3連（main/sub1/sub2） --- */}
+              <div className="mt-2 flex items-center gap-2">
+                {[
+                  { slot: "main" as const, label: "メイン", path: p.main_image_path },
+                  { slot: "sub1" as const, label: "サブ1", path: p.sub_image_path1 },
+                  { slot: "sub2" as const, label: "サブ2", path: p.sub_image_path2 },
+                ].map(({ slot, label, path }) => {
+                  const inputId = `product-image-${p.id}-${slot}`;
+                  return (
+                    <div key={slot} className="flex flex-col items-center">
+                      <input
+                        id={inputId}
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        onChange={async (e) => {
+                          const file = e.target.files?.[0];
+                          if (!file) return;
+                          try {
+                            setUploadingId(p.id);
+                            await uploadProductImage(p.id, file, slot);
+                            await reload();
+                            setImgVer((v) => v + 1); // パッチAを入れている場合
+                            emitToast?.("success", `${label}画像を更新しました`);
+                          } catch (err: any) {
+                            alert(`アップロードに失敗しました: ${err?.message ?? err}`);
+                          } finally {
+                            setUploadingId(null);
+                            e.currentTarget.value = "";
+                          }
+                        }}
+                        disabled={ploading || uploadingId === p.id}
+                      />
+                      <label
+                        htmlFor={inputId}
+                        className="relative block w-20 h-20 overflow-hidden rounded-lg border bg-zinc-50 cursor-pointer group"
+                        aria-label={`${p.name} の${label}画像をアップロード/変更`}
+                        title={`${label}をタップしてアップロード/変更`}
+                      >
+                        {path ? (
+                          <img
+                            src={`${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/public-images/${path}?v=${imgVer ?? 0}`}
+                            alt={`${p.name} ${label}`}
+                            className="w-full h-full object-cover transition-transform group-hover:scale-[1.02]"
+                            loading="lazy"
+                            decoding="async"
+                          />
+                        ) : (
+                          <div className="w-full h-full grid place-items-center text-[11px] text-zinc-500">
+                            画像なし
+                            <div className="text-[10px] mt-0.5">タップで追加</div>
+                          </div>
+                        )}
+                        <div className="pointer-events-none absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity bg-black/5" />
+                        {uploadingId === p.id && (
+                          <div className="absolute inset-0 grid place-items-center text-xs bg-white/70">
+                            更新中…
+                          </div>
+                        )}
+                        {path && (
+                          <span className="pointer-events-none absolute bottom-1 right-1 text-[10px] px-1 rounded bg-white/85 shadow-sm opacity-0 group-hover:opacity-100">
+                            変更
+                          </span>
+                        )}
+                      </label>
+                      <div className="mt-1 text-[10px] text-zinc-600">{label}</div>
+                    </div>
+                  );
+                })}
               </div>
+              {/* --- サムネ3連 ここまで --- */}
+
 
               {/* 右：価格・在庫・操作 */}
               <div className="text-right shrink-0">
@@ -755,6 +791,8 @@ function ProductForm() {
     </div>
   )
 }
+
+
 
 function OrdersPage() {
   const { ready, err, pending, fulfilled, fulfill, clearPending, clearFulfilled, retry } = useOrders();

@@ -673,21 +673,25 @@ function ProductForm() {
                         accept="image/*"
                         className="hidden"
                         onChange={async (e) => {
-                          const file = e.target.files?.[0];
+                          // ★ 最初に input 要素を退避（await の前に保持しておく）
+                          const inputEl = e.currentTarget as HTMLInputElement | null;
+                          const file = inputEl?.files?.[0];
                           if (!file) return;
                           try {
                             setUploadingId(p.id);
                             await uploadProductImage(p.id, file, slot);
                             await reload();
-                            setImgVer((v) => v + 1); // パッチAを入れている場合
-                            emitToast?.("success", `${label}画像を更新しました`);
+                            setImgVer?.((v: number) => v + 1); // imgVer未導入ならこの行は削除OK
+                            alert(`${label}画像を更新しました`);
                           } catch (err: any) {
                             alert(`アップロードに失敗しました: ${err?.message ?? err}`);
                           } finally {
                             setUploadingId(null);
-                            e.currentTarget.value = "";
+                            // ★ React の合成イベント経由の参照は使わず、退避した要素でクリア
+                            if (inputEl) inputEl.value = "";
                           }
                         }}
+
                         disabled={ploading || uploadingId === p.id}
                       />
                       <label

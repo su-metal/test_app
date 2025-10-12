@@ -1141,13 +1141,8 @@ export default function UserPilotApp() {
                                                                     key={it.id}
                                                                     className="relative flex gap-3 rounded-2xl border bg-white p-2 pr-3"
                                                                 >
-                                                                    {/* 左側：詳細を開くボタン領域（数量チップはボタン外へ） */}
-                                                                    <button
-                                                                        type="button"
-                                                                        onClick={() => setDetail({ shopId: s.id, item: it })}
-                                                                        className="flex items-center gap-3 flex-1 min-w-0 text-left"
-                                                                    >
-                                                                        {/* サムネ（main_image_path）。クリックでモーダル */}
+                                                                    <div className="flex items-center gap-3 flex-1 min-w-0">
+                                                                        {/* サムネ（main_image_path）→ ギャラリー */}
                                                                         <button
                                                                             type="button"
                                                                             onClick={() => {
@@ -1156,10 +1151,18 @@ export default function UserPilotApp() {
                                                                                     it.sub_image_path1,
                                                                                     it.sub_image_path2,
                                                                                 ].filter((x): x is string => !!x);
-                                                                                if (paths.length === 0) return;
+
+                                                                                if (paths.length === 0) {
+                                                                                    // ★ フォールバック：画像が無い商品は詳細モーダルを開く
+                                                                                    setDetail({ shopId: s.id, item: it });
+                                                                                    return;
+                                                                                }
+
+                                                                                // ★ 画像がある商品はギャラリーを開く
                                                                                 setGallery({ name: it.name, paths });
                                                                                 setGIndex(0);
                                                                             }}
+
                                                                             className="relative w-24 h-24 overflow-hidden rounded-xl bg-zinc-100 flex items-center justify-center shrink-0 border cursor-pointer group"
                                                                             title="画像を開く"
                                                                         >
@@ -1174,26 +1177,25 @@ export default function UserPilotApp() {
                                                                             ) : (
                                                                                 <span className="text-4xl">{it.photo ?? "🛍️"}</span>
                                                                             )}
-                                                                            {/* 枚数バッジ（既存の残数バッジがあればそれは別要素のまま） */}
                                                                         </button>
 
-
-                                                                        <div className="flex-1 min-w-0">
-                                                                            {/* タイトル：常に2行ぶんの高さを確保 */}
+                                                                        {/* テキスト側 → 詳細モーダルを開く */}
+                                                                        <button
+                                                                            type="button"
+                                                                            onClick={() => setDetail({ shopId: s.id, item: it })}
+                                                                            className="flex-1 min-w-0 text-left"
+                                                                        >
                                                                             <div className="w-full text-sm font-medium leading-tight break-words line-clamp-2 min-h-[2.5rem]">
                                                                                 {it.name}
                                                                             </div>
-
-                                                                            {/* 受取時刻（右側に chips を置かない） */}
                                                                             <div className="mt-0.5 text-xs text-zinc-500 flex items-center gap-1 w-full">
                                                                                 <span>⏰</span>
                                                                                 <span className="truncate">受取 {it.pickup}</span>
                                                                             </div>
-
-                                                                            {/* 下段：価格（数量チップは外側） */}
                                                                             <div className="mt-2 text-base font-semibold">{currency(it.price)}</div>
-                                                                        </div>
-                                                                    </button>
+                                                                        </button>
+                                                                    </div>
+
 
                                                                     {/* 右下：数量チップ（ボタン外、下寄せ） */}
                                                                     <div
@@ -1654,10 +1656,11 @@ export default function UserPilotApp() {
                                             key={detailImages[gIndex]}
                                             src={`${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/public-images/${detailImages[gIndex]}`}
                                             alt={`${detail.item.name} 画像 ${gIndex + 1}/${detailImages.length}`}
-                                            className="w-full h-56 object-contain bg-zinc-100"
+                                            className="w-full aspect-[4/3] object-cover bg-black"
                                             loading="eager"
                                             decoding="async"
                                         />
+
                                     ) : (
                                         <div className="w-full h-56 bg-zinc-100 flex items-center justify-center text-6xl">
                                             <span>{detail.item.photo}</span>

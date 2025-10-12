@@ -746,24 +746,12 @@ function ProductForm() {
                 {/* ボタン列（右寄せ・コンパクト） */}
                 <div className="col-span-2 flex justify-end gap-2">
                   <button
-                    onClick={async () => {
-                      const v = prompt("在庫数を入力", String(p.stock));
-                      if (v == null) return;
-                      const n = Number(v);
-                      if (!Number.isFinite(n) || n < 0) {
-                        alert("0以上の整数を入力してください。");
-                        return;
-                      }
-                      try {
-                        await updateStock(p.id, Math.floor(n));
-                      } catch (e: any) {
-                        alert(`在庫更新に失敗しました: ${e?.message ?? e}`);
-                      }
-                    }}
+                    onClick={() => setAdjust({ id: p.id, name: p.name, stock: p.stock })}
                     className="px-2.5 py-1.5 rounded-lg border text-xs hover:bg-zinc-50"
                   >
                     在庫調整
                   </button>
+
                   <button
                     onClick={async () => {
                       if (!confirm(`「${p.name}」を削除しますか？`)) return;
@@ -797,6 +785,31 @@ function ProductForm() {
           </div>
         </div>
       )}
+
+      {/* ▼ 在庫調整モーダルをここで描画 */}
+      <StockAdjustModal
+        open={!!adjust}
+        initial={adjust?.stock ?? 0}
+        productName={adjust?.name ?? ""}
+        disabled={ploading}
+        onClose={() => setAdjust(null)}
+        onCommit={(val) => {
+          if (!adjust) return;
+          setPending(prev => ({
+            ...prev,
+            [adjust.id]: {
+              id: adjust.id,
+              name: adjust.name,
+              current: adjust.stock,
+              next: Math.max(0, Math.floor(Number(val || 0))),
+            },
+          }));
+          setAdjust(null);
+          emitToast('info', '未反映の在庫変更に追加しました');
+        }}
+      />
+
+
     </div>
   )
 }

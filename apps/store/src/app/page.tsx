@@ -147,24 +147,46 @@ function useSupabase() {
   }, []);
 }
 
-// --- ここから追加（匿名ログインで authenticated ロールを確保） ---
+
+// --- ここから修正版（匿名ログインはフラグ有効時のみ + 一回限り） ---
 function useEnsureAuth() {
   const sb = useSupabase();
+
+  // 一度でも試行したら再実行しない（Strict Mode対策）
+  const triedRef = React.useRef(false);
+
   useEffect(() => {
     (async () => {
-      if (!sb) return;
+      if (!sb || triedRef.current) return;
+      triedRef.current = true;
+
       try {
+        // 既にセッションがあれば何もしない
         const { data: { session } } = await sb.auth.getSession();
-        if (!session) {
-          await sb.auth.signInAnonymously(); // Supabase Auth で Anonymous を有効化しておく
+        if (session) return;
+
+        // 環境変数で匿名ログインを明示的に有効化した場合のみ試行
+        const enableAnon =
+          (typeof process !== "undefined" && process.env?.NEXT_PUBLIC_ENABLE_ANON_AUTH === "1") ||
+          (typeof window !== "undefined" && (window as any).NEXT_PUBLIC_ENABLE_ANON_AUTH === "1");
+
+        if (enableAnon && typeof (sb.auth as any).signInAnonymously === "function") {
+          const { error } = await (sb.auth as any).signInAnonymously();
+          if (error) {
+            // 422などは info ログで握りつぶす（ネットワークエラーを発生させない）
+            console.info("[auth] anonymous sign-in skipped:", error.message || error);
+          }
+        } else {
+          // 無効時は何もしない（未ログインのまま）
+          console.info("[auth] anonymous auth disabled; skipped sign-in");
         }
       } catch (e) {
-        console.error("[auth] ensure auth error", e);
+        console.info("[auth] ensure auth skipped:", (e as any)?.message ?? e);
       }
     })();
   }, [sb]);
 }
-// --- ここまで追加 ---
+// --- ここまで修正版 ---
 
 
 // ===== Stores =====

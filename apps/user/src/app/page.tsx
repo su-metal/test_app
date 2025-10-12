@@ -287,8 +287,18 @@ export default function UserPilotApp() {
     const [cart, setCart] = useLocalStorageState<CartLine[]>(K.cart, []);
     const [orders, setOrders] = useLocalStorageState<Order[]>(K.orders, []);
     const [userEmail] = useLocalStorageState<string>(K.user, "");
-
     const [tab, setTab] = useState<"home" | "cart" | "order" | "account">("home");
+    // タブの直前値を覚えておく
+    const prevTabRef = useRef<typeof tab>(tab);
+
+    // タブが変わったら実行（cart → それ以外 になった時にだけ掃除）
+    useEffect(() => {
+        const prev = prevTabRef.current;
+        if (prev === 'cart' && tab !== 'cart') {
+            setCart(cs => cs.filter(l => l.qty > 0));
+        }
+        prevTabRef.current = tab;
+    }, [tab, setCart]);
     const [focusedShop, setFocusedShop] = useState<string | undefined>(undefined);
     const [detail, setDetail] = useState<{ shopId: string; item: Item } | null>(null);
     useLockBodyScroll(!!detail); // ← 追加：モーダル開閉に連動してスクロール停止
@@ -705,15 +715,21 @@ export default function UserPilotApp() {
     const shopTotal = (sid: string) => totalsByShop[sid] || 0;
 
     // 数量変更（±チップと追加ボタン共通）
+    // 置き換え（以前の changeQty をこの実装に）
     const changeQty = (sid: string, it: Item, delta: number) => setCart(cs => {
         const idx = cs.findIndex(c => c.shopId === sid && c.item.id === it.id);
         const cur = idx >= 0 ? cs[idx].qty : 0;
         const next = Math.max(0, Math.min(it.stock, cur + delta));
-        if (idx < 0 && next === 0) return cs; // 変更なし
-        if (next === 0) return cs.filter((_, i) => i !== idx);
+
+        if (idx < 0 && next === 0) return cs;                 // 0を新規追加はしない（現状維持）
         if (idx < 0) return [...cs, { shopId: sid, item: it, qty: next }];
-        const copy = cs.slice(); copy[idx] = { ...cs[idx], qty: next }; return copy;
+
+        // ← ここがポイント：0 でも行を残す
+        const copy = cs.slice();
+        copy[idx] = { ...cs[idx], qty: next };
+        return copy;
     });
+
     const addToCart = (sid: string, it: Item) => changeQty(sid, it, +1);
 
     // 店舗ごとのカートを空にする
@@ -1406,13 +1422,51 @@ export default function UserPilotApp() {
                                         <div className="text-sm font-semibold">{currency(shopTotal(sid))}</div>
                                     </div>
                                     <div className="p-4 space-y-2">
-                                        {(cartByShop[sid] || []).map((l) => (
-                                            <div key={`${l.item.id}-${sid}`} className="flex items-center justify-between text-sm">
-                                                <div className="truncate">{l.item.name} × {l.qty}</div>
-                                                <div className="tabular-nums">{currency(l.item.price * l.qty)}</div>
-                                            </div>
-                                        ))}
+                                        {(cartByShop[sid] || []).map((l) => {
+                                            const reserved = getReserved(sid, l.item.id);
+                                            const remain = Math.max(0, l.item.stock - reserved);
+
+                                            return (
+                                                <div
+                                                    key={`${l.item.id}-${sid}`}
+                                                    className="flex items-center justify-between gap-3"
+                                                >
+                                                    {/* 左：商品名 + メタ情報（受取/のこり） */}
+                                                    <div className="min-w-0 flex-1">
+                                                        <div className="truncate text-sm font-medium">
+                                                            {l.item.name}
+                                                        </div>
+                                                        <div className="mt-1 flex items-center gap-2 text-[11px] text-zinc-600">
+                                                            <span className="inline-flex items-center gap-1">
+                                                                <span>⏰</span>
+                                                                <span className="truncate">受取 {l.item.pickup}</span>
+                                                            </span>
+                                                            <span
+                                                                className="inline-flex items-center gap-1 px-1.5 py-[2px] rounded-full bg-zinc-100 text-zinc-700"
+                                                                title={`在庫 ${l.item.stock} / 予約済 ${reserved}`}
+                                                            >
+                                                                <span>のこり</span>
+                                                                <span className="tabular-nums">{remain}</span>
+                                                                <span>個</span>
+                                                            </span>
+                                                        </div>
+                                                    </div>
+
+                                                    {/* 右：数量変更 + 小計 */}
+                                                    <div className="flex items-center gap-3 shrink-0">
+                                                        <div onClick={(e) => e.stopPropagation()}>
+                                                            <QtyChip sid={sid} it={l.item} />
+                                                        </div>
+                                                        <div className="tabular-nums text-sm font-semibold">
+                                                            {currency(l.item.price * l.qty)}
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            );
+                                        })}
+
                                     </div>
+
                                     <div className="p-4 border-t">
                                         <button type="button" className="w-full px-3 py-2 rounded bg-zinc-900 text-white cursor-pointer" onClick={() => toOrder(sid)}>注文画面へ</button>
                                     </div>

@@ -470,6 +470,7 @@ function StockInline({ id, stock, disabled, onCommit }: { id: string; stock: num
     if (!Number.isFinite(n)) return;
     onCommit(n);
   }, [val, onCommit]);
+
   return (
     <div className="mt-1 flex items-center justify-end gap-1">
       <input
@@ -512,6 +513,10 @@ function StockAdjustModal({
     if (!Number.isFinite(n)) return;
     onCommit(n);
   }, [val, onCommit]);
+  // ▼ 反映プレビュー用の計算
+  const nextNum = Math.max(0, Math.floor(Number(val || 0)));
+  const currentNum = Math.max(0, Math.floor(Number(initial || 0)));
+  const diff = nextNum - currentNum;
   if (!open) return null;
   return (
     <div className="fixed inset-0 z-[60] grid place-items-center bg-black/40 p-4" role="dialog" aria-modal="true" onClick={onClose}>
@@ -537,14 +542,67 @@ function StockAdjustModal({
             <span className="text-zinc-700">直接入力</span>
             <input type="number" inputMode="numeric" min={0} step={1} className="mt-1 w-full rounded-xl border px-3 py-3 text-base text-right" value={val} onChange={e => setVal(e.target.value)} onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); commit(); } }} aria-label="在庫数" disabled={disabled} />
           </label>
+          {/* ▼ 反映プレビュー：調整前 → 調整後（±差） */}
+          {/* ▼ 反映プレビュー（強調）：調整前 → 調整後（±差） */}
+          <div
+            className={
+              `mt-3 rounded-xl border px-4 py-3 tabular-nums relative overflow-hidden
+               ${diff === 0
+                ? 'bg-zinc-50 border-zinc-200'
+                : diff > 0
+                  ? 'bg-emerald-50/80 border-emerald-300 ring-1 ring-emerald-300'
+                  : 'bg-red-50/80 border-red-300 ring-1 ring-red-300'}`
+            }
+          >
+            {/* 左端のアクセントバー */}
+            <div
+              className={`absolute inset-y-0 left-0 w-1
+                ${diff === 0 ? 'bg-zinc-200' : diff > 0 ? 'bg-emerald-400' : 'bg-red-400'}`}
+            />
+            <div className="pl-3">
+              <div className="pl-3">
+                <div
+                  className={`text-[11px] uppercase tracking-wide ${diff === 0 ? 'text-zinc-500' : diff > 0 ? 'text-emerald-700' : 'text-red-700'
+                    }`}
+                >
+                  PREVIEW
+                </div>
+                <div className="mt-1 flex items-baseline gap-2">
+                  ...
+
+                  <span className="text-lg font-semibold">{currentNum}</span>
+                  <span className="text-base">→</span>
+                  <span className="text-2xl font-extrabold">{nextNum}</span>
+                  <span
+                    className={`ml-2 inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold
+                    ${diff === 0
+                        ? 'bg-zinc-200 text-zinc-700'
+                        : diff > 0
+                          ? 'bg-emerald-600 text-white'
+                          : 'bg-red-600 text-white'}`}
+                    aria-label="差分"
+                  >
+                    {diff > 0 ? '＋' : diff < 0 ? '－' : '±'}{Math.abs(diff)}
+                  </span>
+                </div>
+                {diff !== 0 && (
+                  <div className={`mt-1 text-[12px] ${diff > 0 ? 'text-emerald-700' : 'text-red-700'}`}>
+                    {diff > 0 ? '在庫を増やします' : '在庫を減らします'}
+                  </div>
+                )}
+              </div>
+            </div>
+
+          </div>
+          <div className="mt-2 flex items-center justify-end gap-2">
+            <button onClick={onClose} className="rounded-xl border px-4 py-3 text-sm">キャンセル</button>
+            <button onClick={commit} disabled={disabled} className={`rounded-xl px-4 py-3 text-sm text-white ${disabled ? "bg-zinc-400 cursor-not-allowed" : "bg-zinc-900"}`}>更新</button>
+          </div>
         </div>
-        <div className="mt-2 flex items-center justify-end gap-2">
-          <button onClick={onClose} className="rounded-xl border px-4 py-3 text-sm">キャンセル</button>
-          <button onClick={commit} disabled={disabled} className={`rounded-xl px-4 py-3 text-sm text-white ${disabled ? "bg-zinc-400 cursor-not-allowed" : "bg-zinc-900"}`}>更新</button>
-        </div>
-      </div>
-    </div>
-  );
+      </div >
+      );
+    </div >
+  )
 }
 
 
@@ -637,6 +695,13 @@ function ProductForm() {
     paths: string[]; // [main, sub1, sub2] の有効なものだけを詰める
   }>(null);
   const [gIndex, setGIndex] = useState(0);
+  // ▼ 未反映の合計差分（バッジ表示用）
+  const totalDelta = useMemo(() => {
+    const list = Object.values(pending);
+    const sum = list.reduce((acc, it) => acc + (it.next - it.current), 0);
+    return { sum, count: list.length };
+  }, [pending]);
+
 
   return (
     <div className="rounded-2xl border bg-white p-4 space-y-3">
@@ -675,6 +740,28 @@ function ProductForm() {
                         のこり {p.stock} 個
                       </span>
                     </div>
+                    {/* ▼ その商品の未反映内容がある場合だけ、前→後（±差）をカード上でも表示 */}
+                    {/* ▼ この商品の未反映差分（強調チップ） */}
+                    {pending[p.id] ? (() => {
+                      const it = pending[p.id];
+                      const diff = it.next - it.current;
+                      const chipTone =
+                        diff === 0 ? 'bg-zinc-200 text-zinc-800'
+                          : diff > 0 ? 'bg-emerald-600 text-white'
+                            : 'bg-red-600 text-white';
+                      return (
+                        <div className="mt-1 flex items-center gap-1 text-[12px] tabular-nums">
+                          <span className="text-zinc-600">未反映:</span>
+                          <span className="font-medium">{it.current}</span>
+                          <span>→</span>
+                          <span className="font-semibold">{it.next}</span>
+                          <span className={`ml-1 inline-flex items-center px-1.5 py-0.5 rounded-full text-[11px] ${chipTone}`}>
+                            {diff > 0 ? '＋' : diff < 0 ? '－' : '±'}{Math.abs(diff)}
+                          </span>
+                        </div>
+                      );
+                    })() : null}
+
                   </div>
                   {/* 右側は空ける（価格表示は下段へ移動） */}
                   <div className="shrink-0" />
@@ -795,19 +882,103 @@ function ProductForm() {
       </div>
 
 
-      {
-        Object.keys(pending).length > 0 && (
-          <div className="sticky bottom-4 mt-4 rounded-2xl border bg-white p-3 shadow-sm">
-            <div className="flex items-center justify-between gap-2">
-              <div className="text-sm">未反映の在庫変更 {Object.keys(pending).length} 件</div>
-              <div className="flex items-center gap-2">
-                <button className="rounded-xl border px-3 py-1.5 text-sm" onClick={() => setPending({})} disabled={ploading}>すべて取消</button>
-                <button className="rounded-xl bg-zinc-900 text-white px-3 py-1.5 text-sm disabled:opacity-50" disabled={ploading} onClick={async () => { const items = Object.values(pending); for (const it of items) { await updateStock(it.id, it.next); } setPending({}); }}>在庫を反映する</button>
-              </div>
+      {Object.keys(pending).length > 0 && (
+        <div
+          className={`sticky bottom-4 mt-4 rounded-2xl border p-3 shadow-lg backdrop-blur
+            ${totalDelta.sum === 0
+              ? 'bg-white/95 border-zinc-200'
+              : totalDelta.sum > 0
+                ? 'bg-emerald-50/90 border-emerald-300 ring-1 ring-emerald-300'
+                : 'bg-red-50/90 border-red-300 ring-1 ring-red-300'}`}
+        >
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <div className="text-sm font-semibold">未反映の在庫変更</div>
+              <span className="text-[11px] px-2 py-0.5 rounded-full bg-zinc-900 text-white">
+                {totalDelta.count} 件
+              </span>
+              <span
+                className={`text-[11px] px-2 py-0.5 rounded-full font-semibold tabular-nums
+                  ${totalDelta.sum === 0
+                    ? 'bg-zinc-200 text-zinc-800'
+                    : totalDelta.sum > 0
+                      ? 'bg-emerald-600 text-white'
+                      : 'bg-red-600 text-white'}`}
+                title="合計差分"
+              >
+                {totalDelta.sum > 0 ? '＋' : totalDelta.sum < 0 ? '－' : '±'}{Math.abs(totalDelta.sum)}
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                className="rounded-xl border px-3 py-1.5 text-sm bg-white hover:bg-zinc-50"
+                onClick={() => setPending({})}
+                disabled={ploading}
+              >
+                すべて取消
+              </button>
+              <button
+                className={`rounded-xl text-white px-3 py-1.5 text-sm disabled:opacity-50
+                  ${totalDelta.sum >= 0 ? 'bg-zinc-900' : 'bg-zinc-900'}`}
+                disabled={ploading}
+                onClick={async () => {
+                  const items = Object.values(pending);
+                  for (const it of items) {
+                    await updateStock(it.id, it.next);
+                  }
+                  setPending({});
+                }}
+              >
+                在庫を反映する
+              </button>
             </div>
           </div>
-        )
-      }
+
+          {/* ▼ 一覧（行ごとに色分け＆目立つバッジ） */}
+          <ul className="mt-2 space-y-1">
+            {Object.values(pending).map((it) => {
+              const diff = it.next - it.current;
+              const diffAbs = Math.abs(diff);
+              const rowTone =
+                diff === 0 ? 'bg-white border-zinc-200'
+                  : diff > 0 ? 'bg-white border-emerald-200'
+                    : 'bg-white border-red-200';
+              const chipTone =
+                diff === 0 ? 'bg-zinc-200 text-zinc-800'
+                  : diff > 0 ? 'bg-emerald-600 text-white'
+                    : 'bg-red-600 text-white';
+              return (
+                <li key={it.id}
+                  className={`flex items-center justify-between text-sm rounded-xl border px-3 py-2 ${rowTone}`}>
+                  <div className="min-w-0">
+                    <div className="font-medium truncate">{it.name}</div>
+                    <div className="text-xs text-zinc-600 tabular-nums">
+                      {it.current} → <span className="font-semibold">{it.next}</span>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold ${chipTone}`}>
+                      {diff > 0 ? '＋' : diff < 0 ? '－' : '±'}{diffAbs}
+                    </span>
+                    <button
+                      className="text-xs rounded-lg border px-2 py-1 bg-white hover:bg-zinc-50"
+                      onClick={() => {
+                        setPending(prev => {
+                          const { [it.id]: _omit, ...rest } = prev;
+                          return rest;
+                        });
+                      }}
+                    >
+                      取り消し
+                    </button>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
+
 
       {/* ▼ 在庫調整モーダルをここで描画 */}
       <StockAdjustModal

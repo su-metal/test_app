@@ -1145,39 +1145,38 @@ export default function UserPilotApp() {
                                                                         {/* サムネ（main_image_path）→ ギャラリー */}
                                                                         <button
                                                                             type="button"
-                                                                            onClick={() => {
-                                                                                const paths = [
-                                                                                    it.main_image_path,
-                                                                                    it.sub_image_path1,
-                                                                                    it.sub_image_path2,
-                                                                                ].filter((x): x is string => !!x);
-
-                                                                                if (paths.length === 0) {
-                                                                                    // ★ フォールバック：画像が無い商品は詳細モーダルを開く
-                                                                                    setDetail({ shopId: s.id, item: it });
-                                                                                    return;
+                                                                            role="button"
+                                                                            tabIndex={0}
+                                                                            aria-label={`${it.name} の画像を開く`}
+                                                                            onKeyDown={(e) => {
+                                                                                if (e.key === "Enter" || e.key === " ") {
+                                                                                    e.preventDefault();
+                                                                                    (e.currentTarget as HTMLButtonElement).click();
                                                                                 }
-
-                                                                                // ★ 画像がある商品はギャラリーを開く
-                                                                                setGallery({ name: it.name, paths });
-                                                                                setGIndex(0);
+                                                                            }}
+                                                                            onClick={() => {
+                                                                                setDetail({ shopId: s.id, item: it }); // ← 常に詳細モーダルを開く
+                                                                                setGIndex(0);                           // 画像は detail 側で切替済み
                                                                             }}
 
-                                                                            className="relative w-24 h-24 overflow-hidden rounded-xl bg-zinc-100 flex items-center justify-center shrink-0 border cursor-pointer group"
+                                                                            className="relative w-24 h-24 overflow-hidden rounded-xl bg-zinc-100 flex items-center justify-center shrink-0 border cursor-pointer group focus:outline-none focus:ring-2 focus:ring-zinc-900/50"
                                                                             title="画像を開く"
                                                                         >
                                                                             {it.main_image_path ? (
                                                                                 <img
                                                                                     src={`${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/public-images/${it.main_image_path}`}
                                                                                     alt={it.name}
-                                                                                    className="w-full h-full object-cover transition-transform group-hover:scale-[1.02]"
+                                                                                    className="w-full h-full object-cover transition-transform group-hover:scale-[1.02] pointer-events-none"
                                                                                     loading="lazy"
                                                                                     decoding="async"
                                                                                 />
                                                                             ) : (
-                                                                                <span className="text-4xl">{it.photo ?? "🛍️"}</span>
+                                                                                <span className="text-4xl pointer-events-none">{it.photo ?? "🛍️"}</span>
                                                                             )}
+                                                                            {/* クリックを邪魔しない薄いオーバーレイ（必要なら） */}
+                                                                            <span className="pointer-events-none absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity bg-black/5" />
                                                                         </button>
+
 
                                                                         {/* テキスト側 → 詳細モーダルを開く */}
                                                                         <button

@@ -136,7 +136,9 @@ interface Item {
     pickup: string;
     note: string;
     photo: string;
-    image_url?: string; // ← 追加
+    main_image_path?: string | null;
+    sub_image_path1?: string | null;
+    sub_image_path2?: string | null;
 }
 
 interface Shop { id: string; name: string; lat: number; lng: number; zoomOnPin: number; closed: boolean; items: Item[], address?: string; cover_image_path?: string | null; }
@@ -268,12 +270,23 @@ export default function UserPilotApp() {
     const [tab, setTab] = useState<"home" | "cart" | "order" | "account">("home");
     const [focusedShop, setFocusedShop] = useState<string | undefined>(undefined);
     const [detail, setDetail] = useState<{ shopId: string; item: Item } | null>(null);
+    const detailImages = useMemo<string[]>(() => {
+        if (!detail?.item) return [];
+        return [
+            detail.item.main_image_path,
+            detail.item.sub_image_path1,
+            detail.item.sub_image_path2,
+        ].filter((x): x is string => !!x);
+    }, [detail]);
     const supabase = useSupabase();
     type DbProduct = { id: string; store_id?: string; name: string; price?: number; stock?: number; image_url?: string; updated_at?: string };
     type DbStore = { id: string; name: string; created_at?: string; lat?: number; lng?: number; address?: string; cover_image_path?: string | null };
 
     const [dbProducts, setDbProducts] = useState<DbProduct[]>([]);
     const [dbStores, setDbStores] = useState<DbStore[]>([]);
+    // ギャラリー（モーダル）state
+    const [gallery, setGallery] = useState<null | { name: string; paths: string[] }>(null);
+    const [gIndex, setGIndex] = useState(0);
 
 
 
@@ -287,6 +300,8 @@ export default function UserPilotApp() {
         window.addEventListener('keydown', onKey);
         return () => window.removeEventListener('keydown', onKey);
     }, [detail]);
+    // 画像を開くたびに先頭へ
+    useEffect(() => { if (detail) setGIndex(0); }, [detail, setGIndex]);
 
     const [clock, setClock] = useState<string>("");
     useEffect(() => {
@@ -309,8 +324,8 @@ export default function UserPilotApp() {
         if (!supabase) return;
         (async () => {
             const q = supabase
-                .from("products")
-                .select("*"); // ★ 店舗で絞らない（ここで絞ると他店舗が空になる）
+                .from("products").select("*, main_image_path, sub_image_path1, sub_image_path2")
+
 
             // 必要なら在庫>0や公開フラグで絞ってOK（例）
             // .gt("stock", 0).eq("is_published", true)
@@ -407,7 +422,9 @@ export default function UserPilotApp() {
                 pickup: "18:00-20:00",
                 note: "",
                 photo: "🛍️",
-                image_url: primary ? String(primary) : undefined, // ← 差し替え
+                main_image_path: p?.main_image_path ?? null,
+                sub_image_path1: p?.sub_image_path1 ?? null,
+                sub_image_path2: p?.sub_image_path2 ?? null,
             };
         };
 
@@ -1124,62 +1141,60 @@ export default function UserPilotApp() {
                                                                     key={it.id}
                                                                     className="relative flex gap-3 rounded-2xl border bg-white p-2 pr-3"
                                                                 >
-                                                                    {/* 左側：詳細を開くボタン領域（数量チップはボタン外へ） */}
-                                                                    <button
-                                                                        type="button"
-                                                                        onClick={() => setDetail({ shopId: s.id, item: it })}
-                                                                        className="flex items-center gap-3 flex-1 min-w-0 text-left"
-                                                                    >
-                                                                        <div className="relative w-24 h-24 overflow-hidden rounded-xl bg-zinc-100 flex items-center justify-center text-4xl shrink-0">
-                                                                            {it.image_url ? (
+                                                                    <div className="flex items-center gap-3 flex-1 min-w-0">
+                                                                        {/* サムネ（main_image_path）→ ギャラリー */}
+                                                                        <button
+                                                                            type="button"
+                                                                            role="button"
+                                                                            tabIndex={0}
+                                                                            aria-label={`${it.name} の画像を開く`}
+                                                                            onKeyDown={(e) => {
+                                                                                if (e.key === "Enter" || e.key === " ") {
+                                                                                    e.preventDefault();
+                                                                                    (e.currentTarget as HTMLButtonElement).click();
+                                                                                }
+                                                                            }}
+                                                                            onClick={() => {
+                                                                                setDetail({ shopId: s.id, item: it }); // ← 常に詳細モーダルを開く
+                                                                                setGIndex(0);                           // 画像は detail 側で切替済み
+                                                                            }}
+
+                                                                            className="relative w-24 h-24 overflow-hidden rounded-xl bg-zinc-100 flex items-center justify-center shrink-0 border cursor-pointer group focus:outline-none focus:ring-2 focus:ring-zinc-900/50"
+                                                                            title="画像を開く"
+                                                                        >
+                                                                            {it.main_image_path ? (
                                                                                 <img
-                                                                                    src={`${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/public-images/${it.image_url}`}
+                                                                                    src={`${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/public-images/${it.main_image_path}`}
                                                                                     alt={it.name}
-                                                                                    className="w-full h-full object-cover"
+                                                                                    className="w-full h-full object-cover transition-transform group-hover:scale-[1.02] pointer-events-none"
                                                                                     loading="lazy"
                                                                                     decoding="async"
                                                                                 />
                                                                             ) : (
-                                                                                <span>{it.photo}</span>
+                                                                                <span className="text-4xl pointer-events-none">{it.photo ?? "🛍️"}</span>
                                                                             )}
+                                                                            {/* クリックを邪魔しない薄いオーバーレイ（必要なら） */}
+                                                                            <span className="pointer-events-none absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity bg-black/5" />
+                                                                        </button>
 
-                                                                            {/* サムネ右上：のこり n 個 */}
-                                                                            <span
-                                                                                className={[
-                                                                                    "absolute top-1 right-1",
-                                                                                    "inline-flex items-center gap-1",
-                                                                                    "text-[10px] leading-none whitespace-nowrap",
-                                                                                    "rounded-full border px-1.5 py-0.5",
-                                                                                    "backdrop-blur-[2px] ring-1 ring-white/70",
-                                                                                    remain === 0
-                                                                                        ? "bg-red-50 text-red-600 border-red-200"
-                                                                                        : remain <= 3
-                                                                                            ? "bg-amber-50 text-amber-700 border-amber-200"
-                                                                                            : "bg-emerald-50 text-emerald-700 border-emerald-200",
-                                                                                ].join(" ")}
-                                                                            >
-                                                                                <span className="opacity-80">のこり</span>
-                                                                                <span className="tabular-nums font-semibold">{remain}</span>
-                                                                                <span className="opacity-80">個</span>
-                                                                            </span>
-                                                                        </div>
 
-                                                                        <div className="flex-1 min-w-0">
-                                                                            {/* タイトル：常に2行ぶんの高さを確保 */}
+                                                                        {/* テキスト側 → 詳細モーダルを開く */}
+                                                                        <button
+                                                                            type="button"
+                                                                            onClick={() => setDetail({ shopId: s.id, item: it })}
+                                                                            className="flex-1 min-w-0 text-left"
+                                                                        >
                                                                             <div className="w-full text-sm font-medium leading-tight break-words line-clamp-2 min-h-[2.5rem]">
                                                                                 {it.name}
                                                                             </div>
-
-                                                                            {/* 受取時刻（右側に chips を置かない） */}
                                                                             <div className="mt-0.5 text-xs text-zinc-500 flex items-center gap-1 w-full">
                                                                                 <span>⏰</span>
                                                                                 <span className="truncate">受取 {it.pickup}</span>
                                                                             </div>
-
-                                                                            {/* 下段：価格（数量チップは外側） */}
                                                                             <div className="mt-2 text-base font-semibold">{currency(it.price)}</div>
-                                                                        </div>
-                                                                    </button>
+                                                                        </button>
+                                                                    </div>
+
 
                                                                     {/* 右下：数量チップ（ボタン外、下寄せ） */}
                                                                     <div
@@ -1625,6 +1640,8 @@ export default function UserPilotApp() {
 
                 <ToastBar toast={toast} onClose={() => setToast(null)} />
 
+
+
                 {/* 商品詳細モーダル */}
                 {detail && (
                     <div role="dialog" aria-modal="true" className="fixed inset-0 z-50">
@@ -1632,12 +1649,78 @@ export default function UserPilotApp() {
                         <div className="absolute inset-0 flex items-center justify-center p-4">
                             <div className="max-w-[520px] w-full bg-white rounded-2xl overflow-hidden shadow-xl">
                                 <div className="relative">
-                                    <div className="w-full h-56 bg-zinc-100 flex items-center justify-center text-6xl">
-                                        <span>{detail.item.photo}</span>
-                                    </div>
-                                    <button type="button" aria-label="閉じる" className="absolute top-2 right-2 w-8 h-8 rounded-full bg-white/90 border flex items-center justify-center" onClick={() => setDetail(null)}>✕</button>
+                                    {/* メイン画像（3枚ギャラリー） */}
+                                    {detailImages.length > 0 ? (
+                                        <img
+                                            key={detailImages[gIndex]}
+                                            src={`${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/public-images/${detailImages[gIndex]}`}
+                                            alt={`${detail.item.name} 画像 ${gIndex + 1}/${detailImages.length}`}
+                                            className="w-full aspect-[4/3] object-cover bg-black"
+                                            loading="eager"
+                                            decoding="async"
+                                        />
+
+                                    ) : (
+                                        <div className="w-full h-56 bg-zinc-100 flex items-center justify-center text-6xl">
+                                            <span>{detail.item.photo}</span>
+                                        </div>
+                                    )}
+
+                                    {/* 左右ナビ（画像が2枚以上あるときだけ） */}
+                                    {detailImages.length > 1 && (
+                                        <>
+                                            <button
+                                                type="button"
+                                                className="absolute left-2 top-1/2 -translate-y-1/2 px-3 py-2 rounded-full bg-white/90 border shadow hover:bg-white"
+                                                onClick={() => setGIndex(i => Math.max(0, i - 1))}
+                                                disabled={gIndex === 0}
+                                                aria-label="前の画像"
+                                            >‹</button>
+                                            <button
+                                                type="button"
+                                                className="absolute right-2 top-1/2 -translate-y-1/2 px-3 py-2 rounded-full bg-white/90 border shadow hover:bg-white"
+                                                onClick={() => setGIndex(i => Math.min(detailImages.length - 1, i + 1))}
+                                                disabled={gIndex === detailImages.length - 1}
+                                                aria-label="次の画像"
+                                            >›</button>
+                                        </>
+                                    )}
+
+                                    {/* 閉じる */}
+                                    <button
+                                        type="button"
+                                        aria-label="閉じる"
+                                        className="absolute top-2 right-2 w-8 h-8 rounded-full bg-white/90 border flex items-center justify-center"
+                                        onClick={() => setDetail(null)}
+                                    >✕</button>
                                 </div>
+
                                 <div className="p-4 space-y-3">
+                                    {/* サムネトレイ（クリックで切替） */}
+                                    {detailImages.length > 1 && (
+                                        <div className="border-b pb-3 -mt-1">
+                                            <div className="flex items-center gap-2 overflow-x-auto">
+                                                {detailImages.map((pth, idx) => (
+                                                    <button
+                                                        key={pth}
+                                                        className={`relative w-16 h-16 rounded border overflow-hidden ${idx === gIndex ? "ring-2 ring-zinc-900" : ""}`}
+                                                        onClick={() => setGIndex(idx)}
+                                                        aria-label={`サムネイル ${idx + 1}`}
+                                                    >
+                                                        <img
+                                                            src={`${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/public-images/${pth}`}
+                                                            alt={`${detail.item.name} thumb ${idx + 1}`}
+                                                            className="w-full h-full object-cover transition-transform group-hover:scale-[1.02]"
+                                                            loading="lazy"
+                                                            decoding="async"
+                                                        />
+
+                                                    </button>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    )}
+
                                     <div className="text-lg font-semibold leading-tight break-words">{detail.item.name}</div>
                                     <div className="text-sm text-zinc-600 flex items-center gap-3">
                                         <span className="inline-flex items-center gap-1"><span>⏰</span><span>受取 {detail.item.pickup}</span></span>
@@ -1658,6 +1741,7 @@ export default function UserPilotApp() {
                                         <button type="button" className="px-3 py-2 rounded-xl border bg-zinc-900 text-white" onClick={() => { addToCart(detail.shopId, detail.item); emitToast('success', 'カートに追加しました'); setDetail(null); }}>カートに追加</button>
                                     </div>
                                 </div>
+
                             </div>
                         </div>
                     </div>

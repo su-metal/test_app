@@ -630,6 +630,13 @@ function ProductForm() {
   const take = storeTake(Number(price || 0));
   const { uploadProductImage } = useImageUpload();
   const [uploadingId, setUploadingId] = useState<string | null>(null);
+  // ▼▼ ギャラリー（モーダル）用 state
+  const [gallery, setGallery] = useState<null | {
+    id: string;
+    name: string;
+    paths: string[]; // [main, sub1, sub2] の有効なものだけを詰める
+  }>(null);
+  const [gIndex, setGIndex] = useState(0);
 
   return (
     <div className="rounded-2xl border bg-white p-4 space-y-3">
@@ -646,89 +653,98 @@ function ProductForm() {
         {products.map((p) => {
           const inputId = `product-image-${p.id}`;
           return (
-            <div
-              key={p.id}
-              className="rounded-2xl border px-4 py-3 flex items-center justify-between gap-4"
-            >
-              {/* --- ここからサムネ3連（main/sub1/sub2） --- */}
-              <div className="mt-2 flex items-center gap-2">
-                {[
-                  { slot: "main" as const, label: "メイン", path: p.main_image_path },
-                  { slot: "sub1" as const, label: "サブ1", path: p.sub_image_path1 },
-                  { slot: "sub2" as const, label: "サブ2", path: p.sub_image_path2 },
-                ].map(({ slot, label, path }) => {
-                  const inputId = `product-image-${p.id}-${slot}`;
-                  return (
-                    <div key={slot} className="flex flex-col items-center">
-                      <input
-                        id={inputId}
-                        type="file"
-                        accept="image/*"
-                        className="hidden"
-                        onChange={async (e) => {
-                          const file = e.target.files?.[0];
-                          if (!file) return;
-                          try {
-                            setUploadingId(p.id);
-                            await uploadProductImage(p.id, file, slot);
-                            await reload();
-                            setImgVer((v) => v + 1); // パッチAを入れている場合
-                            emitToast?.("success", `${label}画像を更新しました`);
-                          } catch (err: any) {
-                            alert(`アップロードに失敗しました: ${err?.message ?? err}`);
-                          } finally {
-                            setUploadingId(null);
-                            e.currentTarget.value = "";
-                          }
-                        }}
-                        disabled={ploading || uploadingId === p.id}
-                      />
-                      <label
-                        htmlFor={inputId}
-                        className="relative block w-20 h-20 overflow-hidden rounded-lg border bg-zinc-50 cursor-pointer group"
-                        aria-label={`${p.name} の${label}画像をアップロード/変更`}
-                        title={`${label}をタップしてアップロード/変更`}
-                      >
-                        {path ? (
-                          <img
-                            src={`${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/public-images/${path}?v=${imgVer ?? 0}`}
-                            alt={`${p.name} ${label}`}
-                            className="w-full h-full object-cover transition-transform group-hover:scale-[1.02]"
-                            loading="lazy"
-                            decoding="async"
+            <div key={p.id} className="rounded-2xl border bg-white p-3 sm:p-3">
+              <div className="grid grid-cols-[1fr_auto] gap-x-3 gap-y-2 items-start min-w-0">
+                {/* ヘッダ：左=商品名 / 右=価格・在庫 */}
+                <div className="min-w-0">
+                  <div
+                    className="text-[15px] font-semibold leading-tight line-clamp-2 break-words"
+                    title={p.name}
+                  >
+                    {p.name}
+                  </div>
+                </div>
+                <div className="text-right whitespace-nowrap">
+                  <div className="text-sm font-semibold">{yen(p.price)}</div>
+                  <div className="text-xs text-zinc-500">在庫 {p.stock}</div>
+                </div>
+
+                {/* サムネ列（折り返し可・少し小さめ） */}
+                <div className="col-span-2">
+                  <div className="flex items-center gap-2 flex-wrap min-w-0">
+                    {[
+                      { slot: "main" as const, label: "メイン", path: p.main_image_path },
+                      { slot: "sub1" as const, label: "サブ1", path: p.sub_image_path1 },
+                      { slot: "sub2" as const, label: "サブ2", path: p.sub_image_path2 },
+                    ].map(({ slot, label, path }) => {
+                      const inputId = `product-image-${p.id}-${slot}`;
+                      return (
+                        <div key={slot} className="flex flex-col items-center">
+                          <input
+                            id={inputId}
+                            type="file"
+                            accept="image/*"
+                            className="hidden"
+                            onChange={async (e) => {
+                              const inputEl = e.currentTarget as HTMLInputElement | null;
+                              const file = inputEl?.files?.[0];
+                              if (!file) return;
+                              try {
+                                setUploadingId(p.id);
+                                await uploadProductImage(p.id, file, slot);
+                                await reload();
+                                setImgVer((v) => v + 1);
+                                alert(`${label}画像を更新しました`);
+                              } catch (err: any) {
+                                alert(`アップロードに失敗しました: ${err?.message ?? err}`);
+                              } finally {
+                                setUploadingId(null);
+                                if (inputEl) inputEl.value = "";
+                              }
+                            }}
+                            disabled={ploading || uploadingId === p.id}
                           />
-                        ) : (
-                          <div className="w-full h-full grid place-items-center text-[11px] text-zinc-500">
-                            画像なし
-                            <div className="text-[10px] mt-0.5">タップで追加</div>
-                          </div>
-                        )}
-                        <div className="pointer-events-none absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity bg-black/5" />
-                        {uploadingId === p.id && (
-                          <div className="absolute inset-0 grid place-items-center text-xs bg-white/70">
-                            更新中…
-                          </div>
-                        )}
-                        {path && (
-                          <span className="pointer-events-none absolute bottom-1 right-1 text-[10px] px-1 rounded bg-white/85 shadow-sm opacity-0 group-hover:opacity-100">
-                            変更
-                          </span>
-                        )}
-                      </label>
-                      <div className="mt-1 text-[10px] text-zinc-600">{label}</div>
-                    </div>
-                  );
-                })}
-              </div>
-              {/* --- サムネ3連 ここまで --- */}
+                          <label
+                            htmlFor={inputId}
+                            className="relative block w-[72px] h-[72px] overflow-hidden rounded-lg border bg-zinc-50 cursor-pointer group"
+                            aria-label={`${p.name} の${label}画像をアップロード/変更`}
+                            title={`${label}をタップしてアップロード/変更`}
+                          >
+                            {path ? (
+                              <img
+                                src={`${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/public-images/${path}?v=${imgVer ?? 0}`}
+                                alt={`${p.name} ${label}`}
+                                className="w-full h-full object-cover transition-transform group-hover:scale-[1.02]"
+                                loading="lazy"
+                                decoding="async"
+                              />
+                            ) : (
+                              <div className="w-full h-full grid place-items-center text-[11px] text-zinc-500">
+                                画像なし
+                                <div className="text-[10px] mt-0.5">タップで追加</div>
+                              </div>
+                            )}
+                            <div className="pointer-events-none absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity bg-black/5" />
+                            {uploadingId === p.id && (
+                              <div className="absolute inset-0 grid place-items-center text-xs bg-white/70">
+                                更新中…
+                              </div>
+                            )}
+                            {path && (
+                              <span className="pointer-events-none absolute bottom-1 right-1 text-[10px] px-1 rounded bg-white/85 shadow-sm opacity-0 group-hover:opacity-100">
+                                変更
+                              </span>
+                            )}
+                          </label>
+                          <div className="mt-1 text-[10px] text-zinc-600">{label}</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
 
-
-              {/* 右：価格・在庫・操作 */}
-              <div className="text-right shrink-0">
-                <div className="text-sm font-semibold">{yen(p.price)}</div>
-                <div className="text-xs text-zinc-500">在庫 {p.stock}</div>
-
-                <div className="mt-2 flex items-center gap-2 justify-end">
+                {/* ボタン列（右寄せ・コンパクト） */}
+                <div className="col-span-2 flex justify-end gap-2">
                   <button
                     onClick={async () => {
                       const v = prompt("在庫数を入力", String(p.stock));
@@ -744,11 +760,10 @@ function ProductForm() {
                         alert(`在庫更新に失敗しました: ${e?.message ?? e}`);
                       }
                     }}
-                    className="px-3 py-1 rounded-lg border text-xs hover:bg-zinc-50"
+                    className="px-2.5 py-1.5 rounded-lg border text-xs hover:bg-zinc-50"
                   >
                     在庫調整
                   </button>
-
                   <button
                     onClick={async () => {
                       if (!confirm(`「${p.name}」を削除しますか？`)) return;
@@ -758,13 +773,14 @@ function ProductForm() {
                         alert(`削除に失敗しました: ${e?.message ?? e}`);
                       }
                     }}
-                    className="px-3 py-1 rounded-lg border text-xs text-red-600 bg-red-50 hover:bg-red-100"
+                    className="px-2.5 py-1.5 rounded-lg border text-xs text-red-600 bg-red-50 hover:bg-red-100"
                   >
                     削除
                   </button>
                 </div>
               </div>
             </div>
+
           );
         })}
 
@@ -785,6 +801,8 @@ function ProductForm() {
   )
 }
 
+
+
 function OrdersPage() {
   const { ready, err, pending, fulfilled, fulfill, clearPending, clearFulfilled, retry } = useOrders();
   const [current, setCurrent] = useState<Order | null>(null);
@@ -802,7 +820,7 @@ function OrdersPage() {
   const storeOk = !!current && current.storeId === getStoreId();
   const canFulfill = storeOk && expectedCode.length === 6 && inputDigits.length === 6 && inputDigits === expectedCode;
   return (
-    <main className="mx-auto max-w-[480px] px-4 py-5 space-y-6">
+    <main className="mx-auto max-w-[448px] px-4 py-5 space-y-6">
       {!ready && (<div className="rounded-xl border bg-white p-4 text-sm text-zinc-600">読み込み中…</div>)}
       {err ? (<div className="rounded-xl border bg-red-50 p-4 text-sm text-red-700 flex items-center justify-between"><span>{err}</span><button onClick={retry} className="rounded-lg bg-red-600 text-white px-3 py-1 text-xs">リトライ</button></div>) : null}
       <section>
@@ -900,7 +918,15 @@ function OrdersPage() {
   );
 }
 
-function ProductsPage() { return (<main className="mx-auto max-w-4xl px-4 py-5 space-y-8"><ProductForm /><div className="text-xs text-zinc-500">※ 商品管理は単一ページとして暫定運用。ブックマーク例: <code>#/products</code></div></main>); }
+function ProductsPage() {
+  return (
+    <main className="mx-auto max-w-[448px] px-4 py-5 space-y-8">
+      <ProductForm />
+      <div className="text-xs text-zinc-500">※ 商品管理は単一ページとして暫定運用。ブックマーク例: <code>#/products</code></div>
+    </main>
+  );
+}
+
 
 export default function StoreApp() {
   const mounted = useMounted();
@@ -914,7 +940,7 @@ export default function StoreApp() {
   return (
     <div className="min-h-screen bg-zinc-50">
       <header className="sticky top-0 z-40 bg-white/80 backdrop-blur supports-[backdrop-filter]:bg-white/60 border-b">
-        <div className="mx-auto max-w-[480px] px-4 py-3 flex items-center justify-between gap-2">
+        <div className="mx-auto max-w-[448px] px-4 py-3 flex items-center justify-between gap-2">
           <div className="text-base font-semibold tracking-tight shrink-0">店側アプリ</div>
           <nav className="flex flex-wrap items-center gap-1 gap-y-1 text-sm">
             <a href="#/orders" className={`px-3 py-1.5 rounded-lg border shrink-0 ${routeForUI === 'orders' ? 'bg-zinc-900 text-white border-zinc-900' : 'bg-white text-zinc-700 hover:bg-zinc-50'}`} suppressHydrationWarning>注文管理</a>

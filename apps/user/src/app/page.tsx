@@ -94,6 +94,25 @@ function useSupabase() {
     return useMemo(getSupabaseSingleton, []);
 }
 
+// --- remain chip (store-appと同一トーン) ---
+const toneByRemain = (n: number) =>
+    n > 5
+        ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+        : n > 0
+            ? "bg-amber-50 text-amber-700 border-amber-200"
+            : "bg-zinc-100 text-zinc-500 border-zinc-200";
+
+function RemainChip({ remain, className = "" }: { remain: number; className?: string }) {
+    return (
+        <span
+            className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium border ${toneByRemain(remain)} ${className}`}
+        >
+            のこり <span className="tabular-nums ml-0.5 mr-0.5">{remain}</span> 個
+        </span>
+    );
+}
+
+
 function pushLog(entry: unknown) {
     try {
         const key = "app_logs";
@@ -1416,9 +1435,12 @@ export default function UserPilotApp() {
                                                                             {/* ▼ のこり個数チップ（クリックを邪魔しない） */}
                                                                             <span
                                                                                 aria-hidden="true"
-                                                                                className="pointer-events-none absolute left-1.5 bottom-1.5 px-1.5 py-[2px] rounded-full text-[10px] leading-none bg-black/65 text-white backdrop-blur-sm shadow-sm"
+                                                                                className="pointer-events-none absolute left-1.5 bottom-1.5"
                                                                             >
-                                                                                のこり <span className="tabular-nums">{Math.max(0, it.stock - getReserved(s.id, it.id))}</span> 個
+                                                                                <RemainChip
+                                                                                    remain={Math.max(0, it.stock - getReserved(s.id, it.id))}
+                                                                                    className="shadow-sm" // オーバーレイ上で縁が沈まないように軽く影
+                                                                                />
                                                                             </span>
 
                                                                             {/* クリックを邪魔しない薄いオーバーレイ（必要なら） */}
@@ -1657,15 +1679,9 @@ export default function UserPilotApp() {
 
                                                     <div className="flex flex-col items-end gap-1 shrink-0">
                                                         {/* のこり n 個（text-xsで統一） */}
-                                                        <span
-                                                            className="inline-flex items-center gap-1 px-1.5 py-[2px] rounded-full bg-zinc-100 text-zinc-700 text-xs"
-                                                            title={`在庫 ${l.item.stock} / 予約済 ${reserved}`}
-                                                        >
-                                                            <span>のこり</span>
-                                                            <span className="tabular-nums">{remain}</span>
-                                                            <span>個</span>
+                                                        <span title={`在庫 ${l.item.stock} / 予約済 ${reserved}`}>
+                                                            <RemainChip remain={remain} className="text-xs" />
                                                         </span>
-
                                                         {/* 数量増減チップ */}
                                                         <div onClick={(e) => e.stopPropagation()}>
                                                             <QtyChip sid={sid} it={l.item} />
@@ -2031,7 +2047,9 @@ export default function UserPilotApp() {
                                     <div className="text-sm text-zinc-600 flex items-center gap-3">
                                         <span className="inline-flex items-center gap-1"><span>⏰</span><span>受取 {detail.item.pickup}</span></span>
                                         <span className="inline-flex items-center gap-1"><span>🏷️</span><span className="tabular-nums">{currency(detail.item.price)}</span></span>
-                                        <span className="ml-auto inline-flex items-center gap-1"><span>在庫</span><span className="tabular-nums">{Math.max(0, detail.item.stock - getReserved(detail.shopId, detail.item.id))}</span></span>
+                                        <span className="ml-auto">
+                                            <RemainChip remain={Math.max(0, detail.item.stock - getReserved(detail.shopId, detail.item.id))} />
+                                        </span>
                                     </div>
                                     <div className="text-sm text-zinc-700 bg-zinc-50 rounded-xl p-3">
                                         {detail.item.note ? detail.item.note : 'お店のおすすめ商品です。数量限定のため、お早めにお求めください。'}

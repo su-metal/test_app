@@ -8,20 +8,81 @@ import dynamic from "next/dynamic";
 // page.tsx より抜粋（MapViewの使用部分）
 const MapView = dynamic(() => import("@/components/MapView"), { ssr: false });
 
+// ===== debug switch =====
+const DEBUG = (process.env.NEXT_PUBLIC_DEBUG === '1');
 
+// === REST: orders へ確実に Authorization を付けて INSERT する ===
+const API_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+const ANON = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+
+// === REST: orders を確実に DELETE する（apikey + Authorization を強制付与） ===
+async function restDeleteOrdersByIds(ids: string[]) {
+    const idsCsv = ids.map(String).join(',');
+    const url = `${API_URL}/rest/v1/orders?id=in.(${encodeURIComponent(idsCsv)})`;
+
+    const res = await fetch(url, {
+        method: 'DELETE',
+        headers: {
+            apikey: ANON,
+            Authorization: `Bearer ${ANON}`,
+            // Prefer は無くて OK（DELETE は通常 204 No Content）
+        },
+    });
+
+    if (res.status === 401) throw new Error('HTTP 401 Unauthorized');
+    if (res.status === 403) throw new Error('HTTP 403 Forbidden');
+    if (res.status === 404) return; // 対象なしは無視
+    if (!res.ok) {
+        const t = await res.text().catch(() => '');
+        throw new Error(`HTTP ${res.status} ${res.statusText} :: ${t}`);
+    }
+}
+
+
+async function restInsertOrder(orderPayload: any) {
+    const url = `${API_URL}/rest/v1/orders?select=*`;
+    const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+            apikey: ANON,
+            Authorization: `Bearer ${ANON}`,
+            'Content-Type': 'application/json',
+            Prefer: 'return=representation',
+        },
+        body: JSON.stringify(orderPayload),
+    });
+    if (!res.ok) {
+        const txt = await res.text().catch(() => '');
+        throw new Error(`HTTP ${res.status} ${res.statusText} :: ${txt}`);
+    }
+    return res.json();
+}
 
 let __sb__: SupabaseClient | null = null;
 function getSupabaseSingleton() {
     if (!__sb__) {
-        __sb__ = createClient(
-            process.env.NEXT_PUBLIC_SUPABASE_URL!,
-            process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-            { auth: { storageKey: 'sb-user-app' } } // ← 警告回避のため固定
-        );
+        const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+        const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+
+        __sb__ = createClient(url, anon, {
+            auth: { storageKey: 'sb-user-app' },
+            // ✅ supabase-js 経由の全リクエストに常に鍵を付ける
+            global: {
+                headers: {
+                    apikey: anon,
+                    Authorization: `Bearer ${anon}`,
+                },
+            },
+        });
     }
     return __sb__;
 }
 
+
+if (DEBUG && typeof window !== "undefined") {
+    console.info("[diag] ANON head =", (process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "").slice(0, 12));
+    console.info("[diag] URL  head =", (process.env.NEXT_PUBLIC_SUPABASE_URL || "").slice(0, 20));
+}
 /**
  * ユーザー向けフードロスアプリ（Pilot v2.6 / TS対応）
  * - Toast通知、在庫連動、店舗別会計、簡易テスト決済
@@ -147,6 +208,49 @@ function validateTestCard(cardRaw: string) {
     if (card.startsWith("4242")) return { ok: true, brand: "Visa(4242)" } as const;
     return { ok: true, brand: "TEST" } as const;
 }
+
+
+// === Supabase REST 直叩きユーティリティ（重複排除・本番用） ===
+/**
+ * orders の軽量取得（idリストで in 検索）
+ * - 401 は Error.status = 401 を付けて throw（ポーリング側で停止できるように）
+ * - apikey は ヘッダー と URL クエリの両方に付与（環境依存の揺れ対策）
+ */
+async function getOrderLite(idsCsv: string) {
+    if (!API_URL || !ANON) {
+        const e: any = new Error("MISSING_ENV");
+        e.status = 401; // ポーリング側で401扱いにして止められるように
+        throw e;
+    }
+
+    const url =
+        `${API_URL}/rest/v1/orders` +
+        `?select=id,code,status` +
+        `&id=in.(${idsCsv})` +
+        `&apikey=${encodeURIComponent(ANON)}`;   // ← URL側にも付ける（保険）
+
+
+    const res = await fetch(url, {
+        headers: {
+            apikey: ANON,                          // ← ヘッダーにも付与（本命）
+            Authorization: `Bearer ${ANON}`,
+        },
+        cache: "no-store",
+    });
+
+    if (res.status === 401) {
+        const e: any = new Error("UNAUTHORIZED");
+        e.status = 401;
+        throw e;
+    }
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+    return res.json() as Promise<Array<{ id: string; code: string | null; status?: string | null }>>;
+}
+
+
+
+
 
 // ---- 型 ----
 interface Item {
@@ -396,6 +500,21 @@ export default function UserPilotApp() {
                     const row = p?.old; if (!row) return;
                     setDbProducts(prev => prev.filter(x => String(x.id) !== String(row.id)));
                 })
+                .on(
+                    'postgres_changes',
+                    { event: 'DELETE', schema: 'public', table: 'orders' },
+                    (payload: any) => {
+                        const old = payload?.old || {};
+                        const delId = String(old?.id ?? '');
+                        const delCode6 = normalizeCode6(old?.code);
+                        setOrders(prev =>
+                            prev.filter(o =>
+                                String(o.id) !== delId && normalizeCode6(o.code6) !== delCode6
+                            )
+                        );
+                    }
+                )
+
                 .subscribe();
             return () => { try { (supabase as any).removeChannel(ch); } catch { } };
         } catch {
@@ -595,46 +714,100 @@ export default function UserPilotApp() {
         try { return JSON.stringify(orders.filter(o => o.status === 'paid').map(o => ({ id: o.id, code6: o.code6 }))); } catch { return ""; }
     }, [orders]);
 
-    useEffect(() => {
-        if (!supabase) return;
-        // 未引換が無ければ停止
-        const targets = orders.filter(o => o.status === 'paid');
-        if (targets.length === 0) return;
+    // ★ 多重起動を避けるために useRef で 1本管理
+    const pollRef = useRef<number | null>(null);
 
-        let alive = true;
+    useEffect(() => {
+        const API_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
+        const ANON = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
+
+        // 前回の interval が残っていたら必ず止める
+        if (pollRef.current) {
+            clearInterval(pollRef.current);
+            pollRef.current = null;
+        }
+
+        // 前提が揃ってなければ起動しない
+        const targets = orders.filter(o => o.status === "paid");
+        if (!API_URL || !ANON || !targets.length) return;
+
+        // 画面が非表示/オフラインなら動かさない（無駄＆ログ抑制）
+        if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+        if (typeof navigator !== "undefined" && !navigator.onLine) return;
+
         const toLocal = (dbStatus?: string): Order["status"] => {
-            const s = String(dbStatus || '').toUpperCase();
-            if (s === 'FULFILLED' || s === 'REDEEMED' || s === 'COMPLETED') return 'redeemed';
-            if (s === 'PAID' || s === 'PENDING') return 'paid';
-            return 'paid';
+            const s = String(dbStatus || "").toUpperCase();
+            if (s === "FULFILLED" || s === "REDEEMED" || s === "COMPLETED") return "redeemed";
+            if (s === "PAID" || s === "PENDING") return "paid";
+            return "paid";
         };
 
+        let stopped = false; // 401 などで停止したら二度と回さない
+        const idsCsv = targets.map(o => String(o.id)).join(",");
+
         const tick = async () => {
+            if (stopped) return;
             try {
-                const ids = targets.map(o => String(o.id));
-                const { data, error } = await supabase.from('orders').select('id, code, status').in('id', ids);
-                if (!alive || error || !Array.isArray(data)) return;
-                const rows = data as Array<{ id: string; code: string | null; status?: string | null }>;
-                // id と 6桁コードでローカルを更新
+                const rows = await getOrderLite(idsCsv); // ← ヘッダー付REST
                 setOrders(prev => {
                     let changed = false;
+
+                    // 既存の「ヒットしたら status を同期」部分
                     const next = prev.map(o => {
-                        const hit = rows.find(r => String(r.id) === String(o.id) || (normalizeCode6(r.code) === normalizeCode6(o.code6)));
+                        const hit = rows.find(r =>
+                            String(r.id) === String(o.id) ||
+                            (normalizeCode6(r.code) === normalizeCode6(o.code6))
+                        );
                         if (!hit) return o;
                         const ns = toLocal(hit.status || undefined);
                         if (ns !== o.status) { changed = true; return { ...o, status: ns }; }
                         return o;
                     });
-                    return changed ? next : prev;
+
+                    // ★ここを追加：DB から消えている paid を間引く
+                    const liveIds = new Set(rows.map(r => String(r.id)));
+                    const liveCodes = new Set(rows.map(r => normalizeCode6(r.code)));
+                    const pruned = next.filter(o => {
+                        if (o.status !== 'paid') return true; // 履歴(redeemed)はそのまま
+                        const hasId = liveIds.has(String(o.id));
+                        const hasCode = liveCodes.has(normalizeCode6(o.code6));
+                        if (!hasId && !hasCode) { changed = true; return false; }
+                        return true;
+                    });
+
+                    return changed ? pruned : prev;
                 });
-            } catch {/* noop */ }
+
+            } catch (err: any) {
+                // 401 を検知したら停止（雪だるま防止）
+                if (err?.status === 401 || err?.message === "UNAUTHORIZED") {
+                    if (DEBUG) console.warn("[orders poll] 401 Unauthorized detected. Stop polling.");
+                    stopped = true;
+                    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+                    return;
+                }
+                if (DEBUG) console.warn("[orders poll] exception:", err);
+            }
         };
 
-        // 即時 + 周期的に確認（4秒毎）。画面操作や注文更新で依存キーが変わると自動で張り替え
+        // 即時 + 周期（タブが可視かつオンライン時のみ実行）
         tick();
-        const timer = window.setInterval(tick, 4000);
-        return () => { alive = false; window.clearInterval(timer); };
-    }, [supabase, pendingKey]);
+        pollRef.current = window.setInterval(() => {
+            if (document.visibilityState === "visible" && navigator.onLine) tick();
+        }, 4000);
+
+        // cleanup
+        return () => {
+            if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+        };
+    }, [pendingKey]); // ← 依存はこのキーだけ（orders丸ごとは不可）
+
+
+
+    useEffect(() => {
+        console.log('[diag] ANON head =', (process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '').slice(0, 12));
+        console.log('[diag] URL  head =', (process.env.NEXT_PUBLIC_SUPABASE_URL || '').slice(0, 20));
+    }, []);
 
 
     // DBの商品が取れていて storeId が指定されていれば、その店舗の items を DB で差し替え
@@ -773,25 +946,39 @@ export default function UserPilotApp() {
 
     // 注文履歴のみを一括リセット（ローカル優先、可能ならDBも削除）
     const devResetOrderHistory = useCallback(async () => {
-        if (!confirm('注文履歴をすべてリセットします。よろしいですか？')) return;
         try {
-            const targetIds = orders.filter(o => o.status === 'redeemed').map(o => o.id);
-            if (targetIds.length === 0) { emitToast('info', '注文履歴はありません'); return; }
-            if (supabase) {
-                const { error } = await supabase.from('orders').delete().in('id', targetIds);
-                if (error) {
-                    console.error('[orders.resetHistory] error', error);
-                    emitToast('error', `リセットに失敗しました: ${error.message}`);
-                    return;
-                }
+            // 対象IDを組み立て（あなたの既存ロジックを使ってOK）
+            const ids = orders
+                .filter(o => ['redeemed', 'paid', 'completed'].includes(String(o.status)))
+                .map(o => String(o.id));
+
+            if (!ids.length) {
+                if (DEBUG) console.info('[orders.resetHistory] skip: no ids');
+                return;
             }
-            setOrders(prev => prev.filter(o => o.status !== 'redeemed'));
-            emitToast('success', '注文履歴をリセットしました');
-        } catch (e) {
-            console.error('[orders.resetHistory] exception', e);
-            emitToast('error', `エラー: ${(e as any)?.message ?? e}`);
+
+            // ★REST 直叩き（必ず apikey / Authorization を付与）
+            await restDeleteOrdersByIds(ids);
+
+            const codeKeys = new Set(
+                orders
+                    .filter(o => ['redeemed', 'paid', 'completed'].includes(String(o.status)))
+                    .map(o => normalizeCode6(o.code6))
+            );
+            setOrders(prev =>
+                prev.filter(o =>
+                    !ids.includes(String(o.id)) &&
+                    !codeKeys.has(normalizeCode6(o.code6))
+                )
+            );
+
+            if (DEBUG) console.info('[orders.resetHistory] done:', ids.length);
+        } catch (e: any) {
+            console.error('[orders.resetHistory] error', e?.message || e);
+            emitToast('error', '履歴のリセットに失敗しました');
         }
-    }, [supabase, orders, setOrders]);
+    }, [orders]);
+
 
     // 注文処理
     const [cardDigits, setCardDigits] = useState(""); // 数字のみ（最大16桁）
@@ -889,25 +1076,40 @@ export default function UserPilotApp() {
             };
 
 
-            // Supabaseが設定されていればDBへ作成
+
             // Supabaseが設定されていればDBへ作成
             if (supabase) {
-                const { data, error } = await supabase
-                    .from("orders")
-                    .insert(orderPayload)
-                    .select("*")
-                    .single();
+                let data: any = null;
+                let error: any = null;
+                let status = 200;
+
+                try {
+                    const rows = await restInsertOrder(orderPayload);
+                    data = Array.isArray(rows) ? rows[0] : rows;
+                } catch (e: any) {
+                    status = Number((e.message || '').match(/HTTP (\d{3})/)?.[1] || 500);
+                    error = { message: e.message };
+                }
 
                 if (error) {
-                    console.error("[orders.insert] error", {
-                        code: (error as any).code,
-                        message: error.message,
-                        details: (error as any).details,
-                        hint: (error as any).hint,
+                    // ---- ここから詳細ログ強化（開発時のみ想定。不要になったら削除OK）----
+                    console.error("[orders.insert] status", status);
+                    console.error("[orders.insert] payload", JSON.stringify(orderPayload, null, 2));
+                    console.error("[orders.insert] env.heads", {
+                        url: (process.env.NEXT_PUBLIC_SUPABASE_URL || "").slice(0, 32),
+                        anon: (process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "").slice(0, 12),
+                        storeId,
                     });
-                    emitToast("error", `注文の作成に失敗: ${error.message}`);
+                    console.error("[orders.insert] error raw", error);
+                    try {
+                        console.error("[orders.insert] error json", JSON.stringify(error, null, 2));
+                    } catch { }
+                    // ---- ここまで ----
+
+                    emitToast("error", `注文の作成に失敗: ${error.message || "不明なエラー"}`);
                     return;
                 }
+
 
 
                 // ★ここを追加：DBに作成した注文と“同じコード”をローカル履歴にも保存する

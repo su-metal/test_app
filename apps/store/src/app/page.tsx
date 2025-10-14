@@ -552,6 +552,136 @@ function QRScanner({ onDetect, onClose }: { onDetect: (code: string) => void; on
   );
 }
 
+// ▼▼▼ 静止画カメラ撮影モーダル ▼▼▼
+function CameraCaptureModal({
+  open,
+  title = "写真を撮影",
+  onClose,
+  onCapture, // (blob: Blob) => void
+  facing = "environment", // "user" でインカメ
+}: {
+  open: boolean;
+  title?: string;
+  onClose: () => void;
+  onCapture: (blob: Blob) => void;
+  facing?: "environment" | "user";
+}) {
+  const videoRef = React.useRef<HTMLVideoElement | null>(null);
+  const canvasRef = React.useRef<HTMLCanvasElement | null>(null);
+  const [err, setErr] = React.useState<string | null>(null);
+  const [stream, setStream] = React.useState<MediaStream | null>(null);
+  const [isPreview, setIsPreview] = React.useState(false);
+  const [facingMode, setFacingMode] = React.useState<"environment" | "user">(facing);
+
+  useEffect(() => {
+    if (!open) return;
+    let active = true;
+    (async () => {
+      try {
+        const s = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: facingMode } },
+          audio: false,
+        });
+        if (!active) {
+          s.getTracks().forEach(t => t.stop());
+          return;
+        }
+        setStream(s);
+        const v = videoRef.current;
+        if (v) {
+          (v as any).srcObject = s;
+          await v.play();
+        }
+      } catch (e) {
+        setErr("カメラを起動できませんでした");
+      }
+    })();
+    return () => {
+      active = false;
+      try { stream?.getTracks().forEach(t => t.stop()); } catch { }
+      setStream(null);
+    };
+  }, [open, facingMode]);
+
+  const doCapture = async () => {
+    const v = videoRef.current;
+    const c = canvasRef.current;
+    if (!v || !c) return;
+    const w = v.videoWidth || 1280;
+    const h = v.videoHeight || 720;
+    c.width = w;
+    c.height = h;
+    const ctx = c.getContext("2d");
+    if (!ctx) return;
+    ctx.drawImage(v, 0, 0, w, h);
+    setIsPreview(true);
+  };
+
+  const confirmUse = async () => {
+    const c = canvasRef.current;
+    if (!c) return;
+    c.toBlob((blob) => {
+      if (blob) onCapture(blob);
+    }, "image/jpeg", 0.9);
+  };
+
+  if (!open) return null;
+
+  return (
+    <div className="fixed inset-0 z-[70] grid place-items-center bg-black/40 p-4" role="dialog" aria-modal="true" onClick={onClose}>
+      <div className="w-full max-w-md rounded-2xl bg-white shadow-xl border p-4" onClick={e => e.stopPropagation()}>
+        <div className="text-base font-semibold mb-2">{title}</div>
+
+        {!isPreview ? (
+          <div className="space-y-3">
+            <div className="aspect-[4/3] bg-black/90 rounded-xl overflow-hidden">
+              <video ref={videoRef} className="w-full h-full object-contain" playsInline muted />
+            </div>
+            {err ? <div className="text-sm text-red-600">{err}</div> : null}
+            <div className="flex items-center justify-between">
+              <button
+                className="rounded-lg border px-3 py-2 text-sm"
+                onClick={() => setFacingMode(m => (m === "environment" ? "user" : "environment"))}
+                type="button"
+              >
+                カメラ切替
+              </button>
+              <button
+                className="rounded-xl bg-zinc-900 text-white px-4 py-2 text-sm"
+                onClick={doCapture}
+                type="button"
+              >
+                撮影
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <div className="aspect-[4/3] bg-black/90 rounded-xl overflow-hidden">
+              <canvas ref={canvasRef} className="w-full h-full object-contain" />
+            </div>
+            <div className="flex items-center justify-end gap-2">
+              <button className="rounded-lg border px-3 py-2 text-sm" onClick={() => setIsPreview(false)} type="button">
+                撮り直す
+              </button>
+              <button className="rounded-xl bg-zinc-900 text-white px-4 py-2 text-sm" onClick={confirmUse} type="button">
+                この写真を使う
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* キャンバスはプリビュー切替後に描画するため、常時置いておく */}
+        <canvas ref={canvasRef} className="hidden" />
+        <div className="text-right mt-2">
+          <button className="rounded-lg border px-3 py-2 text-sm" onClick={onClose} type="button">閉じる</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
 function StockInline({ id, stock, disabled, onCommit }: { id: string; stock: number; disabled: boolean; onCommit: (val: number) => void }) {
   const [val, setVal] = React.useState<string>(() => String(Math.max(0, Math.floor(Number(stock || 0)))));
   React.useEffect(() => { setVal(String(Math.max(0, Math.floor(Number(stock || 0))))); }, [stock]);
@@ -822,7 +952,49 @@ function useImageUpload() {
     return path;
   }, [supabase]);
 
-  return { uploadProductImage };
+  const deleteProductImage = useCallback(async (productId: string, slot: Slot) => {
+    if (!supabase) throw new Error("Supabase 未初期化");
+
+    // 該当商品の store_id と現在の画像パスを取得
+    const { data: before, error: fetchErr } = await supabase
+      .from("products")
+      .select("store_id, main_image_path, sub_image_path1, sub_image_path2")
+      .eq("id", productId)
+      .single();
+    if (fetchErr) throw fetchErr;
+
+    const sid = getStoreId();
+    if (!before) throw new Error("対象商品が存在しません");
+    if (!sid) throw new Error("店舗IDが未設定です（NEXT_PUBLIC_STORE_ID）");
+    if (String(before.store_id ?? "") !== String(sid)) {
+      throw new Error("他店舗の商品は更新できません");
+    }
+
+    // スロットに紐づく現行パスを取り出し
+    const col = colOf(slot);
+    const currentPath =
+      slot === "main" ? before.main_image_path :
+        slot === "sub1" ? before.sub_image_path1 :
+          before.sub_image_path2;
+
+    if (!currentPath) return; // 既に空なら何もしない
+
+    // 1) DB を null に更新（store_id で二重限定）
+    const upd = await supabase
+      .from("products")
+      .update({ [col]: null })
+      .eq("id", productId)
+      .eq("store_id", sid);
+    if (upd.error) throw upd.error;
+
+    // 2) ストレージから物理削除（失敗しても致命ではないので握りつぶし）
+    await supabase.storage.from("public-images").remove([currentPath]).catch(() => { });
+
+    return true;
+  }, [supabase]);
+
+
+  return { uploadProductImage, deleteProductImage };
 }
 
 
@@ -840,7 +1012,7 @@ function ProductForm() {
   const [stock, setStock] = useState("");
   const [pickupSlotForNew, setPickupSlotForNew] = useState<number | null>(null); // null=未指定
   const take = storeTake(Number(price || 0));
-  const { uploadProductImage } = useImageUpload();
+  const { uploadProductImage, deleteProductImage } = useImageUpload();
   const [uploadingId, setUploadingId] = useState<string | null>(null);
   // ▼▼ ギャラリー（モーダル）用 state
   const [gallery, setGallery] = useState<null | {
@@ -848,6 +1020,14 @@ function ProductForm() {
     name: string;
     paths: string[]; // [main, sub1, sub2] の有効なものだけを詰める
   }>(null);
+  // カメラ撮影モーダル用 state
+  const [cam, setCam] = useState<null | {
+    productId: string;
+    slot: "main" | "sub1" | "sub2";
+    label: string;
+    name: string; // 商品名（トースト用）
+  }>(null);
+
   const [gIndex, setGIndex] = useState(0);
   // ▼ 未反映の合計差分（バッジ表示用）
   const totalDelta = useMemo(() => {
@@ -1084,7 +1264,8 @@ function ProductForm() {
                         <input
                           id={inputId}
                           type="file"
-                          accept="image/*"
+                          accept="image/*;capture=camera"
+                          capture="environment"
                           className="hidden"
                           onChange={async (e) => {
                             const inputEl = e.currentTarget as HTMLInputElement | null;
@@ -1105,6 +1286,7 @@ function ProductForm() {
                           }}
                           disabled={ploading || uploadingId === p.id}
                         />
+
                         <label
                           htmlFor={inputId}
                           className="relative block w-full aspect-square overflow-hidden rounded-xl border bg-zinc-50 cursor-pointer group"
@@ -1131,28 +1313,88 @@ function ProductForm() {
                               更新中…
                             </div>
                           )}
-                          {path && (
-                            <span className="pointer-events-none absolute bottom-1 right-1 text-[10px] px-1 rounded bg-white/85 shadow-sm opacity-0 group-hover:opacity-100">
-                              変更
-                            </span>
-                          )}
+                          <span
+                            className="pointer-events-none absolute bottom-1 right-1 text-[10px] px-1 rounded bg-white/85 shadow-sm
+             opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
+                          >
+                            {path ? '変更' : '追加'}
+                          </span>
+
                         </label>
+                        {/* カメラから直接アップロード */}
+                        <div className="mt-1 w-full">
+                          <button
+                            type="button"
+                            className="w-full rounded-lg border px-2 py-1 text-[11px] hover:bg-zinc-50"
+                            onClick={() => setCam({ productId: p.id, slot, label, name: p.name })}
+                            disabled={ploading || uploadingId === p.id}
+                          >
+                            カメラで撮る
+                          </button>
+                          {/* 画像削除（画像がある時のみ活性） */}
+                          {path ? (
+                            <div className="mt-1 w-full">
+                              <button
+                                type="button"
+                                className="w-full rounded-lg border px-2 py-1 text-[11px] text-red-600 hover:bg-red-50"
+                                onClick={async () => {
+                                  if (!confirm(`${label}画像を削除しますか？`)) return;
+                                  try {
+                                    setUploadingId(p.id);
+                                    await deleteProductImage(p.id, slot);
+                                    await reload();
+                                    setImgVer(v => v + 1);
+                                    alert(`${label}画像を削除しました`);
+                                  } catch (e: any) {
+                                    alert(`削除に失敗しました: ${e?.message ?? e}`);
+                                  } finally {
+                                    setUploadingId(null);
+                                  }
+                                }}
+                                disabled={ploading || uploadingId === p.id}
+                              >
+                                削除
+                              </button>
+                            </div>
+                          ) : null}
+
+                        </div>
+
                         <div className="mt-1 text-[10px] text-zinc-600">{label}</div>
                       </div>
                     );
                   })}
                 </div>
               </div>
-
-
-
-
-
             </div>
           );
         })}
       </div>
 
+      {/* カメラ撮影モーダル */}
+      {cam && (
+        <CameraCaptureModal
+          open={true}
+          title={`${cam.label}画像を撮影`}
+          onClose={() => setCam(null)}
+          onCapture={async (blob) => {
+            try {
+              const file = new File([blob], "camera.jpg", { type: blob.type || "image/jpeg" });
+              setUploadingId(cam.productId);
+              await uploadProductImage(cam.productId, file, cam.slot);
+              await reload();
+              setImgVer(v => v + 1);
+              alert(`${cam.label}画像を更新しました`);
+            } catch (e: any) {
+              alert(`アップロードに失敗しました: ${e?.message ?? e}`);
+            } finally {
+              setUploadingId(null);
+              setCam(null);
+            }
+          }}
+          facing="environment"
+        />
+      )}
 
       {Object.keys(pending).length > 0 && (
         <div

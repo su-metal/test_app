@@ -308,6 +308,109 @@ interface Order { id: string; userEmail: string; shopId: string; amount: number;
 
 type ShopWithDistance = Shop & { distance: number };
 
+// === 受取プリセット取得（全店舗分） ===
+// store_id ごとに { current, slots:{[slot_no]:{start,end,name,step}} } を保持
+type PresetSlot = { start: string; end: string; name: string; step: number };
+type StorePresetInfo = { current: number | null, slots: Record<number, PresetSlot> };
+
+function useStorePickupPresets(
+    supabase: SupabaseClient | null,
+    dbStores: any[],
+    dbProducts: any[]
+) {
+    const [map, setMap] = useState<Record<string, StorePresetInfo>>({});
+
+    // 取得対象の store_id を、stores / products の両方からユニークに集める
+    const storeIds = useMemo(() => {
+        const ids = new Set<string>();
+        dbStores.forEach(s => ids.add(String(s.id)));
+        dbProducts.forEach(p => { if (p.store_id) ids.add(String(p.store_id)); });
+        return Array.from(ids);
+    }, [dbStores, dbProducts]);
+
+    useEffect(() => {
+        if (!supabase) return;
+        (async () => {
+            // 1) 現在プリセット番号（stores）
+            const currentById = new Map<string, number | null>();
+            for (const s of dbStores) currentById.set(String(s.id), (s as any).current_pickup_slot_no ?? null);
+
+            // 2) プリセット本体（store_pickup_presets）
+            let sel = supabase
+                .from('store_pickup_presets')
+                .select('store_id,slot_no,name,start_time,end_time,slot_minutes');
+
+            // storeIds があれば IN フィルタ、なければ全件（上限）を読む
+            if (storeIds.length > 0) {
+                sel = sel.in('store_id', storeIds);
+            } else {
+                sel = sel.limit(500);
+            }
+
+            const { data, error } = await sel;
+            if (error) { console.warn('[presets] load error', error); return; }
+
+            const next: Record<string, StorePresetInfo> = {};
+            // 既知の store を初期化
+            for (const sid of storeIds) next[sid] = { current: currentById.get(sid) ?? null, slots: {} };
+
+            for (const row of (data || []) as any[]) {
+                const sid = String(row.store_id);
+                if (!next[sid]) next[sid] = { current: currentById.get(sid) ?? null, slots: {} };
+                next[sid].slots[Number(row.slot_no)] = {
+                    name: (row.name || '').trim() || `プリセット${row.slot_no}`,
+                    start: String(row.start_time).slice(0, 5),
+                    end: String(row.end_time).slice(0, 5),
+                    step: Number(row.slot_minutes || 10),
+                };
+            }
+
+            // 🔎 デバッグ（開発時のみ）
+            if (process.env.NEXT_PUBLIC_DEBUG === '1') {
+                const cnt = Object.keys(next).length;
+                console.info('[presets] built stores:', cnt, next);
+            }
+            // ★ 強制ログ（env無関係）＋ window 公開
+            console.info('[presets] built stores:', Object.keys(next).length, next);
+            if (typeof window !== 'undefined') {
+                (window as any).presetDebug = {
+                    storeIds,
+                    dbStores,
+                    presets: next,
+                };
+            }
+
+
+            setMap(next);
+        })();
+    }, [supabase, JSON.stringify(storeIds), JSON.stringify(dbStores)]);
+
+
+
+    // 商品が未指定 → 店舗の current → 1→2→3 の順で最初に存在するスロットを採用
+    const pickupLabelFor = useCallback((storeId: string, productSlotNo?: number | null) => {
+        const info = map[storeId];
+        if (!info) return null;
+
+        const candidates = [
+            productSlotNo ?? null,
+            info.current ?? null,
+            1, 2, 3
+        ].filter((v) => v != null) as number[];
+
+        for (const no of candidates) {
+            const slot = info.slots[no];
+            if (slot) return `${slot.start}–${slot.end}`;
+        }
+        return null;
+    }, [map]);
+
+
+
+    return { presetMap: map, pickupLabelFor } as const;
+}
+
+
 
 // ---- 初期データ ----
 const seedShops = (): Shop[] => ([
@@ -453,15 +556,22 @@ export default function UserPilotApp() {
         ].filter((x): x is string => !!x);
     }, [detail]);
     const supabase = useSupabase();
-    type DbProduct = { id: string; store_id?: string; name: string; price?: number; stock?: number; image_url?: string; updated_at?: string };
-    type DbStore = { id: string; name: string; created_at?: string; lat?: number; lng?: number; address?: string; cover_image_path?: string | null };
+    type DbProduct = { id: string; store_id?: string; name: string; price?: number; stock?: number; image_url?: string; updated_at?: string, pickup_slot_no?: number | null };
+    type DbStore = { id: string; name: string; created_at?: string; lat?: number; lng?: number; address?: string; cover_image_path?: string | null, current_pickup_slot_no?: number | null };
 
     const [dbProducts, setDbProducts] = useState<DbProduct[]>([]);
     const [dbStores, setDbStores] = useState<DbStore[]>([]);
+    const { presetMap, pickupLabelFor } = useStorePickupPresets(supabase, dbStores as any[], dbProducts as any[]);
+    // ★ Console から直接呼べるように公開
+    if (typeof window !== 'undefined') {
+        (window as any).pickupTest = (sid: string, slot?: number | null) => pickupLabelFor(sid, slot ?? null);
+        (window as any).presetMap = presetMap;
+    }
+
+
     // ギャラリー（モーダル）state
     const [gallery, setGallery] = useState<null | { name: string; paths: string[] }>(null);
     const [gIndex, setGIndex] = useState(0);
-
 
 
     // --- Hydration対策（SSRとクライアント差異を回避） ---
@@ -498,8 +608,7 @@ export default function UserPilotApp() {
         if (!supabase) return;
         (async () => {
             const q = supabase
-                .from("products").select("*, main_image_path, sub_image_path1, sub_image_path2")
-
+                .from("products").select("id,store_id,name,price,stock,updated_at,main_image_path,sub_image_path1,sub_image_path2,pickup_slot_no")
 
             // 必要なら在庫>0や公開フラグで絞ってOK（例）
             // .gt("stock", 0).eq("is_published", true)
@@ -570,7 +679,7 @@ export default function UserPilotApp() {
         (async () => {
             const { data, error } = await supabase
                 .from("stores")
-                .select("id, name, created_at, lat, lng, address, cover_image_path")
+                .select("id, name, created_at, lat, lng, address, cover_image_path, current_pickup_slot_no")
                 .order("created_at", { ascending: true })
                 .limit(200);
             if (error) {
@@ -596,7 +705,9 @@ export default function UserPilotApp() {
             const rawStock = (p?.stock ?? p?.quantity ?? p?.stock_count ?? 0);
             const stock = Math.max(0, Number(rawStock) || 0);
 
-            // ★ サムネは main → sub1 → sub2 の優先順
+            const sid = String(p?.store_id ?? "");
+            const pick = pickupLabelFor(sid, (p as any)?.pickup_slot_no ?? null) || "—";
+
             const primary =
                 p?.main_image_path ??
                 p?.sub_image_path1 ??
@@ -608,14 +719,15 @@ export default function UserPilotApp() {
                 name: String(p.name ?? "不明"),
                 price: Math.max(0, Number(p.price ?? 0) || 0),
                 stock,
-                pickup: "18:00-20:00",
+                pickup: pick,                  // ← ここがDB由来になる
                 note: "",
                 photo: "🛍️",
-                main_image_path: p?.main_image_path ?? null,
+                main_image_path: primary,
                 sub_image_path1: p?.sub_image_path1 ?? null,
                 sub_image_path2: p?.sub_image_path2 ?? null,
             };
         };
+
 
 
         const fallback = { lat: 35.171, lng: 136.881 }; // 名古屋駅など任意
@@ -632,7 +744,7 @@ export default function UserPilotApp() {
         }));
 
         setShops(prev => (JSON.stringify(prev) === JSON.stringify(built) ? prev : built));
-    }, [dbStores, dbProducts, setShops]);
+    }, [dbStores, dbProducts, presetMap, setShops]);
 
     // トースト購読
     const [toast, setToast] = useState<ToastPayload | null>(null);
@@ -840,13 +952,10 @@ export default function UserPilotApp() {
         };
     }, [pendingKey]); // ← 依存はこのキーだけ（orders丸ごとは不可）
 
-
-
     useEffect(() => {
         console.log('[diag] ANON head =', (process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '').slice(0, 12));
         console.log('[diag] URL  head =', (process.env.NEXT_PUBLIC_SUPABASE_URL || '').slice(0, 20));
     }, []);
-
 
     // DBの商品が取れていて storeId が指定されていれば、その店舗の items を DB で差し替え
     const shopsWithDb = useMemo(() => {
@@ -855,21 +964,22 @@ export default function UserPilotApp() {
         if (!Array.isArray(dbProducts) || dbProducts.length === 0 || !storeId) return shops;
 
         const mapToItem = (p: any): Item => {
-            // stock / quantity / stock_count のどれかが入っている想定
             const rawStock = (p?.stock ?? p?.quantity ?? p?.stock_count ?? 0);
             const stock = Math.max(0, Number(rawStock) || 0);
+
+            const sid = String(p?.store_id ?? storeId ?? "");
+            const pick = sid ? (pickupLabelFor(sid, (p as any)?.pickup_slot_no ?? null) || "—") : "—";
 
             return {
                 id: String(p.id),
                 name: String(p.name ?? "商品"),
                 price: Math.max(0, Number(p.price ?? 0) || 0),
                 stock,
-                pickup: "18:00-20:00",
+                pickup: pick,     // ← DBのプリセット由来へ
                 note: "",
                 photo: "🛍️",
             };
         };
-
 
         // shops[].id が UUID でない（ローカルID）場合のフォールバック：最初のショップに適用
         const idx = shops.findIndex(s => String(s.id) === String(storeId));
@@ -879,7 +989,9 @@ export default function UserPilotApp() {
             i === targetIndex ? { ...s, items: dbProducts.map(mapToItem) } : s
         );
 
-    }, [shops, dbProducts, storeId, dbStores]);
+        // プリセットが来たら再計算
+    }, [shops, dbProducts, storeId, dbStores, presetMap]);
+
 
     const shopsSorted = useMemo<ShopWithDistance[]>(
         () => shopsWithDb.map((s, i) => ({ ...s, distance: distKm(i) })),

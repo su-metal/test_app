@@ -1255,7 +1255,7 @@ export default function UserPilotApp() {
             <div className="inline-flex items-center rounded-full px-2 py-1 text-sm select-none">
                 <button
                     type="button"
-                    className="w-8 h-8 text-[10px] leading-none rounded-full border cursor-pointer disabled:opacity-40 flex items-center justify-center"
+                    className="w-7 h-7 text-[10px] leading-none rounded-full border cursor-pointer disabled:opacity-40 flex items-center justify-center"
                     disabled={reserved <= 0}
                     onClick={() => changeQty(sid, it, -1)}
                     aria-label="数量を減らす"
@@ -1263,7 +1263,7 @@ export default function UserPilotApp() {
                 <span className="mx-3 min-w-[1.5rem] text-center tabular-nums">{reserved}</span>
                 <button
                     type="button"
-                    className="w-8 h-8 text-[10px] leading-none rounded-full border cursor-pointer disabled:opacity-40 flex items-center justify-center"
+                    className="w-7 h-7 text-[10px] leading-none rounded-full border cursor-pointer disabled:opacity-40 flex items-center justify-center"
                     disabled={remain <= 0}
                     onClick={() => changeQty(sid, it, +1)}
                     aria-label="数量を増やす"
@@ -1271,6 +1271,97 @@ export default function UserPilotApp() {
             </div>
         );
     };
+
+    // 共通：商品1行（ホーム/カートで再利用）
+    // noChrome=true のとき、外枠（rounded/border/bg）を外す
+    const ProductLine = ({
+        sid,
+        it,
+        noChrome = false,
+    }: {
+        sid: string;
+        it: Item;
+        noChrome?: boolean;
+    }) => {
+        const reserved = getReserved(sid, it.id);
+        const remain = Math.max(0, it.stock - reserved);
+
+        const wrapBase = "relative flex gap-3 p-2 pr-3";
+        const chrome = "rounded-2xl border bg-white";
+        const wrapperCls = `${wrapBase} ${noChrome ? "" : chrome}`;
+
+        return (
+            <div className={wrapperCls}>
+                <div className="flex items-start gap-3 flex-1 min-w-0">
+                    {/* サムネ（main → sub1 → sub2 → 絵文字） */}
+                    <button
+                        type="button"
+                        role="button"
+                        tabIndex={0}
+                        aria-label={`${it.name} の画像を開く`}
+                        onKeyDown={(e) => {
+                            if (e.key === "Enter" || e.key === " ") {
+                                e.preventDefault();
+                                (e.currentTarget as HTMLButtonElement).click();
+                            }
+                        }}
+                        onClick={() => {
+                            setDetail({ shopId: sid, item: it });
+                            setGIndex(0);
+                        }}
+                        className="relative w-24 h-24 overflow-hidden rounded-xl bg-zinc-100 flex items-center justify-center shrink-0 border cursor-pointer group focus:outline-none focus:ring-2 focus:ring-zinc-900/50"
+                        title="画像を開く"
+                    >
+                        {it.main_image_path ? (
+                            <img
+                                src={`${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/public-images/${it.main_image_path}`}
+                                alt={it.name}
+                                className="w-full h-full object-cover transition-transform group-hover:scale-[1.02] pointer-events-none"
+                                loading="lazy"
+                                decoding="async"
+                            />
+                        ) : (
+                            <span className="text-4xl pointer-events-none">
+                                {it.photo ?? "🛍️"}
+                            </span>
+                        )}
+
+                        {/* のこり個数チップ（クリック非干渉） */}
+                        <span aria-hidden="true" className="pointer-events-none absolute left-1.5 bottom-1.5">
+                            <RemainChip remain={remain} className="shadow-sm" />
+                        </span>
+
+                        <span className="pointer-events-none absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity bg-black/5" />
+                    </button>
+
+                    {/* テキスト側 → 詳細モーダルを開く */}
+                    <button
+                        type="button"
+                        onClick={() => setDetail({ shopId: sid, item: it })}
+                        className="flex-1 min-w-0 text-left"
+                    >
+                        <div className="w-full text-md font-bold leading-tight break-words line-clamp-2 min-h-[2.5rem]">
+                            {it.name}
+                        </div>
+                        <div className="mt-0.5 text-xs text-zinc-500 flex items-center gap-1 w-full">
+                            <span>⏰</span>
+                            <span className="truncate">受取 {it.pickup}</span>
+                        </div>
+                        <div className="mt-2 text-base font-semibold">{currency(it.price)}</div>
+                    </button>
+                </div>
+
+                {/* 右下：数量チップ */}
+                <div
+                    className="absolute bottom-0 right-1 rounded-full px-2 py-1"
+                    onClick={(e) => e.stopPropagation()}
+                >
+                    <QtyChip sid={sid} it={it} />
+                </div>
+            </div>
+        );
+    };
+
 
     // 店舗カード詳細メタ開閉
     const [metaOpen, setMetaOpen] = useState<Record<string, boolean>>({});
@@ -1393,88 +1484,10 @@ export default function UserPilotApp() {
 
                                                 {hasAny ? (
                                                     <div className="mt-3 space-y-2">
-                                                        {visibleItems.map(it => {
-                                                            const remain = Math.max(0, it.stock - getReserved(s.id, it.id));
-                                                            return (
-                                                                <div
-                                                                    key={it.id}
-                                                                    className="relative flex gap-3 rounded-2xl border bg-white p-2 pr-3"
-                                                                >
-                                                                    <div className="flex items-center gap-3 flex-1 min-w-0">
-                                                                        {/* サムネ（main_image_path）→ ギャラリー */}
-                                                                        <button
-                                                                            type="button"
-                                                                            role="button"
-                                                                            tabIndex={0}
-                                                                            aria-label={`${it.name} の画像を開く`}
-                                                                            onKeyDown={(e) => {
-                                                                                if (e.key === "Enter" || e.key === " ") {
-                                                                                    e.preventDefault();
-                                                                                    (e.currentTarget as HTMLButtonElement).click();
-                                                                                }
-                                                                            }}
-                                                                            onClick={() => {
-                                                                                setDetail({ shopId: s.id, item: it });
-                                                                                setGIndex(0);
-                                                                            }}
-                                                                            className="relative w-24 h-24 overflow-hidden rounded-xl bg-zinc-100 flex items-center justify-center shrink-0 border cursor-pointer group focus:outline-none focus:ring-2 focus:ring-zinc-900/50"
-                                                                            title="画像を開く"
-                                                                        >
-                                                                            {it.main_image_path ? (
-                                                                                <img
-                                                                                    src={`${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/public-images/${it.main_image_path}`}
-                                                                                    alt={it.name}
-                                                                                    className="w-full h-full object-cover transition-transform group-hover:scale-[1.02] pointer-events-none"
-                                                                                    loading="lazy"
-                                                                                    decoding="async"
-                                                                                />
-                                                                            ) : (
-                                                                                <span className="text-4xl pointer-events-none">{it.photo ?? "🛍️"}</span>
-                                                                            )}
+                                                        {visibleItems.map(it => (
+                                                            <ProductLine key={it.id} sid={s.id} it={it} />
+                                                        ))}
 
-                                                                            {/* ▼ のこり個数チップ（クリックを邪魔しない） */}
-                                                                            <span
-                                                                                aria-hidden="true"
-                                                                                className="pointer-events-none absolute left-1.5 bottom-1.5"
-                                                                            >
-                                                                                <RemainChip
-                                                                                    remain={Math.max(0, it.stock - getReserved(s.id, it.id))}
-                                                                                    className="shadow-sm" // オーバーレイ上で縁が沈まないように軽く影
-                                                                                />
-                                                                            </span>
-
-                                                                            {/* クリックを邪魔しない薄いオーバーレイ（必要なら） */}
-                                                                            <span className="pointer-events-none absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity bg-black/5" />
-                                                                        </button>
-
-                                                                        {/* テキスト側 → 詳細モーダルを開く */}
-                                                                        <button
-                                                                            type="button"
-                                                                            onClick={() => setDetail({ shopId: s.id, item: it })}
-                                                                            className="flex-1 min-w-0 text-left"
-                                                                        >
-                                                                            <div className="w-full text-md font-bold leading-tight break-words line-clamp-2 min-h-[2.5rem]">
-                                                                                {it.name}
-                                                                            </div>
-                                                                            <div className="mt-0.5 text-xs text-zinc-500 flex items-center gap-1 w-full">
-                                                                                <span>⏰</span>
-                                                                                <span className="truncate">受取 {it.pickup}</span>
-                                                                            </div>
-                                                                            <div className="mt-2 text-base font-semibold">{currency(it.price)}</div>
-                                                                        </button>
-                                                                    </div>
-
-
-                                                                    {/* 右下：数量チップ（ボタン外、下寄せ） */}
-                                                                    <div
-                                                                        className="absolute bottom-0 right-1 rounded-full px-2 py-1"
-                                                                        onClick={(e) => e.stopPropagation()}
-                                                                    >
-                                                                        <QtyChip sid={s.id} it={it} />
-                                                                    </div>
-                                                                </div>
-                                                            );
-                                                        })}
                                                     </div>
                                                 ) : (
                                                     <div className="mt-3">
@@ -1645,53 +1658,9 @@ export default function UserPilotApp() {
                                         <div className="text-sm font-semibold">{shopsById.get(sid)?.name || sid}</div>
                                     </div>
                                     <div className="p-4 divide-y divide-zinc-200">
-                                        {(cartByShop[sid] || []).map((l) => {
-                                            const reserved = getReserved(sid, l.item.id);
-                                            const remain = Math.max(0, l.item.stock - reserved);
-
-                                            return (
-                                                <div
-                                                    key={`${l.item.id}-${sid}`}
-                                                    className="flex items-center justify-between gap-3 py-3"
-                                                >
-                                                    {/* 左：商品名 + メタ情報（受取 → のこり → 商品単価） */}
-                                                    <div className="min-w-0 flex-1">
-                                                        <div className="truncate text-sm font-medium">
-                                                            {l.item.name}
-                                                        </div>
-
-
-
-                                                        {/* 1) 受取時間 */}
-                                                        <div className="mt-1 text-xs text-zinc-700 flex items-center gap-1">
-                                                            <span>⏰</span>
-                                                            <span className="truncate">受取 {l.item.pickup}</span>
-                                                        </div>
-
-                                                        {/* 3) 商品単価 */}
-                                                        <div className="mt-1 text-xs text-zinc-700">
-                                                            {/* <span>商品単価</span> */}
-                                                            <span className="ml-1 tabular-nums font-semibold text-zinc-900">
-                                                                {currency(l.item.price)}
-                                                            </span>
-                                                        </div>
-                                                    </div>
-
-                                                    <div className="flex flex-col items-end gap-1 shrink-0">
-                                                        {/* のこり n 個（text-xsで統一） */}
-                                                        <span title={`在庫 ${l.item.stock} / 予約済 ${reserved}`}>
-                                                            <RemainChip remain={remain} className="text-xs" />
-                                                        </span>
-                                                        {/* 数量増減チップ */}
-                                                        <div onClick={(e) => e.stopPropagation()}>
-                                                            <QtyChip sid={sid} it={l.item} />
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                            );
-
-                                        })}
-
+                                        {(cartByShop[sid] || []).map((l) => (
+                                            <ProductLine key={`${l.item.id}-${sid}`} sid={sid} it={l.item} noChrome />
+                                        ))}
                                     </div>
 
                                     <div className="px-4 pt-3">
@@ -1966,9 +1935,12 @@ export default function UserPilotApp() {
 
                 {/* 商品詳細モーダル */}
                 {detail && (
-                    <div role="dialog" aria-modal="true" className="fixed inset-0 z-50">
-                        <div className="absolute inset-0 bg-black/40" onClick={() => setDetail(null)} />
-                        <div className="absolute inset-0 flex items-center justify-center p-4">
+                    <div role="dialog" aria-modal="true" className="fixed inset-0 z-[2000]">
+                        <div
+                            className="absolute inset-0 bg-black/40 z-[2000]"
+                            onClick={() => setDetail(null)}
+                        />
+                        <div className="absolute inset-0 flex items-center justify-center p-4 z-[2001]">
                             <div className="max-w-[520px] w-full bg-white rounded-2xl overflow-hidden shadow-xl">
                                 <div className="relative">
                                     {/* メイン画像（3枚ギャラリー） */}

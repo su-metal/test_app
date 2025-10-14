@@ -1156,12 +1156,233 @@ function ProductsPage() {
   );
 }
 
+// === 受取時間プリセット設定（店側） =====================================
+function PickupPresetPage() {
+  const supabase = (() => {
+    // 既存 useSupabase と同等のクライアントを取る（window.__supabase 優先）
+    const w = typeof window !== 'undefined' ? (window as any) : null;
+    if (w?.__supabase) return w.__supabase;
+    const url = w?.NEXT_PUBLIC_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const key = w?.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    if (!url || !key) return null;
+    return createClient<any>(url, key, { global: { headers: { 'x-store-id': String(getStoreId() || '') } } });
+  })();
+
+  type SlotNo = 1 | 2 | 3;
+  type PresetRow = {
+    slot_no: SlotNo;
+    name: string;
+    start_time: string;    // "HH:MM:SS"
+    end_time: string;      // "HH:MM:SS"
+    slot_minutes: number;  // 10固定
+  };
+
+  const SLOT_NUMBERS: SlotNo[] = [1, 2, 3];
+  const hhmm = (t: string) => t.slice(0, 5);
+  const hhmmss = (t: string) => (t.length === 5 ? `${t}:00` : t);
+
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [current, setCurrent] = useState<SlotNo | null>(1);
+  const [rows, setRows] = useState<Record<SlotNo, PresetRow>>({
+    1: { slot_no: 1, name: "通常", start_time: "10:00:00", end_time: "14:00:00", slot_minutes: 10 },
+    2: { slot_no: 2, name: "短縮1", start_time: "16:00:00", end_time: "20:00:00", slot_minutes: 10 },
+    3: { slot_no: 3, name: "短縮2", start_time: "18:00:00", end_time: "22:00:00", slot_minutes: 10 },
+  });
+
+  // 初期読み込み
+  useEffect(() => {
+    (async () => {
+      if (!supabase) return;
+      setLoading(true);
+      setMsg(null);
+
+      // 現在のスロット番号
+      const { data: store } = await (supabase as any)
+        .from('stores')
+        .select('id,current_pickup_slot_no')
+        .eq('id', getStoreId())
+        .single();
+      // any 経由で never 回避
+      const cur = (((store as any)?.current_pickup_slot_no) ?? 1) as SlotNo;
+
+      setCurrent(cur);
+
+      // 既存プリセット
+      const { data: presets } = await supabase
+        .from('store_pickup_presets')
+        .select('slot_no,name,start_time,end_time,slot_minutes')
+        .eq('store_id', getStoreId())
+        .order('slot_no', { ascending: true });
+
+      if (presets && presets.length) {
+        const m = { ...rows };
+        for (const p of presets as PresetRow[]) {
+          m[p.slot_no] = {
+            slot_no: p.slot_no,
+            name: p.name ?? '',
+            start_time: p.start_time ?? '10:00:00',
+            end_time: p.end_time ?? '14:00:00',
+            slot_minutes: Number(p.slot_minutes ?? 10),
+          };
+        }
+        setRows(m);
+      }
+
+      setLoading(false);
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const setRow = (slot: SlotNo, patch: Partial<PresetRow>) => {
+    setRows(prev => ({ ...prev, [slot]: { ...prev[slot], ...patch } }));
+  };
+
+  const errors = useMemo(() => {
+    const list: string[] = [];
+    for (const s of SLOT_NUMBERS) {
+      const r = rows[s];
+      if (!r.name.trim()) list.push(`プリセット${s}: 名称を入力してください`);
+      if (hhmm(r.start_time) >= hhmm(r.end_time)) list.push(`プリセット${s}: 開始は終了より前にしてください`);
+    }
+    return list;
+  }, [rows]);
+
+  const save = async () => {
+    if (!supabase) return;
+    setMsg(null);
+    if (errors.length) { setMsg(errors[0]); return; }
+    setSaving(true);
+    try {
+      // 3枠まとめて UPSERT（store_id も明示）※ onConflict は「store_id,slot_no」
+      const payload = SLOT_NUMBERS.map((s) => ({
+        store_id: getStoreId(),
+        slot_no: rows[s].slot_no,
+        name: rows[s].name.trim(),
+        start_time: hhmmss(hhmm(rows[s].start_time)),
+        end_time: hhmmss(hhmm(rows[s].end_time)),
+        slot_minutes: 10,
+      }));
+      // any 経由で never 回避
+      const up = await (supabase as any)
+        .from('store_pickup_presets')
+        .upsert(payload, { onConflict: 'store_id,slot_no' });
+
+      if (up.error) throw up.error;
+
+      // “今使う”スロットを stores に反映
+      if (current) {
+        const st = await (supabase as any)
+          .from('stores')
+          .update({ current_pickup_slot_no: current })
+          .eq('id', getStoreId());
+
+        if (st.error) throw st.error;
+      }
+
+      setMsg('保存しました。ユーザーアプリに即時反映されます。');
+    } catch (e: any) {
+      setMsg(`保存に失敗しました: ${e?.message ?? e}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading) return <main className="mx-auto max-w-[448px] px-4 py-5"><div className="rounded-xl border bg-white p-4 text-sm text-zinc-600">読み込み中…</div></main>;
+
+  return (
+    <main className="mx-auto max-w-[448px] px-4 py-5 space-y-6">
+      <div className="mb-1">
+        <h1 className="text-lg font-semibold">受取時間プリセット設定</h1>
+        <p className="text-sm text-zinc-600">最大3つのプリセットを編集し、「今使う」を選択してください（10分刻み）。</p>
+      </div>
+
+      <section className="space-y-4">
+        {[1, 2, 3].map((slot) => {
+          const r = rows[slot as SlotNo];
+          return (
+            <div key={slot} className="rounded-2xl border bg-white p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="font-medium">プリセット {slot}</div>
+                <label className="inline-flex items-center gap-2 text-sm">
+                  <input
+                    type="radio"
+                    name="current"
+                    checked={current === slot}
+                    onChange={() => setCurrent(slot as SlotNo)}
+                  />
+                  今使う
+                </label>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div>
+                  <label className="block text-xs text-zinc-500 mb-1">名称</label>
+                  <input
+                    className="w-full rounded-xl border px-3 py-2"
+                    maxLength={20}
+                    placeholder={`通常 / 短縮${slot - 1} など`}
+                    value={r.name}
+                    onChange={(e) => setRow(slot as SlotNo, { name: e.target.value })}
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs text-zinc-500 mb-1">開始</label>
+                  <input
+                    type="time"
+                    step={600}
+                    className="w-full rounded-xl border px-3 py-2"
+                    value={hhmm(r.start_time)}
+                    onChange={(e) => setRow(slot as SlotNo, { start_time: hhmmss(e.target.value) })}
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs text-zinc-500 mb-1">終了</label>
+                  <input
+                    type="time"
+                    step={600}
+                    className="w-full rounded-xl border px-3 py-2"
+                    value={hhmm(r.end_time)}
+                    onChange={(e) => setRow(slot as SlotNo, { end_time: hhmmss(e.target.value) })}
+                  />
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </section>
+
+      {msg && <div className="text-sm text-zinc-700">{msg}</div>}
+
+      <div className="flex justify-end">
+        <button
+          type="button"
+          onClick={save}
+          disabled={saving}
+          className={`px-4 py-2 rounded-2xl text-white ${saving ? 'bg-zinc-400' : 'bg-zinc-900 hover:bg-zinc-800'}`}
+        >
+          {saving ? '保存中…' : '保存する'}
+        </button>
+      </div>
+    </main>
+  );
+}
+
+
 
 export default function StoreApp() {
   const mounted = useMounted();
-  const [route, setRoute] = useState<'orders' | 'products'>('orders');
+  const [route, setRoute] = useState<'orders' | 'products' | 'pickup'>('orders');
+
   useEffect(() => {
-    const read = () => { const h = (typeof window !== 'undefined' ? window.location.hash.replace('#/', '') : '') as 'orders' | 'products'; setRoute(h === 'products' ? 'products' : 'orders'); };
+    const read = () => {
+      const h = (typeof window !== 'undefined' ? window.location.hash.replace('#/', '') : '') as 'orders' | 'products' | 'pickup';
+      setRoute(h === 'products' ? 'products' : h === 'pickup' ? 'pickup' : 'orders');
+    };
+
     read(); window.addEventListener('hashchange', read); return () => window.removeEventListener('hashchange', read);
   }, []);
   const routeForUI = mounted ? route : 'orders';
@@ -1174,10 +1395,19 @@ export default function StoreApp() {
           <nav className="flex flex-wrap items-center gap-1 gap-y-1 text-sm">
             <a href="#/orders" className={`px-3 py-1.5 rounded-lg border shrink-0 ${routeForUI === 'orders' ? 'bg-zinc-900 text-white border-zinc-900' : 'bg-white text-zinc-700 hover:bg-zinc-50'}`} suppressHydrationWarning>注文管理</a>
             <a href="#/products" className={`px-3 py-1.5 rounded-lg border shrink-0 ${routeForUI === 'products' ? 'bg-zinc-900 text-white border-zinc-900' : 'bg-white text-zinc-700 hover:bg-zinc-50'}`} suppressHydrationWarning>商品管理</a>
+            <a
+              href="#/pickup"
+              className={`px-3 py-1.5 rounded-lg border shrink-0 ${routeForUI === 'pickup' ? 'bg-zinc-900 text-white border-zinc-900' : 'bg-white text-zinc-700 hover:bg-zinc-50'
+                }`}
+              suppressHydrationWarning
+            >
+              受取時間
+            </a>
+
           </nav>
         </div>
       </header>
-      {routeForUI === 'orders' ? <OrdersPage /> : <ProductsPage />}
+      {routeForUI === 'orders' ? <OrdersPage /> : routeForUI === 'products' ? <ProductsPage /> : <PickupPresetPage />}
     </div>
   );
 }

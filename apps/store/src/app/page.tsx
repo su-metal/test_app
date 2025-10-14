@@ -75,6 +75,9 @@ type Product = {
 };
 
 // ===== Util =====
+type Slot = "main" | "sub1" | "sub2";
+const slotJp = (s: Slot) => (s === "main" ? "メイン" : s === "sub1" ? "サブ1" : "サブ2");
+
 const getStoreId = () =>
   (typeof window !== "undefined" && (window as any).__STORE_ID__) ||
   (typeof process !== "undefined" && (process.env?.NEXT_PUBLIC_STORE_ID as string | undefined)) ||
@@ -891,8 +894,6 @@ function PickupSlotModal({
 
 function useImageUpload() {
   const supabase = useSupabase();
-
-  type Slot = "main" | "sub1" | "sub2";
   const colOf = (slot: Slot) =>
     slot === "main" ? "main_image_path" :
       slot === "sub1" ? "sub_image_path1" : "sub_image_path2";
@@ -998,8 +999,6 @@ function useImageUpload() {
 }
 
 
-
-
 function ProductForm() {
   useEnsureAuth(); // ★ 追加：匿名ログインで authenticated を確保
   const { products, perr, ploading, add, remove, updateStock, updatePickupSlot, reload } = useProducts();
@@ -1048,10 +1047,13 @@ function ProductForm() {
   const [editPickupVal, setEditPickupVal] = useState<number | null>(null);
   // 受け取り時間 変更モーダル用 state
   const [pickupDlg, setPickupDlg] = useState<null | { id: string; name: string; current: number | null }>(null);
-
-
-
-
+  // ▼ やさしいトースト（非モーダル）
+  const [toastMsg, setToastMsg] = useState<string | null>(null);
+  const gentleWarn = useCallback((msg: string) => {
+    setToastMsg(msg);
+    // 2秒で自動消去
+    setTimeout(() => setToastMsg(null), 2000);
+  }, []);
 
   return (
     <div className="rounded-2xl border bg-white p-4 space-y-3">
@@ -1211,6 +1213,7 @@ function ProductForm() {
 
               {/* 操作UI（価格 → 受け取り時間 → ボタン2列） */}
               <div className="px-4 pb-4 space-y-3">
+
                 {/* 1) 価格は右寄せ・独立行（はみ出し対策） */}
 
                 {/* 2) 受け取り時間（表示 + 変更ボタン → モーダルで編集） */}
@@ -1228,8 +1231,6 @@ function ProductForm() {
                   </div>
                 </div>
 
-
-
                 {/* 3) 在庫調整 / 削除（横並び） */}
                 <div className="grid grid-cols-2 gap-3">
                   <button
@@ -1245,131 +1246,186 @@ function ProductForm() {
                     }}
                     className="w-full px-3 py-2 rounded-xl bg-red-50 text-red-600 text-sm hover:bg-red-100"
                   >
-                    削除
+                    商品削除
                   </button>
                 </div>
               </div>
 
+
               {/* 3枚サムネ（メイン/サブ1/サブ2）— スマホで列幅にフィット */}
               <div className="px-4 py-3">
-                <div className="grid grid-cols-3 gap-2">
-                  {[
-                    { slot: "main" as const, label: "メイン", path: p.main_image_path },
-                    { slot: "sub1" as const, label: "サブ1", path: p.sub_image_path1 },
-                    { slot: "sub2" as const, label: "サブ2", path: p.sub_image_path2 },
-                  ].map(({ slot, label, path }) => {
-                    const inputId = `product-image-${p.id}-${slot}`;
-                    return (
-                      <div key={slot} className="flex flex-col items-center w-full">
-                        <input
-                          id={inputId}
-                          type="file"
-                          accept="image/*;capture=camera"
-                          capture="environment"
-                          className="hidden"
-                          onChange={async (e) => {
-                            const inputEl = e.currentTarget as HTMLInputElement | null;
-                            const file = inputEl?.files?.[0];
-                            if (!file) return;
-                            try {
-                              setUploadingId(p.id);
-                              await uploadProductImage(p.id, file, slot);
-                              await reload();
-                              setImgVer((v) => v + 1);
-                              alert(`${label}画像を更新しました`);
-                            } catch (err: any) {
-                              alert(`アップロードに失敗しました: ${err?.message ?? err}`);
-                            } finally {
-                              setUploadingId(null);
-                              if (inputEl) inputEl.value = "";
-                            }
-                          }}
-                          disabled={ploading || uploadingId === p.id}
-                        />
+                {(() => {
+                  // ★ 追加：この商品の画像が全部空なら、サブをロック
+                  const allImagesEmpty =
+                    !p.main_image_path && !p.sub_image_path1 && !p.sub_image_path2;
 
-                        <label
-                          htmlFor={inputId}
-                          className="relative block w-full aspect-square overflow-hidden rounded-xl border bg-zinc-50 cursor-pointer group"
-                          aria-label={`${p.name} の${label}画像をアップロード/変更`}
-                          title={`${label}をタップしてアップロード/変更`}
-                        >
-                          {path ? (
-                            <img
-                              src={`${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/public-images/${path}?v=${imgVer ?? 0}`}
-                              alt={`${p.name} ${label}`}
-                              className="w-full h-full object-cover transition-transform group-hover:scale-[1.02]"
-                              loading="lazy"
-                              decoding="async"
+                  return (
+                    <div className="grid grid-cols-3 gap-2">
+                      {[
+                        { slot: "main" as const, label: "メイン", path: p.main_image_path },
+                        { slot: "sub1" as const, label: "", path: p.sub_image_path1 },
+                        { slot: "sub2" as const, label: "", path: p.sub_image_path2 },
+                      ].map(({ slot, label, path }) => {
+                        const inputId = `product-image-${p.id}-${slot}`;
+
+                        // ★ 追加：全空のときはメイン以外ロック
+                        const locked = allImagesEmpty && slot !== "main";
+
+                        return (
+                          <div key={slot} className="flex flex-col items-center w-full">
+                            {/* hidden input: 差し替え用 */}
+                            <input
+                              id={inputId}
+                              type="file"
+                              accept="image/*;capture=camera"
+                              capture="environment"
+                              className="hidden"
+                              onChange={async (e) => {
+                                const inputEl = e.currentTarget as HTMLInputElement | null;
+                                const file = inputEl?.files?.[0];
+                                if (!file) return;
+                                try {
+                                  setUploadingId(p.id);
+                                  await uploadProductImage(p.id, file, slot);
+                                  await reload();
+                                  setImgVer((v) => v + 1);
+                                  alert(`${(label || slotJp(slot))}画像を更新しました`);
+                                } catch (err: any) {
+                                  alert(`アップロードに失敗しました: ${err?.message ?? err}`);
+                                } finally {
+                                  setUploadingId(null);
+                                  if (inputEl) inputEl.value = "";
+                                }
+                              }}
+                              // ★ 追加：ロック時は input 自体も無効化
+                              disabled={locked || ploading || uploadingId === p.id}
                             />
-                          ) : (
-                            <div className="w-full h-full grid place-items-center text-[11px] text-zinc-500">
-                              画像なし
-                              <div className="text-[10px] mt-0.5">タップで追加</div>
-                            </div>
-                          )}
-                          <div className="pointer-events-none absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity bg-black/5" />
-                          {uploadingId === p.id && (
-                            <div className="absolute inset-0 grid place-items-center text-xs bg-white/70">
-                              更新中…
-                            </div>
-                          )}
-                          <span
-                            className="pointer-events-none absolute bottom-1 right-1 text-[10px] px-1 rounded bg-white/85 shadow-sm
-             opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
-                          >
-                            {path ? '変更' : '追加'}
-                          </span>
 
-                        </label>
-                        {/* カメラから直接アップロード */}
-                        <div className="mt-1 w-full">
-                          <button
-                            type="button"
-                            className="w-full rounded-lg border px-2 py-1 text-[11px] hover:bg-zinc-50"
-                            onClick={() => setCam({ productId: p.id, slot, label, name: p.name })}
-                            disabled={ploading || uploadingId === p.id}
-                          >
-                            カメラで撮る
-                          </button>
-                          {/* 画像削除（画像がある時のみ活性） */}
-                          {path ? (
+                            {/* サムネ本体（クリックで input を開く） */}
+                            <label
+                              htmlFor={inputId}
+                              className={`relative block w-full aspect-square overflow-hidden rounded-xl border bg-zinc-50 cursor-pointer group`}
+                              aria-label={`${p.name} の${(label || slotJp(slot))}画像をアップロード/変更`}
+                              title={`${(label || slotJp(slot))}をタップしてアップロード/変更`}
+                              // ★ 追加：ロック時はクリックを止めてトースト
+                              onClick={(e) => {
+                                if (locked) {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  gentleWarn("まずはメイン画像を登録してください");
+                                }
+                              }}
+                            >
+                              {path ? (
+                                <img
+                                  src={`${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/public-images/${path}?v=${imgVer ?? 0}`}
+                                  alt={`${p.name} ${(label || slotJp(slot))}`}
+                                  className="w-full h-full object-cover transition-transform group-hover:scale-[1.02]"
+                                  loading="lazy"
+                                  decoding="async"
+                                />
+                              ) : (
+                                <div className="w-full h-full grid place-items-center text-[11px] text-zinc-500">
+
+                                  <div className="text-[10px] mt-0.5">
+                                    {locked ? "メイン登録後に追加" : "タップで追加"}
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* 軽いホバーオーバーレイ */}
+                              <div className="pointer-events-none absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity bg-black/5" />
+
+                              {/* アップロード中オーバーレイ */}
+                              {uploadingId === p.id && (
+                                <div className="absolute inset-0 grid place-items-center text-xs bg-white/70">
+                                  更新中…
+                                </div>
+                              )}
+
+                              {/* 右下の「変更/追加」バッジ（SP常時/PCホバー） */}
+                              <span
+                                className="pointer-events-none absolute bottom-1 right-1 text-[10px] px-1 rounded bg-white/85 shadow-sm
+                             opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
+                              >
+                                {path ? "変更" : "追加"}
+                              </span>
+
+                              {/* 左上の「メイン/サブ」ラベル（常時表示） */}
+                              <span
+                                className="pointer-events-none absolute top-1 left-1 text-[10px] px-1 rounded bg-white/90 shadow-sm"
+                              >
+                                {label || slotJp(slot)}
+                              </span>
+
+                              {/* ★ 追加：ロック中かつ未画像のときはやさしい帯を表示（視覚補助） */}
+                              {locked && !path && (
+                                <div className="absolute inset-x-1 bottom-1 rounded bg-amber-50/95 text-amber-800 text-[10px] px-2 py-1 shadow-sm pointer-events-none">
+                                  メイン画像を先に登録してください
+                                </div>
+                              )}
+                            </label>
+
+                            {/* 下部の「カメラで撮る／削除」を使う場合はロック反映（任意） */}
                             <div className="mt-1 w-full">
                               <button
                                 type="button"
-                                className="w-full rounded-lg border px-2 py-1 text-[11px] text-red-600 hover:bg-red-50"
-                                onClick={async () => {
-                                  if (!confirm(`${label}画像を削除しますか？`)) return;
-                                  try {
-                                    setUploadingId(p.id);
-                                    await deleteProductImage(p.id, slot);
-                                    await reload();
-                                    setImgVer(v => v + 1);
-                                    alert(`${label}画像を削除しました`);
-                                  } catch (e: any) {
-                                    alert(`削除に失敗しました: ${e?.message ?? e}`);
-                                  } finally {
-                                    setUploadingId(null);
-                                  }
+                                className="w-full rounded-lg border px-2 py-1 text-[11px] hover:bg-zinc-50"
+                                onClick={() => {
+                                  if (locked) { gentleWarn("まずはメイン画像を登録してください"); return; }
+                                  setCam({ productId: p.id, slot, label: (label || slotJp(slot)), name: p.name });
                                 }}
-                                disabled={ploading || uploadingId === p.id}
+                                disabled={locked || ploading || uploadingId === p.id}
                               >
-                                削除
+                                カメラで撮る
                               </button>
+
+                              {path ? (
+                                <div className="mt-1 w-full">
+                                  <button
+                                    type="button"
+                                    className="w-full rounded-lg border px-2 py-1 text-[11px] text-red-600 hover:bg-red-50"
+                                    onClick={async () => {
+                                      if (locked) { gentleWarn("まずはメイン画像を登録してください"); return; }
+                                      if (!confirm(`${(label || slotJp(slot))}画像を削除しますか？`)) return;
+                                      try {
+                                        setUploadingId(p.id);
+                                        await deleteProductImage(p.id, slot);
+                                        await reload();
+                                        setImgVer(v => v + 1);
+                                        alert(`${(label || slotJp(slot))}画像を削除しました`);
+                                      } catch (e: any) {
+                                        alert(`削除に失敗しました: ${e?.message ?? e}`);
+                                      } finally {
+                                        setUploadingId(null);
+                                      }
+                                    }}
+                                    disabled={locked || ploading || uploadingId === p.id}
+                                  >
+                                    削除
+                                  </button>
+                                </div>
+                              ) : null}
                             </div>
-                          ) : null}
-
-                        </div>
-
-                        <div className="mt-1 text-[10px] text-zinc-600">{label}</div>
-                      </div>
-                    );
-                  })}
-                </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
               </div>
+
             </div>
           );
         })}
       </div>
+
+      {/* ▼ 軽量トースト：下部にふわっと表示 */}
+      {toastMsg && (
+        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-[80] px-3 py-2 rounded-full text-[12px] bg-zinc-900 text-white shadow-lg">
+          {toastMsg}
+        </div>
+      )}
 
       {/* カメラ撮影モーダル */}
       {cam && (

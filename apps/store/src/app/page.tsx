@@ -799,10 +799,69 @@ function ProductForm() {
   return (
     <div className="rounded-2xl border bg-white p-4 space-y-3">
       <SectionTitle>商品</SectionTitle>
-      <form className="flex flex-wrap items-center gap-2" onSubmit={(e) => { e.preventDefault(); add({ name: name.trim(), price: Number(price || 0), stock: Number(stock || 0), pickup_slot_no: pickupSlotForNew, }); setName(""); setPrice(""); setStock(""); setPickupSlotForNew(null); }}>
-        <input className="rounded-xl border px-3 py-2 text-sm" placeholder="商品名" value={name} onChange={e => setName(e.target.value)} required />
-        <input className="rounded-xl border px-3 py-2 text-sm" placeholder="価格" inputMode="numeric" value={price} onChange={e => setPrice(e.target.value)} />
-        <input className="rounded-xl border px-3 py-2 text-sm" placeholder="在庫" inputMode="numeric" value={stock} onChange={e => setStock(e.target.value)} />
+      <form
+        className="flex flex-wrap items-center gap-2"
+        onSubmit={(e) => {
+          e.preventDefault();
+
+          const nameOk = name.trim().length > 0;
+          const priceNum = Math.floor(Number(price));
+          const stockNum = Math.floor(Number(stock));
+          const priceOk = Number.isFinite(priceNum) && priceNum >= 1;
+          const stockOk = Number.isFinite(stockNum) && stockNum >= 0;
+          const pickupOk = pickupSlotForNew !== null;
+
+          if (!nameOk) { alert('商品名は必須です'); return; }
+          if (!priceOk) { alert('価格は1以上の整数で入力してください'); return; }
+          if (!stockOk) { alert('在庫は0以上の整数で入力してください'); return; }
+          if (!pickupOk) { alert('受け取り時間を選択してください'); return; }
+
+          add({
+            name: name.trim(),
+            price: priceNum,
+            stock: stockNum,
+            pickup_slot_no: pickupSlotForNew,
+          });
+
+          setName("");
+          setPrice("");
+          setStock("");
+          setPickupSlotForNew(null);
+        }}
+      >
+
+        <input
+          className="rounded-xl border px-3 py-2 text-sm"
+          placeholder="商品名"
+          value={name}
+          onChange={e => setName(e.target.value)}
+          required
+        />
+
+        <input
+          className="rounded-xl border px-3 py-2 text-sm"
+          placeholder="価格"
+          type="number"
+          inputMode="numeric"
+          min={1}
+          step={1}
+          value={price}
+          onChange={e => setPrice(e.target.value)}
+          required
+        />
+
+        <input
+          className="rounded-xl border px-3 py-2 text-sm"
+          placeholder="在庫"
+          type="number"
+          inputMode="numeric"
+          min={0}
+          step={1}
+          value={stock}
+          onChange={e => setStock(e.target.value)}
+          required
+        />
+
         <select
           className="rounded-xl border px-3 py-2 text-sm"
           value={pickupSlotForNew === null ? '' : String(pickupSlotForNew)}
@@ -820,7 +879,19 @@ function ProductForm() {
 
         </select>
         <input className="rounded-xl border px-3 py-2 text-sm bg-zinc-50" value={`店側受取額 ${yen(take)}`} readOnly aria-label="店側受取額" />
-        <button className="rounded-xl bg-zinc-900 text-white px-3 py-2 text-sm" disabled={ploading}>追加</button>
+        <button
+          className="rounded-xl bg-zinc-900 text-white px-3 py-2 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+          disabled={
+            ploading ||
+            !name.trim() ||
+            !price.trim() ||
+            !stock.trim() ||
+            pickupSlotForNew === null
+          }
+        >
+          追加
+        </button>
+
       </form>
       {perr ? <div className="text-sm text-red-600">{perr}</div> : null}
       <div className="grid grid-cols-1 gap-3">
@@ -889,20 +960,22 @@ function ProductForm() {
                 <div>
                   <div className="text-sm font-medium mb-1">受け取り時間</div>
                   <select
-                    className="w-full rounded-xl border px-3 py-2 text-sm"
-                    value={p.pickup_slot_no == null ? '' : String(p.pickup_slot_no)}
+                    className="rounded-xl border px-3 py-2 text-sm"
+                    value={pickupSlotForNew === null ? '' : String(pickupSlotForNew)}
                     onChange={(e) => {
                       const v = e.target.value;
-                      updatePickupSlot(p.id, v === '' ? null : Number(v));
+                      setPickupSlotForNew(v === '' ? null : Number(v));
                     }}
-                    title="この商品の受け取り時間"
-                    aria-label="この商品の受け取り時間"
+                    aria-label="受け取り時間"
+                    title="受け取り時間"
+                    required
                   >
-                    <option value="">未指定</option>
+                    <option value="" disabled>選択してください（必須）</option>
                     <option value="1">{presets[1]?.name}（{presets[1]?.start}〜{presets[1]?.end}）</option>
                     <option value="2">{presets[2]?.name}（{presets[2]?.start}〜{presets[2]?.end}）</option>
                     <option value="3">{presets[3]?.name}（{presets[3]?.start}〜{presets[3]?.end}）</option>
                   </select>
+
                 </div>
 
                 {/* 3) 在庫調整 / 削除（横並び） */}

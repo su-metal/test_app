@@ -4,6 +4,8 @@ import { createClient } from '@supabase/supabase-js';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import 'leaflet/dist/leaflet.css';
 import dynamic from "next/dynamic";
+// 追加：受取時間の表示コンポーネント
+import PickupTimeSelector, { type PickupSlot } from "@/components/PickupTimeSelector";
 
 // page.tsx より抜粋（MapViewの使用部分）
 const MapView = dynamic(() => import("@/components/MapView"), { ssr: false });
@@ -409,6 +411,8 @@ export default function UserPilotApp() {
     const [shops, setShops] = useLocalStorageState<Shop[]>(K.shops, seedShops);
     const [cart, setCart] = useLocalStorageState<CartLine[]>(K.cart, []);
     const [orders, setOrders] = useLocalStorageState<Order[]>(K.orders, []);
+    const [pickupByShop, setPickupByShop] = useState<Record<string, PickupSlot | null>>({});
+
     const [userEmail] = useLocalStorageState<string>(K.user, "");
     const [tab, setTab] = useState<"home" | "cart" | "order" | "account">("home");
     // タブの直前値を覚えておく
@@ -1393,18 +1397,6 @@ export default function UserPilotApp() {
                     {tab === "home" && (
                         <section className="mt-4 space-y-4">
                             <h2 className="text-base font-semibold">近くのお店</h2>
-                            {/* 店舗チップ群（ピン） */}
-                            {/* <div className="rounded-2xl border bg-white p-3 flex flex-wrap gap-2 text-sm">
-                                {shopsSorted.map((s) => (
-                                    <button key={`chip-${s.id}`} onClick={() => setFocusedShop(s.id)} className={`px-3 py-1 rounded-full border cursor-pointer flex items-center gap-1 ${focusedShop === s.id ? 'bg-zinc-900 text-white border-zinc-900' : 'bg-white'}`}>
-                                        <span>📍</span>
-                                        <span className="truncate max-w-[10rem]">{s.name}</span>
-                                    </button>
-                                ))}
-                                <div className="basis-full text-[11px] text-zinc-500 mt-1">ピンをタップすると下の店舗がハイライト</div>
-                            </div> */}
-
-
 
                             <div className="grid grid-cols-1 gap-3">
                                 {shopsSorted.map((s, idx) => {
@@ -1663,6 +1655,21 @@ export default function UserPilotApp() {
                                         ))}
                                     </div>
 
+                                    {/* 受け取り予定時間（必須） */}
+                                    <div className="px-4">
+                                        <div className="border-t mt-2 pt-3">
+                                            <PickupTimeSelector
+                                                storeId={sid}
+                                                value={pickupByShop[sid] ?? null}
+                                                onSelect={(slot) => setPickupByShop(prev => ({ ...prev, [sid]: slot }))}
+                                            />
+                                            {!pickupByShop[sid] && (
+                                                <p className="mt-2 text-xs text-red-500">受け取り予定時間を選択してください。</p>
+                                            )}
+                                        </div>
+                                    </div>
+
+
                                     <div className="px-4 pt-3">
                                         <div className="flex items-center justify-between text-sm">
                                             <span className="font-medium">合計金額</span>
@@ -1672,11 +1679,15 @@ export default function UserPilotApp() {
                                     <div className="p-4 border-t mt-2">
                                         <button
                                             type="button"
-                                            className="w-full px-3 py-2 rounded bg-zinc-900 text-white cursor-pointer"
-                                            onClick={() => toOrder(sid)}
+                                            onClick={() => { if (!pickupByShop[sid]) return; toOrder(sid); }}
+                                            disabled={!pickupByShop[sid]}
+                                            className={`w-full px-3 py-2 rounded text-white cursor-pointer
+    ${!pickupByShop[sid] ? "bg-zinc-300 cursor-not-allowed" : "bg-zinc-900 hover:bg-zinc-800"}`}
+                                            aria-disabled={!pickupByShop[sid]}
                                         >
                                             注文画面へ
                                         </button>
+
                                     </div>
                                 </div>
                             ))}

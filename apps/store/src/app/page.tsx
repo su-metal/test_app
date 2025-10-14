@@ -60,6 +60,7 @@ type ProductsRow = {
   main_image_path: string | null;
   sub_image_path1: string | null;
   sub_image_path2: string | null;
+  pickup_slot_no?: number | null;
 };
 
 type Product = {
@@ -70,6 +71,7 @@ type Product = {
   main_image_path: string | null;
   sub_image_path1: string | null;
   sub_image_path2: string | null;
+  pickup_slot_no?: number | null;
 };
 
 // ===== Util =====
@@ -124,6 +126,7 @@ function mapProduct(r: ProductsRow): Product {
     main_image_path: r.main_image_path ?? null,
     sub_image_path1: r.sub_image_path1 ?? null,
     sub_image_path2: r.sub_image_path2 ?? null,
+    pickup_slot_no: (r as any).pickup_slot_no ?? null,
   };
 }
 
@@ -236,6 +239,47 @@ function useBroadcast(name: string) {
   return { post } as const;
 }
 
+// ===== Pickup Presets (name + time) =====
+function usePickupPresets() {
+  const supabase = useSupabase();
+  const [presets, setPresets] = useState<Record<1 | 2 | 3, { name: string; start: string; end: string }>>({
+    1: { name: "プリセット1", start: "00:00", end: "00:00" },
+    2: { name: "プリセット2", start: "00:00", end: "00:00" },
+    3: { name: "プリセット3", start: "00:00", end: "00:00" },
+  });
+  const [loading, setLoading] = useState(false);
+
+  const hhmm = (t?: string | null) => (t ? t.slice(0, 5) : "00:00");
+
+  const load = useCallback(async () => {
+    if (!supabase) return;
+    setLoading(true);
+    const { data, error } = await supabase
+      .from("store_pickup_presets")
+      .select("slot_no,name,start_time,end_time")
+      .eq("store_id", getStoreId())
+      .order("slot_no", { ascending: true });
+
+    if (!error && Array.isArray(data)) {
+      const next = { ...presets };
+      for (const row of data as Array<{ slot_no: 1 | 2 | 3; name: string; start_time: string; end_time: string }>) {
+        next[row.slot_no] = {
+          name: row.name?.trim() || `プリセット${row.slot_no}`,
+          start: hhmm(row.start_time),
+          end: hhmm(row.end_time),
+        };
+      }
+      setPresets(next);
+    }
+    setLoading(false);
+  }, [supabase]);
+
+  useEffect(() => { load(); }, [load]);
+
+  return { presets, loading, reload: load } as const;
+}
+
+
 // ===== Products =====
 function useProducts() {
   const supabase = useSupabase();
@@ -245,18 +289,25 @@ function useProducts() {
 
   const load = useCallback(async () => {
     if (!supabase) return; setPloading(true); setPerr(null);
-    const { data, error } = await supabase.from('products').select('*').eq('store_id', getStoreId()).order('updated_at', { ascending: false });
+    const { data, error } = await supabase
+      .from('products').select('id,store_id,name,price,stock,updated_at,main_image_path,sub_image_path1,sub_image_path2,pickup_slot_no')
+      .eq('store_id', getStoreId())
+      .order('updated_at', { ascending: false });
     if (error) setPerr(error.message || '商品の取得に失敗しました');
     else setProducts(((data ?? []) as ProductsRow[]).map(mapProduct));
     setPloading(false);
   }, [supabase]);
   useEffect(() => { load(); }, [load]);
 
-  const add = useCallback(async (payload: { name: string; price: number; stock: number }) => {
+  const add = useCallback(async (payload: { name: string; price: number; stock: number; pickup_slot_no?: number | null }) => {
     if (!payload.name) { setPerr('商品名を入力してください'); return; }
     if (!supabase) return;
     setPloading(true); setPerr(null);
-    const { data, error } = await supabase.from('products').insert({ ...payload, store_id: getStoreId() }).select('*').single();
+    const { data, error } = await supabase
+      .from('products')
+      .insert({ ...payload, store_id: getStoreId(), pickup_slot_no: payload.pickup_slot_no ?? null })
+      .select('id,store_id,name,price,stock,updated_at,main_image_path,sub_image_path1,sub_image_path2,pickup_slot_no')
+      .single();
     if (error) setPerr(error.message || '商品の登録に失敗しました');
     else if (data) setProducts(prev => [mapProduct(data as ProductsRow), ...prev]);
     setPloading(false);
@@ -289,8 +340,25 @@ function useProducts() {
     }
     if (data) setProducts(prev => prev.map(p => p.id === id ? mapProduct(data as ProductsRow) : p));
   }, [supabase, load]);
-
-  return { products, perr, ploading, add, remove, updateStock, reload: load } as const;
+  const updatePickupSlot = useCallback(async (id: string, slot: number | null) => {
+    // 楽観更新
+    setProducts(prev => prev.map(p => p.id === id ? { ...p, pickup_slot_no: slot } : p));
+    if (!supabase) return;
+    const { data, error } = await supabase
+      .from('products')
+      .update({ pickup_slot_no: slot })
+      .eq('id', id)
+      .eq('store_id', getStoreId())
+      .select('id,store_id,name,price,stock,updated_at,main_image_path,sub_image_path1,sub_image_path2,pickup_slot_no')
+      .single();
+    if (error) {
+      // 失敗時はリロードで整合
+      await load();
+    } else if (data) {
+      setProducts(prev => prev.map(p => p.id === id ? mapProduct(data as ProductsRow) : p));
+    }
+  }, [supabase, load]);
+  return { products, perr, ploading, add, remove, updateStock, updatePickupSlot, reload: load } as const;
 }
 
 // ===== Orders =====
@@ -699,7 +767,7 @@ function useImageUpload() {
 
 function ProductForm() {
   useEnsureAuth(); // ★ 追加：匿名ログインで authenticated を確保
-  const { products, perr, ploading, add, remove, updateStock, reload } = useProducts();
+  const { products, perr, ploading, add, remove, updateStock, updatePickupSlot, reload } = useProducts();
   // ★ 画像のキャッシュ破り用バージョン
   const [imgVer, setImgVer] = useState(0);
   const [adjust, setAdjust] = useState<null | { id: string; name: string; stock: number }>(null);
@@ -707,6 +775,7 @@ function ProductForm() {
   const [name, setName] = useState("");
   const [price, setPrice] = useState("");
   const [stock, setStock] = useState("");
+  const [pickupSlotForNew, setPickupSlotForNew] = useState<number | null>(null); // null=未指定
   const take = storeTake(Number(price || 0));
   const { uploadProductImage } = useImageUpload();
   const [uploadingId, setUploadingId] = useState<string | null>(null);
@@ -723,15 +792,33 @@ function ProductForm() {
     const sum = list.reduce((acc, it) => acc + (it.next - it.current), 0);
     return { sum, count: list.length };
   }, [pending]);
+  const { presets } = usePickupPresets();
+
 
 
   return (
     <div className="rounded-2xl border bg-white p-4 space-y-3">
       <SectionTitle>商品</SectionTitle>
-      <form className="flex flex-wrap items-center gap-2" onSubmit={(e) => { e.preventDefault(); add({ name: name.trim(), price: Number(price || 0), stock: Number(stock || 0) }); setName(""); setPrice(""); setStock(""); }}>
+      <form className="flex flex-wrap items-center gap-2" onSubmit={(e) => { e.preventDefault(); add({ name: name.trim(), price: Number(price || 0), stock: Number(stock || 0), pickup_slot_no: pickupSlotForNew, }); setName(""); setPrice(""); setStock(""); setPickupSlotForNew(null); }}>
         <input className="rounded-xl border px-3 py-2 text-sm" placeholder="商品名" value={name} onChange={e => setName(e.target.value)} required />
         <input className="rounded-xl border px-3 py-2 text-sm" placeholder="価格" inputMode="numeric" value={price} onChange={e => setPrice(e.target.value)} />
         <input className="rounded-xl border px-3 py-2 text-sm" placeholder="在庫" inputMode="numeric" value={stock} onChange={e => setStock(e.target.value)} />
+        <select
+          className="rounded-xl border px-3 py-2 text-sm"
+          value={pickupSlotForNew === null ? '' : String(pickupSlotForNew)}
+          onChange={(e) => {
+            const v = e.target.value;
+            setPickupSlotForNew(v === '' ? null : Number(v));
+          }}
+          aria-label="受取プリセット"
+          title="受取プリセット"
+        >
+          <option value="">未指定</option>
+          <option value="1">{presets[1]?.name}（{presets[1]?.start}〜{presets[1]?.end}）</option>
+          <option value="2">{presets[2]?.name}（{presets[2]?.start}〜{presets[2]?.end}）</option>
+          <option value="3">{presets[3]?.name}（{presets[3]?.start}〜{presets[3]?.end}）</option>
+
+        </select>
         <input className="rounded-xl border px-3 py-2 text-sm bg-zinc-50" value={`店側受取額 ${yen(take)}`} readOnly aria-label="店側受取額" />
         <button className="rounded-xl bg-zinc-900 text-white px-3 py-2 text-sm" disabled={ploading}>追加</button>
       </form>
@@ -741,7 +828,7 @@ function ProductForm() {
           return (
             <div key={p.id} className="rounded-2xl border bg-white shadow-sm overflow-hidden">
               {/* ヘッダー：商品名 + 在庫チップ（価格は下段に移動） */}
-              <div className="px-4 pt-4">
+              <div className="px-4 pt-4 mb-4">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
                     <div
@@ -785,8 +872,56 @@ function ProductForm() {
                     })() : null}
 
                   </div>
-                  {/* 右側は空ける（価格表示は下段へ移動） */}
-                  <div className="shrink-0" />
+
+                  {/* 右側：価格・店側受取（ヘッダー内に配置） */}
+                  <div className="shrink-0 text-right leading-tight">
+                    <div className="text-xl font-bold tabular-nums">{yen(p.price)}</div>
+                    <div className="text-[11px] text-zinc-500">店側受取 {yen(storeTake(p.price))}</div>
+                  </div>
+                </div>
+              </div>
+
+              {/* 操作UI（価格 → 受け取り時間 → ボタン2列） */}
+              <div className="px-4 pb-4 space-y-3">
+                {/* 1) 価格は右寄せ・独立行（はみ出し対策） */}
+
+                {/* 2) 受け取り時間（フル幅） */}
+                <div>
+                  <div className="text-sm font-medium mb-1">受け取り時間</div>
+                  <select
+                    className="w-full rounded-xl border px-3 py-2 text-sm"
+                    value={p.pickup_slot_no == null ? '' : String(p.pickup_slot_no)}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      updatePickupSlot(p.id, v === '' ? null : Number(v));
+                    }}
+                    title="この商品の受け取り時間"
+                    aria-label="この商品の受け取り時間"
+                  >
+                    <option value="">未指定</option>
+                    <option value="1">{presets[1]?.name}（{presets[1]?.start}〜{presets[1]?.end}）</option>
+                    <option value="2">{presets[2]?.name}（{presets[2]?.start}〜{presets[2]?.end}）</option>
+                    <option value="3">{presets[3]?.name}（{presets[3]?.start}〜{presets[3]?.end}）</option>
+                  </select>
+                </div>
+
+                {/* 3) 在庫調整 / 削除（横並び） */}
+                <div className="grid grid-cols-2 gap-3">
+                  <button
+                    onClick={() => setAdjust({ id: p.id, name: p.name, stock: p.stock })}
+                    className="w-full px-3 py-2 rounded-xl border text-sm hover:bg-zinc-50"
+                  >
+                    在庫調整
+                  </button>
+                  <button
+                    onClick={async () => {
+                      if (!confirm(`「${p.name}」を削除しますか？`)) return;
+                      try { await remove(p.id); } catch (e: any) { alert(`削除に失敗しました: ${e?.message ?? e}`); }
+                    }}
+                    className="w-full px-3 py-2 rounded-xl bg-red-50 text-red-600 text-sm hover:bg-red-100"
+                  >
+                    削除
+                  </button>
                 </div>
               </div>
 
@@ -865,38 +1000,8 @@ function ProductForm() {
               </div>
 
 
-              {/* 操作ボタン列（視認性＆押しやすさUP） */}
-              {/* 操作＆金額（左=ボタン / 右=価格・店側受取） */}
-              <div className="px-4 pb-4">
-                <div className="flex items-center justify-between gap-3">
-                  {/* 左：操作ボタンを左寄せ */}
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => setAdjust({ id: p.id, name: p.name, stock: p.stock })}
-                      className="px-3 py-2 rounded-lg border text-sm hover:bg-zinc-50"
-                    >
-                      在庫調整
-                    </button>
 
-                    <button
-                      onClick={async () => {
-                        if (!confirm(`「${p.name}」を削除しますか？`)) return;
-                        try { await remove(p.id); }
-                        catch (e: any) { alert(`削除に失敗しました: ${e?.message ?? e}`); }
-                      }}
-                      className="px-3 py-2 rounded-lg bg-red-50 text-red-600 text-sm hover:bg-red-100"
-                    >
-                      削除
-                    </button>
-                  </div>
 
-                  {/* 右：価格・店側受取（強調表示） */}
-                  <div className="text-right shrink-0">
-                    <div className="text-2xl font-bold leading-none tabular-nums">{yen(p.price)}</div>
-                    <div className="text-[11px] text-zinc-500 mt-1">店側受取 {yen(storeTake(p.price))}</div>
-                  </div>
-                </div>
-              </div>
 
             </div>
           );
@@ -1156,12 +1261,234 @@ function ProductsPage() {
   );
 }
 
+// === 受取時間プリセット設定（店側） =====================================
+function PickupPresetPage() {
+  const supabase = (() => {
+    // 既存 useSupabase と同等のクライアントを取る（window.__supabase 優先）
+    const w = typeof window !== 'undefined' ? (window as any) : null;
+    if (w?.__supabase) return w.__supabase;
+    const url = w?.NEXT_PUBLIC_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const key = w?.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    if (!url || !key) return null;
+    return createClient<any>(url, key, { global: { headers: { 'x-store-id': String(getStoreId() || '') } } });
+  })();
+
+
+  type SlotNo = 1 | 2 | 3;
+  type PresetRow = {
+    slot_no: SlotNo;
+    name: string;
+    start_time: string;    // "HH:MM:SS"
+    end_time: string;      // "HH:MM:SS"
+    slot_minutes: number;  // 10固定
+  };
+
+  const SLOT_NUMBERS: SlotNo[] = [1, 2, 3];
+  const hhmm = (t: string) => t.slice(0, 5);
+  const hhmmss = (t: string) => (t.length === 5 ? `${t}:00` : t);
+
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [current, setCurrent] = useState<SlotNo | null>(1);
+  const [rows, setRows] = useState<Record<SlotNo, PresetRow>>({
+    1: { slot_no: 1, name: "通常", start_time: "10:00:00", end_time: "14:00:00", slot_minutes: 10 },
+    2: { slot_no: 2, name: "短縮1", start_time: "16:00:00", end_time: "20:00:00", slot_minutes: 10 },
+    3: { slot_no: 3, name: "短縮2", start_time: "18:00:00", end_time: "22:00:00", slot_minutes: 10 },
+  });
+
+  // 初期読み込み
+  useEffect(() => {
+    (async () => {
+      if (!supabase) return;
+      setLoading(true);
+      setMsg(null);
+
+      // 現在のスロット番号
+      const { data: store } = await (supabase as any)
+        .from('stores')
+        .select('id,current_pickup_slot_no')
+        .eq('id', getStoreId())
+        .single();
+      // any 経由で never 回避
+      const cur = (((store as any)?.current_pickup_slot_no) ?? 1) as SlotNo;
+
+      setCurrent(cur);
+
+      // 既存プリセット
+      const { data: presets } = await supabase
+        .from('store_pickup_presets')
+        .select('slot_no,name,start_time,end_time,slot_minutes')
+        .eq('store_id', getStoreId())
+        .order('slot_no', { ascending: true });
+
+      if (presets && presets.length) {
+        const m = { ...rows };
+        for (const p of presets as PresetRow[]) {
+          m[p.slot_no] = {
+            slot_no: p.slot_no,
+            name: p.name ?? '',
+            start_time: p.start_time ?? '10:00:00',
+            end_time: p.end_time ?? '14:00:00',
+            slot_minutes: Number(p.slot_minutes ?? 10),
+          };
+        }
+        setRows(m);
+      }
+
+      setLoading(false);
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const setRow = (slot: SlotNo, patch: Partial<PresetRow>) => {
+    setRows(prev => ({ ...prev, [slot]: { ...prev[slot], ...patch } }));
+  };
+
+  const errors = useMemo(() => {
+    const list: string[] = [];
+    for (const s of SLOT_NUMBERS) {
+      const r = rows[s];
+      if (!r.name.trim()) list.push(`プリセット${s}: 名称を入力してください`);
+      if (hhmm(r.start_time) >= hhmm(r.end_time)) list.push(`プリセット${s}: 開始は終了より前にしてください`);
+    }
+    return list;
+  }, [rows]);
+
+  const save = async () => {
+    if (!supabase) return;
+    setMsg(null);
+    if (errors.length) { setMsg(errors[0]); return; }
+    setSaving(true);
+    try {
+      // 3枠まとめて UPSERT（store_id も明示）※ onConflict は「store_id,slot_no」
+      const payload = SLOT_NUMBERS.map((s) => ({
+        store_id: getStoreId(),
+        slot_no: rows[s].slot_no,
+        name: rows[s].name.trim(),
+        start_time: hhmmss(hhmm(rows[s].start_time)),
+        end_time: hhmmss(hhmm(rows[s].end_time)),
+        slot_minutes: 10,
+      }));
+      // any 経由で never 回避
+      const up = await (supabase as any)
+        .from('store_pickup_presets')
+        .upsert(payload, { onConflict: 'store_id,slot_no' });
+
+      if (up.error) throw up.error;
+
+      // “今使う”スロットを stores に反映
+      if (current) {
+        const st = await (supabase as any)
+          .from('stores')
+          .update({ current_pickup_slot_no: current })
+          .eq('id', getStoreId());
+
+        if (st.error) throw st.error;
+      }
+
+      setMsg('保存しました。ユーザーアプリに即時反映されます。');
+    } catch (e: any) {
+      setMsg(`保存に失敗しました: ${e?.message ?? e}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading) return <main className="mx-auto max-w-[448px] px-4 py-5"><div className="rounded-xl border bg-white p-4 text-sm text-zinc-600">読み込み中…</div></main>;
+
+  return (
+    <main className="mx-auto max-w-[448px] px-4 py-5 space-y-6">
+      <div className="mb-1">
+        <h1 className="text-lg font-semibold">受取時間プリセット設定</h1>
+        <p className="text-sm text-zinc-600">最大3つのプリセットを編集し、「今使う」を選択してください（10分刻み）。</p>
+      </div>
+
+      <section className="space-y-4">
+        {[1, 2, 3].map((slot) => {
+          const r = rows[slot as SlotNo];
+          return (
+            <div key={slot} className="rounded-2xl border bg-white p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="font-medium">プリセット {slot}</div>
+                <label className="inline-flex items-center gap-2 text-sm">
+                  <input
+                    type="radio"
+                    name="current"
+                    checked={current === slot}
+                    onChange={() => setCurrent(slot as SlotNo)}
+                  />
+                  今使う
+                </label>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div>
+                  <label className="block text-xs text-zinc-500 mb-1">名称</label>
+                  <input
+                    className="w-full rounded-xl border px-3 py-2"
+                    maxLength={20}
+                    placeholder={`通常 / 短縮${slot - 1} など`}
+                    value={r.name}
+                    onChange={(e) => setRow(slot as SlotNo, { name: e.target.value })}
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs text-zinc-500 mb-1">開始</label>
+                  <input
+                    type="time"
+                    step={600}
+                    className="w-full rounded-xl border px-3 py-2"
+                    value={hhmm(r.start_time)}
+                    onChange={(e) => setRow(slot as SlotNo, { start_time: hhmmss(e.target.value) })}
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs text-zinc-500 mb-1">終了</label>
+                  <input
+                    type="time"
+                    step={600}
+                    className="w-full rounded-xl border px-3 py-2"
+                    value={hhmm(r.end_time)}
+                    onChange={(e) => setRow(slot as SlotNo, { end_time: hhmmss(e.target.value) })}
+                  />
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </section>
+
+      {msg && <div className="text-sm text-zinc-700">{msg}</div>}
+
+      <div className="flex justify-end">
+        <button
+          type="button"
+          onClick={save}
+          disabled={saving}
+          className={`px-4 py-2 rounded-2xl text-white ${saving ? 'bg-zinc-400' : 'bg-zinc-900 hover:bg-zinc-800'}`}
+        >
+          {saving ? '保存中…' : '保存する'}
+        </button>
+      </div>
+    </main>
+  );
+}
+
+
 
 export default function StoreApp() {
   const mounted = useMounted();
-  const [route, setRoute] = useState<'orders' | 'products'>('orders');
+  const [route, setRoute] = useState<'orders' | 'products' | 'pickup'>('orders');
+
   useEffect(() => {
-    const read = () => { const h = (typeof window !== 'undefined' ? window.location.hash.replace('#/', '') : '') as 'orders' | 'products'; setRoute(h === 'products' ? 'products' : 'orders'); };
+    const read = () => {
+      const h = (typeof window !== 'undefined' ? window.location.hash.replace('#/', '') : '') as 'orders' | 'products' | 'pickup';
+      setRoute(h === 'products' ? 'products' : h === 'pickup' ? 'pickup' : 'orders');
+    };
+
     read(); window.addEventListener('hashchange', read); return () => window.removeEventListener('hashchange', read);
   }, []);
   const routeForUI = mounted ? route : 'orders';
@@ -1174,10 +1501,19 @@ export default function StoreApp() {
           <nav className="flex flex-wrap items-center gap-1 gap-y-1 text-sm">
             <a href="#/orders" className={`px-3 py-1.5 rounded-lg border shrink-0 ${routeForUI === 'orders' ? 'bg-zinc-900 text-white border-zinc-900' : 'bg-white text-zinc-700 hover:bg-zinc-50'}`} suppressHydrationWarning>注文管理</a>
             <a href="#/products" className={`px-3 py-1.5 rounded-lg border shrink-0 ${routeForUI === 'products' ? 'bg-zinc-900 text-white border-zinc-900' : 'bg-white text-zinc-700 hover:bg-zinc-50'}`} suppressHydrationWarning>商品管理</a>
+            <a
+              href="#/pickup"
+              className={`px-3 py-1.5 rounded-lg border shrink-0 ${routeForUI === 'pickup' ? 'bg-zinc-900 text-white border-zinc-900' : 'bg-white text-zinc-700 hover:bg-zinc-50'
+                }`}
+              suppressHydrationWarning
+            >
+              受取時間
+            </a>
+
           </nav>
         </div>
       </header>
-      {routeForUI === 'orders' ? <OrdersPage /> : <ProductsPage />}
+      {routeForUI === 'orders' ? <OrdersPage /> : routeForUI === 'products' ? <ProductsPage /> : <PickupPresetPage />}
     </div>
   );
 }

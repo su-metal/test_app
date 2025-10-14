@@ -4,24 +4,87 @@ import { createClient } from '@supabase/supabase-js';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import 'leaflet/dist/leaflet.css';
 import dynamic from "next/dynamic";
+// 追加：受取時間の表示コンポーネント
+import PickupTimeSelector, { type PickupSlot } from "@/components/PickupTimeSelector";
 
 // page.tsx より抜粋（MapViewの使用部分）
 const MapView = dynamic(() => import("@/components/MapView"), { ssr: false });
 
+// ===== debug switch =====
+const DEBUG = (process.env.NEXT_PUBLIC_DEBUG === '1');
 
+// === REST: orders へ確実に Authorization を付けて INSERT する ===
+const API_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+const ANON = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+
+// === REST: orders を確実に DELETE する（apikey + Authorization を強制付与） ===
+async function restDeleteOrdersByIds(ids: string[]) {
+    const idsCsv = ids.map(String).join(',');
+    const url = `${API_URL}/rest/v1/orders?id=in.(${encodeURIComponent(idsCsv)})`;
+
+    const res = await fetch(url, {
+        method: 'DELETE',
+        headers: {
+            apikey: ANON,
+            Authorization: `Bearer ${ANON}`,
+            // Prefer は無くて OK（DELETE は通常 204 No Content）
+        },
+    });
+
+    if (res.status === 401) throw new Error('HTTP 401 Unauthorized');
+    if (res.status === 403) throw new Error('HTTP 403 Forbidden');
+    if (res.status === 404) return; // 対象なしは無視
+    if (!res.ok) {
+        const t = await res.text().catch(() => '');
+        throw new Error(`HTTP ${res.status} ${res.statusText} :: ${t}`);
+    }
+}
+
+
+async function restInsertOrder(orderPayload: any) {
+    const url = `${API_URL}/rest/v1/orders?select=*`;
+    const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+            apikey: ANON,
+            Authorization: `Bearer ${ANON}`,
+            'Content-Type': 'application/json',
+            Prefer: 'return=representation',
+        },
+        body: JSON.stringify(orderPayload),
+    });
+    if (!res.ok) {
+        const txt = await res.text().catch(() => '');
+        throw new Error(`HTTP ${res.status} ${res.statusText} :: ${txt}`);
+    }
+    return res.json();
+}
 
 let __sb__: SupabaseClient | null = null;
 function getSupabaseSingleton() {
     if (!__sb__) {
-        __sb__ = createClient(
-            process.env.NEXT_PUBLIC_SUPABASE_URL!,
-            process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-            { auth: { storageKey: 'sb-user-app' } } // ← 警告回避のため固定
-        );
+        const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+        const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+
+        __sb__ = createClient(url, anon, {
+            auth: { storageKey: 'sb-user-app' },
+            // ✅ supabase-js 経由の全リクエストに常に鍵を付ける
+            global: {
+                headers: {
+                    apikey: anon,
+                    Authorization: `Bearer ${anon}`,
+                },
+            },
+        });
     }
     return __sb__;
 }
 
+
+if (DEBUG && typeof window !== "undefined") {
+    console.info("[diag] ANON head =", (process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "").slice(0, 12));
+    console.info("[diag] URL  head =", (process.env.NEXT_PUBLIC_SUPABASE_URL || "").slice(0, 20));
+}
 /**
  * ユーザー向けフードロスアプリ（Pilot v2.6 / TS対応）
  * - Toast通知、在庫連動、店舗別会計、簡易テスト決済
@@ -32,6 +95,25 @@ function getSupabaseSingleton() {
 function useSupabase() {
     return useMemo(getSupabaseSingleton, []);
 }
+
+// --- remain chip (store-appと同一トーン) ---
+const toneByRemain = (n: number) =>
+    n > 5
+        ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+        : n > 0
+            ? "bg-amber-50 text-amber-700 border-amber-200"
+            : "bg-zinc-100 text-zinc-500 border-zinc-200";
+
+function RemainChip({ remain, className = "" }: { remain: number; className?: string }) {
+    return (
+        <span
+            className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium border ${toneByRemain(remain)} ${className}`}
+        >
+            のこり <span className="tabular-nums ml-0.5 mr-0.5">{remain}</span> 個
+        </span>
+    );
+}
+
 
 function pushLog(entry: unknown) {
     try {
@@ -44,6 +126,21 @@ function pushLog(entry: unknown) {
 
 const fmt = new Intl.NumberFormat("ja-JP", { style: "currency", currency: "JPY" });
 const currency = (n: number) => fmt.format(n);
+// 現在時刻（JST, 分）を返す
+const nowMinutesJST = () => {
+    const parts = new Intl.DateTimeFormat("ja-JP", {
+        timeZone: "Asia/Tokyo",
+        hour12: false,
+        hour: "2-digit",
+        minute: "2-digit",
+    }).formatToParts(new Date());
+    const hh = Number(parts.find(p => p.type === "hour")?.value || "0");
+    const mm = Number(parts.find(p => p.type === "minute")?.value || "0");
+    return hh * 60 + mm;
+};
+
+const LEAD_CUTOFF_MIN = 20; // 受け取り開始の何分前まで不可にするか（UI全体の既定）
+
 const uid = () => Math.random().toString(36).slice(2, 10);
 const to6 = (s: string) => (Array.from(s).reduce((a, c) => a + c.charCodeAt(0), 0) % 1_000_000).toString().padStart(6, "0");
 
@@ -147,6 +244,49 @@ function validateTestCard(cardRaw: string) {
     if (card.startsWith("4242")) return { ok: true, brand: "Visa(4242)" } as const;
     return { ok: true, brand: "TEST" } as const;
 }
+
+
+// === Supabase REST 直叩きユーティリティ（重複排除・本番用） ===
+/**
+ * orders の軽量取得（idリストで in 検索）
+ * - 401 は Error.status = 401 を付けて throw（ポーリング側で停止できるように）
+ * - apikey は ヘッダー と URL クエリの両方に付与（環境依存の揺れ対策）
+ */
+async function getOrderLite(idsCsv: string) {
+    if (!API_URL || !ANON) {
+        const e: any = new Error("MISSING_ENV");
+        e.status = 401; // ポーリング側で401扱いにして止められるように
+        throw e;
+    }
+
+    const url =
+        `${API_URL}/rest/v1/orders` +
+        `?select=id,code,status` +
+        `&id=in.(${idsCsv})` +
+        `&apikey=${encodeURIComponent(ANON)}`;   // ← URL側にも付ける（保険）
+
+
+    const res = await fetch(url, {
+        headers: {
+            apikey: ANON,                          // ← ヘッダーにも付与（本命）
+            Authorization: `Bearer ${ANON}`,
+        },
+        cache: "no-store",
+    });
+
+    if (res.status === 401) {
+        const e: any = new Error("UNAUTHORIZED");
+        e.status = 401;
+        throw e;
+    }
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+    return res.json() as Promise<Array<{ id: string; code: string | null; status?: string | null }>>;
+}
+
+
+
+
 
 // ---- 型 ----
 interface Item {
@@ -286,6 +426,8 @@ export default function UserPilotApp() {
     const [shops, setShops] = useLocalStorageState<Shop[]>(K.shops, seedShops);
     const [cart, setCart] = useLocalStorageState<CartLine[]>(K.cart, []);
     const [orders, setOrders] = useLocalStorageState<Order[]>(K.orders, []);
+    const [pickupByShop, setPickupByShop] = useState<Record<string, PickupSlot | null>>({});
+
     const [userEmail] = useLocalStorageState<string>(K.user, "");
     const [tab, setTab] = useState<"home" | "cart" | "order" | "account">("home");
     // タブの直前値を覚えておく
@@ -396,6 +538,21 @@ export default function UserPilotApp() {
                     const row = p?.old; if (!row) return;
                     setDbProducts(prev => prev.filter(x => String(x.id) !== String(row.id)));
                 })
+                .on(
+                    'postgres_changes',
+                    { event: 'DELETE', schema: 'public', table: 'orders' },
+                    (payload: any) => {
+                        const old = payload?.old || {};
+                        const delId = String(old?.id ?? '');
+                        const delCode6 = normalizeCode6(old?.code);
+                        setOrders(prev =>
+                            prev.filter(o =>
+                                String(o.id) !== delId && normalizeCode6(o.code6) !== delCode6
+                            )
+                        );
+                    }
+                )
+
                 .subscribe();
             return () => { try { (supabase as any).removeChannel(ch); } catch { } };
         } catch {
@@ -595,46 +752,100 @@ export default function UserPilotApp() {
         try { return JSON.stringify(orders.filter(o => o.status === 'paid').map(o => ({ id: o.id, code6: o.code6 }))); } catch { return ""; }
     }, [orders]);
 
-    useEffect(() => {
-        if (!supabase) return;
-        // 未引換が無ければ停止
-        const targets = orders.filter(o => o.status === 'paid');
-        if (targets.length === 0) return;
+    // ★ 多重起動を避けるために useRef で 1本管理
+    const pollRef = useRef<number | null>(null);
 
-        let alive = true;
+    useEffect(() => {
+        const API_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
+        const ANON = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
+
+        // 前回の interval が残っていたら必ず止める
+        if (pollRef.current) {
+            clearInterval(pollRef.current);
+            pollRef.current = null;
+        }
+
+        // 前提が揃ってなければ起動しない
+        const targets = orders.filter(o => o.status === "paid");
+        if (!API_URL || !ANON || !targets.length) return;
+
+        // 画面が非表示/オフラインなら動かさない（無駄＆ログ抑制）
+        if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+        if (typeof navigator !== "undefined" && !navigator.onLine) return;
+
         const toLocal = (dbStatus?: string): Order["status"] => {
-            const s = String(dbStatus || '').toUpperCase();
-            if (s === 'FULFILLED' || s === 'REDEEMED' || s === 'COMPLETED') return 'redeemed';
-            if (s === 'PAID' || s === 'PENDING') return 'paid';
-            return 'paid';
+            const s = String(dbStatus || "").toUpperCase();
+            if (s === "FULFILLED" || s === "REDEEMED" || s === "COMPLETED") return "redeemed";
+            if (s === "PAID" || s === "PENDING") return "paid";
+            return "paid";
         };
 
+        let stopped = false; // 401 などで停止したら二度と回さない
+        const idsCsv = targets.map(o => String(o.id)).join(",");
+
         const tick = async () => {
+            if (stopped) return;
             try {
-                const ids = targets.map(o => String(o.id));
-                const { data, error } = await supabase.from('orders').select('id, code, status').in('id', ids);
-                if (!alive || error || !Array.isArray(data)) return;
-                const rows = data as Array<{ id: string; code: string | null; status?: string | null }>;
-                // id と 6桁コードでローカルを更新
+                const rows = await getOrderLite(idsCsv); // ← ヘッダー付REST
                 setOrders(prev => {
                     let changed = false;
+
+                    // 既存の「ヒットしたら status を同期」部分
                     const next = prev.map(o => {
-                        const hit = rows.find(r => String(r.id) === String(o.id) || (normalizeCode6(r.code) === normalizeCode6(o.code6)));
+                        const hit = rows.find(r =>
+                            String(r.id) === String(o.id) ||
+                            (normalizeCode6(r.code) === normalizeCode6(o.code6))
+                        );
                         if (!hit) return o;
                         const ns = toLocal(hit.status || undefined);
                         if (ns !== o.status) { changed = true; return { ...o, status: ns }; }
                         return o;
                     });
-                    return changed ? next : prev;
+
+                    // ★ここを追加：DB から消えている paid を間引く
+                    const liveIds = new Set(rows.map(r => String(r.id)));
+                    const liveCodes = new Set(rows.map(r => normalizeCode6(r.code)));
+                    const pruned = next.filter(o => {
+                        if (o.status !== 'paid') return true; // 履歴(redeemed)はそのまま
+                        const hasId = liveIds.has(String(o.id));
+                        const hasCode = liveCodes.has(normalizeCode6(o.code6));
+                        if (!hasId && !hasCode) { changed = true; return false; }
+                        return true;
+                    });
+
+                    return changed ? pruned : prev;
                 });
-            } catch {/* noop */ }
+
+            } catch (err: any) {
+                // 401 を検知したら停止（雪だるま防止）
+                if (err?.status === 401 || err?.message === "UNAUTHORIZED") {
+                    if (DEBUG) console.warn("[orders poll] 401 Unauthorized detected. Stop polling.");
+                    stopped = true;
+                    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+                    return;
+                }
+                if (DEBUG) console.warn("[orders poll] exception:", err);
+            }
         };
 
-        // 即時 + 周期的に確認（4秒毎）。画面操作や注文更新で依存キーが変わると自動で張り替え
+        // 即時 + 周期（タブが可視かつオンライン時のみ実行）
         tick();
-        const timer = window.setInterval(tick, 4000);
-        return () => { alive = false; window.clearInterval(timer); };
-    }, [supabase, pendingKey]);
+        pollRef.current = window.setInterval(() => {
+            if (document.visibilityState === "visible" && navigator.onLine) tick();
+        }, 4000);
+
+        // cleanup
+        return () => {
+            if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+        };
+    }, [pendingKey]); // ← 依存はこのキーだけ（orders丸ごとは不可）
+
+
+
+    useEffect(() => {
+        console.log('[diag] ANON head =', (process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '').slice(0, 12));
+        console.log('[diag] URL  head =', (process.env.NEXT_PUBLIC_SUPABASE_URL || '').slice(0, 20));
+    }, []);
 
 
     // DBの商品が取れていて storeId が指定されていれば、その店舗の items を DB で差し替え
@@ -773,25 +984,39 @@ export default function UserPilotApp() {
 
     // 注文履歴のみを一括リセット（ローカル優先、可能ならDBも削除）
     const devResetOrderHistory = useCallback(async () => {
-        if (!confirm('注文履歴をすべてリセットします。よろしいですか？')) return;
         try {
-            const targetIds = orders.filter(o => o.status === 'redeemed').map(o => o.id);
-            if (targetIds.length === 0) { emitToast('info', '注文履歴はありません'); return; }
-            if (supabase) {
-                const { error } = await supabase.from('orders').delete().in('id', targetIds);
-                if (error) {
-                    console.error('[orders.resetHistory] error', error);
-                    emitToast('error', `リセットに失敗しました: ${error.message}`);
-                    return;
-                }
+            // 対象IDを組み立て（あなたの既存ロジックを使ってOK）
+            const ids = orders
+                .filter(o => ['redeemed', 'paid', 'completed'].includes(String(o.status)))
+                .map(o => String(o.id));
+
+            if (!ids.length) {
+                if (DEBUG) console.info('[orders.resetHistory] skip: no ids');
+                return;
             }
-            setOrders(prev => prev.filter(o => o.status !== 'redeemed'));
-            emitToast('success', '注文履歴をリセットしました');
-        } catch (e) {
-            console.error('[orders.resetHistory] exception', e);
-            emitToast('error', `エラー: ${(e as any)?.message ?? e}`);
+
+            // ★REST 直叩き（必ず apikey / Authorization を付与）
+            await restDeleteOrdersByIds(ids);
+
+            const codeKeys = new Set(
+                orders
+                    .filter(o => ['redeemed', 'paid', 'completed'].includes(String(o.status)))
+                    .map(o => normalizeCode6(o.code6))
+            );
+            setOrders(prev =>
+                prev.filter(o =>
+                    !ids.includes(String(o.id)) &&
+                    !codeKeys.has(normalizeCode6(o.code6))
+                )
+            );
+
+            if (DEBUG) console.info('[orders.resetHistory] done:', ids.length);
+        } catch (e: any) {
+            console.error('[orders.resetHistory] error', e?.message || e);
+            emitToast('error', '履歴のリセットに失敗しました');
         }
-    }, [supabase, orders, setOrders]);
+    }, [orders]);
+
 
     // 注文処理
     const [cardDigits, setCardDigits] = useState(""); // 数字のみ（最大16桁）
@@ -889,25 +1114,40 @@ export default function UserPilotApp() {
             };
 
 
-            // Supabaseが設定されていればDBへ作成
+
             // Supabaseが設定されていればDBへ作成
             if (supabase) {
-                const { data, error } = await supabase
-                    .from("orders")
-                    .insert(orderPayload)
-                    .select("*")
-                    .single();
+                let data: any = null;
+                let error: any = null;
+                let status = 200;
+
+                try {
+                    const rows = await restInsertOrder(orderPayload);
+                    data = Array.isArray(rows) ? rows[0] : rows;
+                } catch (e: any) {
+                    status = Number((e.message || '').match(/HTTP (\d{3})/)?.[1] || 500);
+                    error = { message: e.message };
+                }
 
                 if (error) {
-                    console.error("[orders.insert] error", {
-                        code: (error as any).code,
-                        message: error.message,
-                        details: (error as any).details,
-                        hint: (error as any).hint,
+                    // ---- ここから詳細ログ強化（開発時のみ想定。不要になったら削除OK）----
+                    console.error("[orders.insert] status", status);
+                    console.error("[orders.insert] payload", JSON.stringify(orderPayload, null, 2));
+                    console.error("[orders.insert] env.heads", {
+                        url: (process.env.NEXT_PUBLIC_SUPABASE_URL || "").slice(0, 32),
+                        anon: (process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "").slice(0, 12),
+                        storeId,
                     });
-                    emitToast("error", `注文の作成に失敗: ${error.message}`);
+                    console.error("[orders.insert] error raw", error);
+                    try {
+                        console.error("[orders.insert] error json", JSON.stringify(error, null, 2));
+                    } catch { }
+                    // ---- ここまで ----
+
+                    emitToast("error", `注文の作成に失敗: ${error.message || "不明なエラー"}`);
                     return;
                 }
+
 
 
                 // ★ここを追加：DBに作成した注文と“同じコード”をローカル履歴にも保存する
@@ -1034,7 +1274,7 @@ export default function UserPilotApp() {
             <div className="inline-flex items-center rounded-full px-2 py-1 text-sm select-none">
                 <button
                     type="button"
-                    className="w-8 h-8 text-[10px] leading-none rounded-full border cursor-pointer disabled:opacity-40 flex items-center justify-center"
+                    className="w-7 h-7 text-[10px] leading-none rounded-full border cursor-pointer disabled:opacity-40 flex items-center justify-center"
                     disabled={reserved <= 0}
                     onClick={() => changeQty(sid, it, -1)}
                     aria-label="数量を減らす"
@@ -1042,7 +1282,7 @@ export default function UserPilotApp() {
                 <span className="mx-3 min-w-[1.5rem] text-center tabular-nums">{reserved}</span>
                 <button
                     type="button"
-                    className="w-8 h-8 text-[10px] leading-none rounded-full border cursor-pointer disabled:opacity-40 flex items-center justify-center"
+                    className="w-7 h-7 text-[10px] leading-none rounded-full border cursor-pointer disabled:opacity-40 flex items-center justify-center"
                     disabled={remain <= 0}
                     onClick={() => changeQty(sid, it, +1)}
                     aria-label="数量を増やす"
@@ -1050,6 +1290,97 @@ export default function UserPilotApp() {
             </div>
         );
     };
+
+    // 共通：商品1行（ホーム/カートで再利用）
+    // noChrome=true のとき、外枠（rounded/border/bg）を外す
+    const ProductLine = ({
+        sid,
+        it,
+        noChrome = false,
+    }: {
+        sid: string;
+        it: Item;
+        noChrome?: boolean;
+    }) => {
+        const reserved = getReserved(sid, it.id);
+        const remain = Math.max(0, it.stock - reserved);
+
+        const wrapBase = "relative flex gap-3 p-2 pr-3";
+        const chrome = "rounded-2xl border bg-white";
+        const wrapperCls = `${wrapBase} ${noChrome ? "" : chrome}`;
+
+        return (
+            <div className={wrapperCls}>
+                <div className="flex items-start gap-3 flex-1 min-w-0">
+                    {/* サムネ（main → sub1 → sub2 → 絵文字） */}
+                    <button
+                        type="button"
+                        role="button"
+                        tabIndex={0}
+                        aria-label={`${it.name} の画像を開く`}
+                        onKeyDown={(e) => {
+                            if (e.key === "Enter" || e.key === " ") {
+                                e.preventDefault();
+                                (e.currentTarget as HTMLButtonElement).click();
+                            }
+                        }}
+                        onClick={() => {
+                            setDetail({ shopId: sid, item: it });
+                            setGIndex(0);
+                        }}
+                        className="relative w-24 h-24 overflow-hidden rounded-xl bg-zinc-100 flex items-center justify-center shrink-0 border cursor-pointer group focus:outline-none focus:ring-2 focus:ring-zinc-900/50"
+                        title="画像を開く"
+                    >
+                        {it.main_image_path ? (
+                            <img
+                                src={`${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/public-images/${it.main_image_path}`}
+                                alt={it.name}
+                                className="w-full h-full object-cover transition-transform group-hover:scale-[1.02] pointer-events-none"
+                                loading="lazy"
+                                decoding="async"
+                            />
+                        ) : (
+                            <span className="text-4xl pointer-events-none">
+                                {it.photo ?? "🛍️"}
+                            </span>
+                        )}
+
+                        {/* のこり個数チップ（クリック非干渉） */}
+                        <span aria-hidden="true" className="pointer-events-none absolute left-1.5 bottom-1.5">
+                            <RemainChip remain={remain} className="shadow-sm" />
+                        </span>
+
+                        <span className="pointer-events-none absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity bg-black/5" />
+                    </button>
+
+                    {/* テキスト側 → 詳細モーダルを開く */}
+                    <button
+                        type="button"
+                        onClick={() => setDetail({ shopId: sid, item: it })}
+                        className="flex-1 min-w-0 text-left"
+                    >
+                        <div className="w-full text-md font-bold leading-tight break-words line-clamp-2 min-h-[2.5rem]">
+                            {it.name}
+                        </div>
+                        <div className="mt-0.5 text-xs text-zinc-500 flex items-center gap-1 w-full">
+                            <span>⏰</span>
+                            <span className="truncate">受取 {it.pickup}</span>
+                        </div>
+                        <div className="mt-2 text-base font-semibold">{currency(it.price)}</div>
+                    </button>
+                </div>
+
+                {/* 右下：数量チップ */}
+                <div
+                    className="absolute bottom-0 right-1 rounded-full px-2 py-1"
+                    onClick={(e) => e.stopPropagation()}
+                >
+                    <QtyChip sid={sid} it={it} />
+                </div>
+            </div>
+        );
+    };
+
 
     // 店舗カード詳細メタ開閉
     const [metaOpen, setMetaOpen] = useState<Record<string, boolean>>({});
@@ -1081,18 +1412,6 @@ export default function UserPilotApp() {
                     {tab === "home" && (
                         <section className="mt-4 space-y-4">
                             <h2 className="text-base font-semibold">近くのお店</h2>
-                            {/* 店舗チップ群（ピン） */}
-                            {/* <div className="rounded-2xl border bg-white p-3 flex flex-wrap gap-2 text-sm">
-                                {shopsSorted.map((s) => (
-                                    <button key={`chip-${s.id}`} onClick={() => setFocusedShop(s.id)} className={`px-3 py-1 rounded-full border cursor-pointer flex items-center gap-1 ${focusedShop === s.id ? 'bg-zinc-900 text-white border-zinc-900' : 'bg-white'}`}>
-                                        <span>📍</span>
-                                        <span className="truncate max-w-[10rem]">{s.name}</span>
-                                    </button>
-                                ))}
-                                <div className="basis-full text-[11px] text-zinc-500 mt-1">ピンをタップすると下の店舗がハイライト</div>
-                            </div> */}
-
-
 
                             <div className="grid grid-cols-1 gap-3">
                                 {shopsSorted.map((s, idx) => {
@@ -1172,85 +1491,10 @@ export default function UserPilotApp() {
 
                                                 {hasAny ? (
                                                     <div className="mt-3 space-y-2">
-                                                        {visibleItems.map(it => {
-                                                            const remain = Math.max(0, it.stock - getReserved(s.id, it.id));
-                                                            return (
-                                                                <div
-                                                                    key={it.id}
-                                                                    className="relative flex gap-3 rounded-2xl border bg-white p-2 pr-3"
-                                                                >
-                                                                    <div className="flex items-center gap-3 flex-1 min-w-0">
-                                                                        {/* サムネ（main_image_path）→ ギャラリー */}
-                                                                        <button
-                                                                            type="button"
-                                                                            role="button"
-                                                                            tabIndex={0}
-                                                                            aria-label={`${it.name} の画像を開く`}
-                                                                            onKeyDown={(e) => {
-                                                                                if (e.key === "Enter" || e.key === " ") {
-                                                                                    e.preventDefault();
-                                                                                    (e.currentTarget as HTMLButtonElement).click();
-                                                                                }
-                                                                            }}
-                                                                            onClick={() => {
-                                                                                setDetail({ shopId: s.id, item: it });
-                                                                                setGIndex(0);
-                                                                            }}
-                                                                            className="relative w-24 h-24 overflow-hidden rounded-xl bg-zinc-100 flex items-center justify-center shrink-0 border cursor-pointer group focus:outline-none focus:ring-2 focus:ring-zinc-900/50"
-                                                                            title="画像を開く"
-                                                                        >
-                                                                            {it.main_image_path ? (
-                                                                                <img
-                                                                                    src={`${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/public-images/${it.main_image_path}`}
-                                                                                    alt={it.name}
-                                                                                    className="w-full h-full object-cover transition-transform group-hover:scale-[1.02] pointer-events-none"
-                                                                                    loading="lazy"
-                                                                                    decoding="async"
-                                                                                />
-                                                                            ) : (
-                                                                                <span className="text-4xl pointer-events-none">{it.photo ?? "🛍️"}</span>
-                                                                            )}
+                                                        {visibleItems.map(it => (
+                                                            <ProductLine key={it.id} sid={s.id} it={it} />
+                                                        ))}
 
-                                                                            {/* ▼ のこり個数チップ（クリックを邪魔しない） */}
-                                                                            <span
-                                                                                aria-hidden="true"
-                                                                                className="pointer-events-none absolute left-1.5 bottom-1.5 px-1.5 py-[2px] rounded-full text-[10px] leading-none bg-black/65 text-white backdrop-blur-sm shadow-sm"
-                                                                            >
-                                                                                のこり <span className="tabular-nums">{Math.max(0, it.stock - getReserved(s.id, it.id))}</span> 個
-                                                                            </span>
-
-                                                                            {/* クリックを邪魔しない薄いオーバーレイ（必要なら） */}
-                                                                            <span className="pointer-events-none absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity bg-black/5" />
-                                                                        </button>
-
-                                                                        {/* テキスト側 → 詳細モーダルを開く */}
-                                                                        <button
-                                                                            type="button"
-                                                                            onClick={() => setDetail({ shopId: s.id, item: it })}
-                                                                            className="flex-1 min-w-0 text-left"
-                                                                        >
-                                                                            <div className="w-full text-md font-bold leading-tight break-words line-clamp-2 min-h-[2.5rem]">
-                                                                                {it.name}
-                                                                            </div>
-                                                                            <div className="mt-0.5 text-xs text-zinc-500 flex items-center gap-1 w-full">
-                                                                                <span>⏰</span>
-                                                                                <span className="truncate">受取 {it.pickup}</span>
-                                                                            </div>
-                                                                            <div className="mt-2 text-base font-semibold">{currency(it.price)}</div>
-                                                                        </button>
-                                                                    </div>
-
-
-                                                                    {/* 右下：数量チップ（ボタン外、下寄せ） */}
-                                                                    <div
-                                                                        className="absolute bottom-0 right-1 rounded-full px-2 py-1"
-                                                                        onClick={(e) => e.stopPropagation()}
-                                                                    >
-                                                                        <QtyChip sid={s.id} it={it} />
-                                                                    </div>
-                                                                </div>
-                                                            );
-                                                        })}
                                                     </div>
                                                 ) : (
                                                     <div className="mt-3">
@@ -1421,60 +1665,27 @@ export default function UserPilotApp() {
                                         <div className="text-sm font-semibold">{shopsById.get(sid)?.name || sid}</div>
                                     </div>
                                     <div className="p-4 divide-y divide-zinc-200">
-                                        {(cartByShop[sid] || []).map((l) => {
-                                            const reserved = getReserved(sid, l.item.id);
-                                            const remain = Math.max(0, l.item.stock - reserved);
-
-                                            return (
-                                                <div
-                                                    key={`${l.item.id}-${sid}`}
-                                                    className="flex items-center justify-between gap-3 py-3"
-                                                >
-                                                    {/* 左：商品名 + メタ情報（受取 → のこり → 商品単価） */}
-                                                    <div className="min-w-0 flex-1">
-                                                        <div className="truncate text-sm font-medium">
-                                                            {l.item.name}
-                                                        </div>
-
-
-
-                                                        {/* 1) 受取時間 */}
-                                                        <div className="mt-1 text-xs text-zinc-700 flex items-center gap-1">
-                                                            <span>⏰</span>
-                                                            <span className="truncate">受取 {l.item.pickup}</span>
-                                                        </div>
-
-                                                        {/* 3) 商品単価 */}
-                                                        <div className="mt-1 text-xs text-zinc-700">
-                                                            {/* <span>商品単価</span> */}
-                                                            <span className="ml-1 tabular-nums font-semibold text-zinc-900">
-                                                                {currency(l.item.price)}
-                                                            </span>
-                                                        </div>
-                                                    </div>
-
-                                                    <div className="flex flex-col items-end gap-1 shrink-0">
-                                                        {/* のこり n 個（text-xsで統一） */}
-                                                        <span
-                                                            className="inline-flex items-center gap-1 px-1.5 py-[2px] rounded-full bg-zinc-100 text-zinc-700 text-xs"
-                                                            title={`在庫 ${l.item.stock} / 予約済 ${reserved}`}
-                                                        >
-                                                            <span>のこり</span>
-                                                            <span className="tabular-nums">{remain}</span>
-                                                            <span>個</span>
-                                                        </span>
-
-                                                        {/* 数量増減チップ */}
-                                                        <div onClick={(e) => e.stopPropagation()}>
-                                                            <QtyChip sid={sid} it={l.item} />
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                            );
-
-                                        })}
-
+                                        {(cartByShop[sid] || []).map((l) => (
+                                            <ProductLine key={`${l.item.id}-${sid}`} sid={sid} it={l.item} noChrome />
+                                        ))}
                                     </div>
+
+                                    {/* 受け取り予定時間（必須） */}
+                                    <div className="px-4">
+                                        <div className="border-t mt-2 pt-3">
+                                            <PickupTimeSelector
+                                                storeId={sid}
+                                                value={pickupByShop[sid] ?? null}
+                                                onSelect={(slot) => setPickupByShop(prev => ({ ...prev, [sid]: slot }))}
+                                            // leadCutoffMin={20}       // ← 省略すると20
+                                            // nearThresholdMin={30}    // ← 省略すると30（任意）
+                                            />
+                                            {!pickupByShop[sid] && (
+                                                <p className="mt-2 text-xs text-red-500">受け取り予定時間を選択してください。</p>
+                                            )}
+                                        </div>
+                                    </div>
+
 
                                     <div className="px-4 pt-3">
                                         <div className="flex items-center justify-between text-sm">
@@ -1485,8 +1696,22 @@ export default function UserPilotApp() {
                                     <div className="p-4 border-t mt-2">
                                         <button
                                             type="button"
-                                            className="w-full px-3 py-2 rounded bg-zinc-900 text-white cursor-pointer"
-                                            onClick={() => toOrder(sid)}
+                                            onClick={() => {
+                                                const sel = pickupByShop[sid];
+                                                if (!sel) return;
+                                                const startMin = Number(sel.start.slice(0, 2)) * 60 + Number(sel.start.slice(3, 5));
+                                                const nowMin = nowMinutesJST();
+                                                if (startMin < nowMin + LEAD_CUTOFF_MIN) {
+                                                    alert(`受け取り開始まで${Math.max(0, startMin - nowMin)}分です。直近枠は選べません（${LEAD_CUTOFF_MIN}分前まで）。`);
+                                                    return;
+                                                }
+                                                toOrder(sid);
+                                            }}
+
+                                            disabled={!pickupByShop[sid]}
+                                            className={`w-full px-3 py-2 rounded text-white cursor-pointer
+    ${!pickupByShop[sid] ? "bg-zinc-300 cursor-not-allowed" : "bg-zinc-900 hover:bg-zinc-800"}`}
+                                            aria-disabled={!pickupByShop[sid]}
                                         >
                                             注文画面へ
                                         </button>
@@ -1748,9 +1973,12 @@ export default function UserPilotApp() {
 
                 {/* 商品詳細モーダル */}
                 {detail && (
-                    <div role="dialog" aria-modal="true" className="fixed inset-0 z-50">
-                        <div className="absolute inset-0 bg-black/40" onClick={() => setDetail(null)} />
-                        <div className="absolute inset-0 flex items-center justify-center p-4">
+                    <div role="dialog" aria-modal="true" className="fixed inset-0 z-[2000]">
+                        <div
+                            className="absolute inset-0 bg-black/40 z-[2000]"
+                            onClick={() => setDetail(null)}
+                        />
+                        <div className="absolute inset-0 flex items-center justify-center p-4 z-[2001]">
                             <div className="max-w-[520px] w-full bg-white rounded-2xl overflow-hidden shadow-xl">
                                 <div className="relative">
                                     {/* メイン画像（3枚ギャラリー） */}
@@ -1829,7 +2057,9 @@ export default function UserPilotApp() {
                                     <div className="text-sm text-zinc-600 flex items-center gap-3">
                                         <span className="inline-flex items-center gap-1"><span>⏰</span><span>受取 {detail.item.pickup}</span></span>
                                         <span className="inline-flex items-center gap-1"><span>🏷️</span><span className="tabular-nums">{currency(detail.item.price)}</span></span>
-                                        <span className="ml-auto inline-flex items-center gap-1"><span>在庫</span><span className="tabular-nums">{Math.max(0, detail.item.stock - getReserved(detail.shopId, detail.item.id))}</span></span>
+                                        <span className="ml-auto">
+                                            <RemainChip remain={Math.max(0, detail.item.stock - getReserved(detail.shopId, detail.item.id))} />
+                                        </span>
                                     </div>
                                     <div className="text-sm text-zinc-700 bg-zinc-50 rounded-xl p-3">
                                         {detail.item.note ? detail.item.note : 'お店のおすすめ商品です。数量限定のため、お早めにお求めください。'}

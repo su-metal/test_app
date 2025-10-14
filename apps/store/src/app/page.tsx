@@ -695,6 +695,69 @@ function StockAdjustModal({
   )
 }
 
+// 受け取り時間 変更モーダル（プリセットを1つ選ぶ）
+function PickupSlotModal({
+  open,
+  productName,
+  initial,           // 初期: 現在の slot_no (1|2|3)
+  presets,
+  onClose,
+  onCommit,          // (val: 1|2|3) => void
+  disabled,
+}: {
+  open: boolean;
+  productName: string;
+  initial: number | null;
+  presets: Record<1 | 2 | 3, { name: string; start: string; end: string }>;
+  onClose: () => void;
+  onCommit: (val: 1 | 2 | 3) => void;
+  disabled: boolean;
+}) {
+  const [val, setVal] = React.useState<number | null>(initial ?? 1);
+  React.useEffect(() => { setVal(initial ?? 1); }, [initial, open]);
+
+  if (!open) return null;
+
+  return (
+    <div className="fixed inset-0 z-[60] grid place-items-center bg-black/40 p-4" role="dialog" aria-modal="true" onClick={onClose}>
+      <div className="w-full max-w-md rounded-2xl bg-white shadow-xl border p-4" onClick={e => e.stopPropagation()}>
+        <div className="text-base font-semibold mb-1">受け取り時間を選択</div>
+        <div className="text-sm text-zinc-600 mb-3">対象: {productName}</div>
+
+        <div className="space-y-2">
+          {[1, 2, 3].map((n) => (
+            <label key={n} className="flex items-center justify-between rounded-xl border px-3 py-2 cursor-pointer hover:bg-zinc-50">
+              <div className="min-w-0">
+                <div className="text-sm font-medium">{presets[n as 1 | 2 | 3]?.name}</div>
+                <div className="text-xs text-zinc-600">{presets[n as 1 | 2 | 3]?.start}〜{presets[n as 1 | 2 | 3]?.end}</div>
+              </div>
+              <input
+                type="radio"
+                name="pickup-slot"
+                className="ml-2"
+                checked={val === n}
+                onChange={() => setVal(n)}
+              />
+            </label>
+          ))}
+        </div>
+
+        <div className="mt-4 flex items-center justify-end gap-2">
+          <button onClick={onClose} className="rounded-xl border px-4 py-2 text-sm">キャンセル</button>
+          <button
+            onClick={() => { if (val === 1 || val === 2 || val === 3) onCommit(val as 1 | 2 | 3); }}
+            disabled={disabled}
+            className={`rounded-xl px-4 py-2 text-sm text-white ${disabled ? "bg-zinc-400 cursor-not-allowed" : "bg-zinc-900 hover:bg-zinc-800"}`}
+          >
+            保存
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
 
 function useImageUpload() {
   const supabase = useSupabase();
@@ -793,6 +856,20 @@ function ProductForm() {
     return { sum, count: list.length };
   }, [pending]);
   const { presets } = usePickupPresets();
+  // 受け取り時間ラベル（名称＋時刻）を作る
+  const labelForSlot = useCallback((slot: number | null | undefined) => {
+    if (slot == null) return "未設定";
+    const s = presets[slot as 1 | 2 | 3];
+    return s ? `${s.name}（${s.start}〜${s.end}）` : "未設定";
+  }, [presets]);
+
+  // 編集中の商品IDと一時値
+  const [editPickupId, setEditPickupId] = useState<string | null>(null);
+  const [editPickupVal, setEditPickupVal] = useState<number | null>(null);
+  // 受け取り時間 変更モーダル用 state
+  const [pickupDlg, setPickupDlg] = useState<null | { id: string; name: string; current: number | null }>(null);
+
+
 
 
 
@@ -956,27 +1033,22 @@ function ProductForm() {
               <div className="px-4 pb-4 space-y-3">
                 {/* 1) 価格は右寄せ・独立行（はみ出し対策） */}
 
-                {/* 2) 受け取り時間（フル幅） */}
+                {/* 2) 受け取り時間（表示 + 変更ボタン → モーダルで編集） */}
                 <div>
                   <div className="text-sm font-medium mb-1">受け取り時間</div>
-                  <select
-                    className="rounded-xl border px-3 py-2 text-sm"
-                    value={pickupSlotForNew === null ? '' : String(pickupSlotForNew)}
-                    onChange={(e) => {
-                      const v = e.target.value;
-                      setPickupSlotForNew(v === '' ? null : Number(v));
-                    }}
-                    aria-label="受け取り時間"
-                    title="受け取り時間"
-                    required
-                  >
-                    <option value="" disabled>選択してください（必須）</option>
-                    <option value="1">{presets[1]?.name}（{presets[1]?.start}〜{presets[1]?.end}）</option>
-                    <option value="2">{presets[2]?.name}（{presets[2]?.start}〜{presets[2]?.end}）</option>
-                    <option value="3">{presets[3]?.name}（{presets[3]?.start}〜{presets[3]?.end}）</option>
-                  </select>
 
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-sm text-zinc-800">{labelForSlot(p.pickup_slot_no)}</div>
+                    <button
+                      className="rounded-xl border px-3 py-2 text-sm hover:bg-zinc-50"
+                      onClick={() => setPickupDlg({ id: p.id, name: p.name, current: p.pickup_slot_no ?? 1 })}
+                    >
+                      変更
+                    </button>
+                  </div>
                 </div>
+
+
 
                 {/* 3) 在庫調整 / 削除（横並び） */}
                 <div className="grid grid-cols-2 gap-3">
@@ -1181,6 +1253,21 @@ function ProductForm() {
 
 
       {/* ▼ 在庫調整モーダルをここで描画 */}
+      {/* ▼ 受け取り時間 変更モーダル */}
+      <PickupSlotModal
+        open={!!pickupDlg}
+        productName={pickupDlg?.name ?? ""}
+        initial={pickupDlg?.current ?? 1}
+        presets={presets}
+        disabled={ploading}
+        onClose={() => setPickupDlg(null)}
+        onCommit={async (val) => {
+          if (!pickupDlg) return;
+          await updatePickupSlot(pickupDlg.id, val);
+          setPickupDlg(null);
+        }}
+      />
+
       <StockAdjustModal
         open={!!adjust}
         initial={adjust?.stock ?? 0}
@@ -1202,7 +1289,6 @@ function ProductForm() {
           emitToast('info', '未反映の在庫変更に追加しました');
         }}
       />
-
 
     </div>
   )

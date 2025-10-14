@@ -126,6 +126,21 @@ function pushLog(entry: unknown) {
 
 const fmt = new Intl.NumberFormat("ja-JP", { style: "currency", currency: "JPY" });
 const currency = (n: number) => fmt.format(n);
+// 現在時刻（JST, 分）を返す
+const nowMinutesJST = () => {
+    const parts = new Intl.DateTimeFormat("ja-JP", {
+        timeZone: "Asia/Tokyo",
+        hour12: false,
+        hour: "2-digit",
+        minute: "2-digit",
+    }).formatToParts(new Date());
+    const hh = Number(parts.find(p => p.type === "hour")?.value || "0");
+    const mm = Number(parts.find(p => p.type === "minute")?.value || "0");
+    return hh * 60 + mm;
+};
+
+const LEAD_CUTOFF_MIN = 20; // 受け取り開始の何分前まで不可にするか（UI全体の既定）
+
 const uid = () => Math.random().toString(36).slice(2, 10);
 const to6 = (s: string) => (Array.from(s).reduce((a, c) => a + c.charCodeAt(0), 0) % 1_000_000).toString().padStart(6, "0");
 
@@ -1662,6 +1677,8 @@ export default function UserPilotApp() {
                                                 storeId={sid}
                                                 value={pickupByShop[sid] ?? null}
                                                 onSelect={(slot) => setPickupByShop(prev => ({ ...prev, [sid]: slot }))}
+                                            // leadCutoffMin={20}       // ← 省略すると20
+                                            // nearThresholdMin={30}    // ← 省略すると30（任意）
                                             />
                                             {!pickupByShop[sid] && (
                                                 <p className="mt-2 text-xs text-red-500">受け取り予定時間を選択してください。</p>
@@ -1679,7 +1696,18 @@ export default function UserPilotApp() {
                                     <div className="p-4 border-t mt-2">
                                         <button
                                             type="button"
-                                            onClick={() => { if (!pickupByShop[sid]) return; toOrder(sid); }}
+                                            onClick={() => {
+                                                const sel = pickupByShop[sid];
+                                                if (!sel) return;
+                                                const startMin = Number(sel.start.slice(0, 2)) * 60 + Number(sel.start.slice(3, 5));
+                                                const nowMin = nowMinutesJST();
+                                                if (startMin < nowMin + LEAD_CUTOFF_MIN) {
+                                                    alert(`受け取り開始まで${Math.max(0, startMin - nowMin)}分です。直近枠は選べません（${LEAD_CUTOFF_MIN}分前まで）。`);
+                                                    return;
+                                                }
+                                                toOrder(sid);
+                                            }}
+
                                             disabled={!pickupByShop[sid]}
                                             className={`w-full px-3 py-2 rounded text-white cursor-pointer
     ${!pickupByShop[sid] ? "bg-zinc-300 cursor-not-allowed" : "bg-zinc-900 hover:bg-zinc-800"}`}
@@ -1687,7 +1715,6 @@ export default function UserPilotApp() {
                                         >
                                             注文画面へ
                                         </button>
-
                                     </div>
                                 </div>
                             ))}

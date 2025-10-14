@@ -48,13 +48,28 @@ export default function PickupTimeSelector(props: {
     className?: string;
     /** 近すぎ確認の閾値（分）。既定30分 */
     nearThresholdMin?: number;
+    /** 受け取り開始の何分前から選べないようにするか（分）。既定20分 */
+    leadCutoffMin?: number;
 }) {
-    const { storeId, onSelect, value, className = "", nearThresholdMin = 30 } = props;
+    const {
+        storeId,
+        onSelect,
+        value,
+        className = "",
+        nearThresholdMin = 30,
+        leadCutoffMin = 20,
+    } = props;
+
 
     const [preset, setPreset] = useState<Preset | null>(null);
     const [allSlots, setAllSlots] = useState<PickupSlot[]>([]);
     const [loading, setLoading] = useState(true);
-
+    // 現在時刻（JST, 分）を保持し、1分ごとに更新
+    const [nowMin, setNowMin] = useState(nowMinutesJST());
+    useEffect(() => {
+        const id = setInterval(() => setNowMin(nowMinutesJST()), 60_000);
+        return () => clearInterval(id);
+    }, []);
     // 取得 & スロット生成
     useEffect(() => {
         (async () => {
@@ -104,10 +119,10 @@ export default function PickupTimeSelector(props: {
 
     // ==== 現在以降に限定（JST） ====
     const futureSlots = useMemo(() => {
-        const nowMin = nowMinutesJST();
-        // 開始時刻が“今以降”のスロットだけに限定
-        return allSlots.filter(s => hhmmToMinutes(s.start) >= nowMin);
-    }, [allSlots]);
+        const gate = nowMin + leadCutoffMin;     // ← ここがポイント
+        return allSlots.filter(s => hhmmToMinutes(s.start) >= gate);
+    }, [allSlots, nowMin, leadCutoffMin]);
+
 
     // ==== 「時 → 分」グルーピング ====
     const groups = useMemo(() => {
@@ -140,8 +155,12 @@ export default function PickupTimeSelector(props: {
     const handleSelect = (s: PickupSlot) => {
         const nowMin = nowMinutesJST();
         const startMin = hhmmToMinutes(s.start);
-        const delta = startMin - nowMin; // 分
-        if (delta >= 0 && delta < nearThresholdMin) {
+        const delta = startMin - nowMin; // 分（state由来）
+        if (delta < leadCutoffMin) {
+            alert(`受け取りまで${delta < 0 ? 0 : delta}分です。直近枠は選べません（${leadCutoffMin}分前まで）。`);
+            return;
+        }
+        if (delta < nearThresholdMin) {
             const ok = window.confirm(`受け取りまで ${delta} 分です。時間に余裕はありますか？`);
             if (!ok) return;
         }

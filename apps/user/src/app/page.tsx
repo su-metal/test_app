@@ -693,6 +693,39 @@ export default function UserPilotApp() {
         }
         prevTabRef.current = tab;
     }, [tab, setCart]);
+
+    // 販売時間切れのカート行を間引く（60秒ごと + 即時1回）
+    useEffect(() => {
+        const prune = () => {
+            setCart(cs => {
+                const kept = cs.filter(l => !isPickupExpired(l.item.pickup));
+                if (kept.length !== cs.length) {
+                    emitToast("info", "販売時間を過ぎた商品をカートから削除しました");
+                }
+                return kept;
+            });
+        };
+        prune(); // 初回即時
+        const id = window.setInterval(prune, 60_000);
+        return () => window.clearInterval(id);
+    }, [setCart]);
+
+
+    // カート画面を開いたタイミングでも即時掃除
+    useEffect(() => {
+        if (tab !== "cart") return;
+        setCart(cs => {
+            const kept = cs.filter(l => !isPickupExpired(l.item.pickup));
+            if (kept.length !== cs.length) {
+                emitToast("info", "販売時間を過ぎた商品をカートから削除しました");
+            }
+            return kept;
+        });
+    }, [tab, setCart]);
+
+
+
+
     const [focusedShop, setFocusedShop] = useState<string | undefined>(undefined);
     const [detail, setDetail] = useState<{ shopId: string; item: Item } | null>(null);
     const [allergyOpen, setAllergyOpen] = useState(false);
@@ -2208,18 +2241,59 @@ export default function UserPilotApp() {
                                         {/* 受け取り予定時間（必須）: グループキーで保持 */}
                                         <div className="px-4">
                                             <div className="border-t mt-2 pt-3">
-                                                <PickupTimeSelector
-                                                    storeId={sid}
-                                                    value={pickupByGroup[gkey] ?? null}
-                                                    onSelect={(slot) => setPickupByGroup(prev => ({ ...prev, [gkey]: slot }))}
-                                                    limitWindow={cartGroups[gkey]?.window ?? undefined}
-                                                    stepOverride={(presetMap[sid]?.slots?.[presetMap[sid]?.current ?? 1]?.step) ?? 10}
-                                                />
+                                                {(() => {
+                                                    // 既存ウィンドウを取得（グループ内商品の共通交差）
+                                                    const baseWin = cartGroups[gkey]?.window ?? null;
+
+                                                    // 「今 + LEAD_CUTOFF_MIN（20分）」を計算
+                                                    const nowMin = nowMinutesJST();
+                                                    const minStart = nowMin + LEAD_CUTOFF_MIN;
+
+                                                    // baseWin があるときだけ start を切り上げる
+                                                    let adjustedWin: { start: number; end: number } | null = null;
+                                                    if (baseWin) {
+                                                        const start = Math.max(baseWin.start, minStart);
+                                                        const end = baseWin.end;
+                                                        adjustedWin = (start < end) ? { start, end } : null;
+                                                    }
+                                                    // 枠が全滅したかどうか（baseWin があるケースのみ判定する）
+                                                    const noSlot = (baseWin != null) && (adjustedWin == null);
+
+                                                    return (
+                                                        <>
+                                                            <PickupTimeSelector
+                                                                storeId={sid}
+                                                                value={pickupByGroup[gkey] ?? null}
+                                                                onSelect={(slot) => {
+                                                                    // 保険：外部入力や直打ち対策で 20分前チェックは継続
+                                                                    const startMinSel = Number(slot.start.slice(0, 2)) * 60 + Number(slot.start.slice(3, 5));
+                                                                    const nowMinSel = nowMinutesJST();
+                                                                    if (startMinSel < nowMinSel + LEAD_CUTOFF_MIN) {
+                                                                        emitToast("error", `直近枠は選べません（受け取り${LEAD_CUTOFF_MIN}分前まで）`);
+                                                                        return;
+                                                                    }
+                                                                    setPickupByGroup(prev => ({ ...prev, [gkey]: slot }));
+                                                                }}
+                                                                // ★ ポイント：baseWin がある時だけ渡す。無い時は undefined（セレクタに任せる）
+                                                                limitWindow={adjustedWin ?? undefined}
+                                                                stepOverride={(presetMap[sid]?.slots?.[presetMap[sid]?.current ?? 1]?.step) ?? 10}
+                                                            />
+                                                            {/* baseWin が存在していて、切り上げ後に枠が消えた場合だけ補足を出す */}
+                                                            {noSlot && (
+                                                                <p className="mt-2 text-xs text-zinc-500">
+                                                                    直近枠は選択不可のため、現在は選べる時間帯がありません。時間をおいてお試しください。
+                                                                </p>
+                                                            )}
+                                                        </>
+                                                    );
+                                                })()}
+
                                                 {!pickupByGroup[gkey] && (
                                                     <p className="mt-2 text-xs text-red-500">受け取り予定時間を選択してください。</p>
                                                 )}
                                             </div>
                                         </div>
+
 
                                         <div className="px-4 pt-3">
                                             <div className="flex items-center justify-between text-sm">

@@ -634,30 +634,44 @@ const IconExternal = ({ className = "" }: { className?: string }) => (
     </svg>
 );
 
-/// 画像だけを再レンダーから守る（src/altが変わらない限り再描画しない）
+type ItemImageProps = {
+    src: string;
+    alt: string;
+    className?: string;
+    width?: number | string;
+    height?: number | string;
+};
+
 const ItemImage = React.memo(
-    function ItemImageBase({
-        src,
-        alt,
-        className,
-    }: { src: string; alt: string; className?: string }) {
+    function ItemImageBase({ src, alt, className, width, height }: ItemImageProps) {
         return (
             <img
                 src={src}
                 alt={alt}
                 className={className}
-                // ← ここを同期表示に。lazy/async は “再レンダー時に白に戻る” 原因になる
-                loading="lazy"
-                decoding="async"
+                loading="eager"
+                decoding="sync"
                 draggable={false}
-                // ペイントの白化を閉じ込める（再ペイントしても周囲に影響させない）
-                style={{ transform: 'translateZ(0)', backfaceVisibility: 'hidden', willChange: 'transform', contain: 'paint' as any }}
+                // fetchPriority は型定義が古い環境だと型エラーになることがあるので安全にキャスト
+                {...({ fetchPriority: 'high' } as any)}
+                width={width}
+                height={height}
+                style={{
+                    transform: 'translateZ(0)',
+                    backfaceVisibility: 'hidden',
+                    willChange: 'transform',
+                }}
             />
         );
     },
     (prev, next) =>
-        prev.src === next.src && prev.alt === next.alt && prev.className === next.className
+        prev.src === next.src &&
+        prev.alt === next.alt &&
+        prev.className === next.className &&
+        prev.width === next.width &&
+        prev.height === next.height
 );
+
 
 
 
@@ -1737,7 +1751,7 @@ export default function UserPilotApp() {
 
     // 共通：商品1行（ホーム/カートで再利用）
     // noChrome=true のとき、外枠（rounded/border/bg）を外す
-    const ProductLine = ({
+    const ProductLine = React.memo(function ProductLineBase({
         sid,
         it,
         noChrome = false,
@@ -1745,7 +1759,7 @@ export default function UserPilotApp() {
         sid: string;
         it: Item;
         noChrome?: boolean;
-    }) => {
+    }) {
         const reserved = getReserved(sid, it.id);
         const remain = Math.max(0, it.stock - reserved);
 
@@ -1776,14 +1790,25 @@ export default function UserPilotApp() {
                         title="画像を開く"
                     >
                         {it.main_image_path ? (
-                            <ItemImage
-                                src={`${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/public-images/${it.main_image_path}`}
-                                alt={it.name}
-                                className="w-full h-full object-cover transition-transform group-hover:scale-[1.02] pointer-events-none"
+                            <div
+                                aria-hidden="true"
+                                className="absolute inset-0 pointer-events-none transition-transform group-hover:scale-[1.02]"
+                                style={{
+                                    backgroundImage: `url(${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/public-images/${it.main_image_path})`,
+                                    backgroundSize: 'cover',
+                                    backgroundPosition: 'center',
+                                    // ▼ 再描画時に“真っ白”を見せないためのプレースホルダ色（容器と同系）
+                                    backgroundColor: '#f4f4f5',
+                                    // ▼ GPU面に載せてフラッシュを防止
+                                    transform: 'translateZ(0)',
+                                    backfaceVisibility: 'hidden',
+                                    willChange: 'transform'
+                                }}
                             />
                         ) : (
                             <span className="text-4xl pointer-events-none">{it.photo ?? "🛍️"}</span>
                         )}
+
 
                         {/* のこり個数チップ（クリック非干渉） */}
                         <span aria-hidden="true" className="pointer-events-none absolute left-1.5 bottom-1.5">
@@ -1819,7 +1844,9 @@ export default function UserPilotApp() {
                 </div>
             </div>
         );
-    };
+    });
+
+
 
 
     // 店舗カード詳細メタ開閉
@@ -2509,7 +2536,8 @@ export default function UserPilotApp() {
                                                             className="w-full h-full object-cover select-none"
                                                             draggable={false}
                                                             loading={i === pos ? 'eager' : 'lazy'}
-                                                            decoding="async"
+                                                            decoding={i === pos ? 'sync' : 'async'}
+                                                            style={{ transform: 'translateZ(0)', backfaceVisibility: 'hidden' }}
                                                         />
                                                     </div>
                                                 ))}

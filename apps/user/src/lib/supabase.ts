@@ -17,7 +17,11 @@ if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
  * 店舗スコープをRLSで通すための必須ヘッダ。
  * 指定のストアID（固定）を常時付与します。
  */
-const STORE_ID = "bcfc5e2f-276b-400d-9de7-50f1deb34518";
+// TODO(req v2): ユーザー側の店舗切替に追随できるよう動的化
+const STORE_ID = process.env.NEXT_PUBLIC_STORE_ID;
+if (!STORE_ID) {
+  throw new Error("[supabase] NEXT_PUBLIC_STORE_ID が設定されていません。");
+}
 
 export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   global: {

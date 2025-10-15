@@ -35,13 +35,22 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 try {
                   var saved = null;
                   try { saved = localStorage.getItem('store:selected'); } catch {}
-                  window.__SUPABASE_URL__ = ${JSON.stringify(supabaseUrl)};
-                  window.__SUPABASE_ANON_KEY__ = ${JSON.stringify(supabaseKey)};
-                  window.__STORE_ID__ = saved || ${JSON.stringify(storeId)};
+                  // 正式キー（store/user 両アプリで統一）
+                  window.NEXT_PUBLIC_SUPABASE_URL = ${JSON.stringify(supabaseUrl)};
+                  window.NEXT_PUBLIC_SUPABASE_ANON_KEY = ${JSON.stringify(supabaseKey)};
+                  window.NEXT_PUBLIC_STORE_ID = saved || ${JSON.stringify(storeId)};
+
+                  // 互換エイリアス（既存コード対策）
+                  window.__SUPABASE_URL__ = window.NEXT_PUBLIC_SUPABASE_URL;
+                  window.__SUPABASE_ANON_KEY__ = window.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+                  window.__STORE_ID__ = window.NEXT_PUBLIC_STORE_ID;
                 } catch(e) {
-                  window.__SUPABASE_URL__ = ${JSON.stringify(supabaseUrl)};
-                  window.__SUPABASE_ANON_KEY__ = ${JSON.stringify(supabaseKey)};
-                  window.__STORE_ID__ = ${JSON.stringify(storeId)};
+                  window.NEXT_PUBLIC_SUPABASE_URL = ${JSON.stringify(supabaseUrl)};
+                  window.NEXT_PUBLIC_SUPABASE_ANON_KEY = ${JSON.stringify(supabaseKey)};
+                  window.NEXT_PUBLIC_STORE_ID = ${JSON.stringify(storeId)};
+                  window.__SUPABASE_URL__ = window.NEXT_PUBLIC_SUPABASE_URL;
+                  window.__SUPABASE_ANON_KEY__ = window.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+                  window.__STORE_ID__ = window.NEXT_PUBLIC_STORE_ID;
                 }
               })();
             `,

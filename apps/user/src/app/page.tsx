@@ -73,7 +73,6 @@ function getSupabaseSingleton() {
                 headers: {
                     apikey: anon,
                     Authorization: `Bearer ${anon}`,
-                    'x-store-id': process.env.NEXT_PUBLIC_STORE_ID || '',
                 },
             },
         });
@@ -142,117 +141,6 @@ const nowMinutesJST = () => {
 
 const LEAD_CUTOFF_MIN = 20; // 受け取り開始の何分前まで不可にするか（UI全体の既定）
 
-// === 受取時間ヘルパー： "HH:MM–HH:MM" を [startMin, endMin) に変換 ===
-function parsePickupWindow(label: string): { start: number; end: number } | null {
-    if (!label) return null;
-    // ハイフン/ダッシュのゆらぎ対応（-、–、—、〜 など）
-    const norm = label.replace(/[—–〜~]/g, "-");
-    const m = norm.match(/(\d{1,2}):?(\d{2})\s*-\s*(\d{1,2}):?(\d{2})/);
-    if (!m) return null;
-    const h1 = Number(m[1]), m1 = Number(m[2]);
-    const h2 = Number(m[3]), m2 = Number(m[4]);
-    const start = h1 * 60 + m1;
-    const end = h2 * 60 + m2;
-    if (!(start >= 0 && end > start)) return null;
-    return { start, end };
-}
-const overlaps = (a: { start: number, end: number }, b: { start: number, end: number }) =>
-    a.start < b.end && b.start < a.end; // 端点だけ接する(= end==start)は非重複
-
-// === 同一店舗内のカート行を「受取時間の連結成分」で分割 ===
-type CartGroup = {
-    key: string;              // 例: `${storeId}|g0`
-    storeId: string;
-    lines: CartLine[];
-    window: { start: number; end: number } | null; // グループの結合区間（表示には使わないがメモ）
-};
-
-/** 同一店舗のカート行を、
- *  「グループ内の全商品が共通に重なる時間帯がある」塊ごとに分割する
- *  ※ 連鎖は不許可。10–14 と 15–19 は別グループ。
- */
-function groupCartLinesByPickup(lines: CartLine[]): CartGroup[] {
-    lines = (lines || []).filter(l => l && l.item && typeof l.item.price === 'number' && typeof l.qty === 'number');
-    if (lines.length <= 1) {
-        const sid = lines[0]?.shopId ?? "";
-        return lines.length
-            ? [{
-                key: `${sid}|g0`,
-                storeId: sid,
-                lines: [...lines],
-                window: parsePickupWindow(lines[0].item.pickup),
-            }]
-            : [];
-    }
-
-    const sid = lines[0]?.shopId ?? "";
-
-    // 1) ラベル→区間。区間なしは後で単独グループ化
-    type Win = { start: number; end: number };
-    type Row = { line: CartLine; w: Win | null };
-    const rows: Row[] = lines.map(l => ({ line: l, w: parsePickupWindow(l.item.pickup) }));
-
-    const noWin: CartLine[] = [];
-    const hasWin: { line: CartLine; w: Win }[] = [];
-    for (const r of rows) {
-        if (r.w) {
-            hasWin.push({ line: r.line, w: r.w });
-        } else {
-            noWin.push(r.line);
-        }
-    }
-
-
-    // 2) 開始→終了の安定ソート
-    hasWin.sort((a, b) => (a.w.start - b.w.start) || (a.w.end - b.w.end));
-
-    // 3) 共通交差を保ちながら貪欲に詰める
-    const groups: CartGroup[] = [];
-    let buf: CartLine[] = [];
-    let inter: Win | null = null;
-    let gi = 0;
-
-    const flush = () => {
-        if (buf.length === 0) return;
-        groups.push({
-            key: `${sid}|g${gi++}`,
-            storeId: sid,
-            lines: buf.slice(),
-            window: inter ? { ...inter } : null,
-        });
-        buf = [];
-        inter = null;
-    };
-
-    for (const { line, w } of hasWin) {
-        if (!inter) {
-            inter = { ...w };
-            buf.push(line);
-            continue;
-        }
-        const ns = Math.max(inter.start, w.start);
-        const ne = Math.min(inter.end, w.end);
-        if (ns < ne) {
-            inter = { start: ns, end: ne }; // 共通交差を狭める
-            buf.push(line);
-        } else {
-            // 共通交差が消えたのでここで区切る
-            flush();
-            inter = { ...w };
-            buf.push(line);
-        }
-    }
-    flush();
-
-    // 4) 受取時間が未設定/不正な行は単独グループ
-    for (const l of noWin) {
-        groups.push({ key: `${sid}|g${gi++}`, storeId: sid, lines: [l], window: null });
-    }
-
-    return groups;
-}
-
-
 const uid = () => Math.random().toString(36).slice(2, 10);
 const to6 = (s: string) => (Array.from(s).reduce((a, c) => a + c.charCodeAt(0), 0) % 1_000_000).toString().padStart(6, "0");
 
@@ -268,7 +156,7 @@ const normalizeCode6 = (v: unknown): string => {
     if (digits.length === 6) return digits;
     if (digits.length < 6) return digits.padStart(6, '0');
     // 6桁より長い場合は比較に使わない（不一致扱い）
-    return digits.slice(-6);
+    return digits;
 };
 
 // ---- Toast（非同期通知） ----
@@ -420,109 +308,6 @@ interface Order { id: string; userEmail: string; shopId: string; amount: number;
 
 type ShopWithDistance = Shop & { distance: number };
 
-// === 受取プリセット取得（全店舗分） ===
-// store_id ごとに { current, slots:{[slot_no]:{start,end,name,step}} } を保持
-type PresetSlot = { start: string; end: string; name: string; step: number };
-type StorePresetInfo = { current: number | null, slots: Record<number, PresetSlot> };
-
-function useStorePickupPresets(
-    supabase: SupabaseClient | null,
-    dbStores: any[],
-    dbProducts: any[]
-) {
-    const [map, setMap] = useState<Record<string, StorePresetInfo>>({});
-
-    // 取得対象の store_id を、stores / products の両方からユニークに集める
-    const storeIds = useMemo(() => {
-        const ids = new Set<string>();
-        dbStores.forEach(s => ids.add(String(s.id)));
-        dbProducts.forEach(p => { if (p.store_id) ids.add(String(p.store_id)); });
-        return Array.from(ids);
-    }, [dbStores, dbProducts]);
-
-    useEffect(() => {
-        if (!supabase) return;
-        (async () => {
-            // 1) 現在プリセット番号（stores）
-            const currentById = new Map<string, number | null>();
-            for (const s of dbStores) currentById.set(String(s.id), (s as any).current_pickup_slot_no ?? null);
-
-            // 2) プリセット本体（store_pickup_presets）
-            let sel = supabase
-                .from('store_pickup_presets')
-                .select('store_id,slot_no,name,start_time,end_time,slot_minutes');
-
-            // storeIds があれば IN フィルタ、なければ全件（上限）を読む
-            if (storeIds.length > 0) {
-                sel = sel.in('store_id', storeIds);
-            } else {
-                sel = sel.limit(500);
-            }
-
-            const { data, error } = await sel;
-            if (error) { console.warn('[presets] load error', error); return; }
-
-            const next: Record<string, StorePresetInfo> = {};
-            // 既知の store を初期化
-            for (const sid of storeIds) next[sid] = { current: currentById.get(sid) ?? null, slots: {} };
-
-            for (const row of (data || []) as any[]) {
-                const sid = String(row.store_id);
-                if (!next[sid]) next[sid] = { current: currentById.get(sid) ?? null, slots: {} };
-                next[sid].slots[Number(row.slot_no)] = {
-                    name: (row.name || '').trim() || `プリセット${row.slot_no}`,
-                    start: String(row.start_time).slice(0, 5),
-                    end: String(row.end_time).slice(0, 5),
-                    step: Number(row.slot_minutes || 10),
-                };
-            }
-
-            // 🔎 デバッグ（開発時のみ）
-            if (process.env.NEXT_PUBLIC_DEBUG === '1') {
-                const cnt = Object.keys(next).length;
-                console.info('[presets] built stores:', cnt, next);
-            }
-            // ★ 強制ログ（env無関係）＋ window 公開
-            console.info('[presets] built stores:', Object.keys(next).length, next);
-            if (typeof window !== 'undefined') {
-                (window as any).presetDebug = {
-                    storeIds,
-                    dbStores,
-                    presets: next,
-                };
-            }
-
-
-            setMap(next);
-        })();
-    }, [supabase, JSON.stringify(storeIds), JSON.stringify(dbStores)]);
-
-
-
-    // 商品が未指定 → 店舗の current → 1→2→3 の順で最初に存在するスロットを採用
-    const pickupLabelFor = useCallback((storeId: string, productSlotNo?: number | null) => {
-        const info = map[storeId];
-        if (!info) return null;
-
-        const candidates = [
-            productSlotNo ?? null,
-            info.current ?? null,
-            1, 2, 3
-        ].filter((v) => v != null) as number[];
-
-        for (const no of candidates) {
-            const slot = info.slots[no];
-            if (slot) return `${slot.start}–${slot.end}`;
-        }
-        return null;
-    }, [map]);
-
-
-
-    return { presetMap: map, pickupLabelFor } as const;
-}
-
-
 
 // ---- 初期データ ----
 const seedShops = (): Shop[] => ([
@@ -564,7 +349,6 @@ class MinimalErrorBoundary extends React.Component<React.PropsWithChildren, { ha
                             <button className="px-3 py-2 rounded border cursor-pointer" onClick={() => location.reload()}>再読み込み</button>
                             <button className="px-3 py-2 rounded border cursor-pointer" onClick={async () => { const data = localStorage.getItem("app_logs") || "[]"; const ok = await safeCopy(data); emitToast(ok ? "success" : "error", ok ? "ログをコピーしました" : "ログのコピーに失敗しました"); }}>ログをコピー</button>
                         </div>
-
                     </div>
                 </div>
             );
@@ -634,45 +418,6 @@ const IconExternal = ({ className = "" }: { className?: string }) => (
     </svg>
 );
 
-type ItemImageProps = {
-    src: string;
-    alt: string;
-    className?: string;
-    width?: number | string;
-    height?: number | string;
-};
-
-const ItemImage = React.memo(
-    function ItemImageBase({ src, alt, className, width, height }: ItemImageProps) {
-        return (
-            <img
-                src={src}
-                alt={alt}
-                className={className}
-                loading="eager"
-                decoding="sync"
-                draggable={false}
-                // fetchPriority は型定義が古い環境だと型エラーになることがあるので安全にキャスト
-                {...({ fetchPriority: 'high' } as any)}
-                width={width}
-                height={height}
-                style={{
-                    transform: 'translateZ(0)',
-                    backfaceVisibility: 'hidden',
-                    willChange: 'transform',
-                }}
-            />
-        );
-    },
-    (prev, next) =>
-        prev.src === next.src &&
-        prev.alt === next.alt &&
-        prev.className === next.className &&
-        prev.width === next.width &&
-        prev.height === next.height
-);
-
-
 
 
 export default function UserPilotApp() {
@@ -680,39 +425,13 @@ export default function UserPilotApp() {
     // 永続化
     const [shops, setShops] = useLocalStorageState<Shop[]>(K.shops, seedShops);
     const [cart, setCart] = useLocalStorageState<CartLine[]>(K.cart, []);
-    // item が無い / 価格が数値でない / qty が数値でない行を除去（localStorage 移行時の破損対策）
-    useEffect(() => {
-        setCart(cs =>
-            (cs || []).filter(l =>
-                l &&
-                typeof l.shopId === "string" &&
-                l.item &&
-                typeof l.item.price === "number" && !Number.isNaN(l.item.price) &&
-                typeof l.qty === "number" && !Number.isNaN(l.qty)
-            )
-        );
-    }, [setCart]);
-
     const [orders, setOrders] = useLocalStorageState<Order[]>(K.orders, []);
-    const [pickupByGroup, setPickupByGroup] = useState<Record<string, PickupSlot | null>>({});
-
+    const [pickupByShop, setPickupByShop] = useState<Record<string, PickupSlot | null>>({});
 
     const [userEmail] = useLocalStorageState<string>(K.user, "");
     const [tab, setTab] = useState<"home" | "cart" | "order" | "account">("home");
     // タブの直前値を覚えておく
     const prevTabRef = useRef<typeof tab>(tab);
-
-    // 既存の state 定義のすぐ後あたりに追加
-    useEffect(() => {
-        // item が無い / 価格が数値でない / qty が数値でない行を除去
-        setCart(cs =>
-            cs.filter(l =>
-                l && typeof l.shopId === 'string' &&
-                l.item && typeof l.item.price === 'number' && !Number.isNaN(l.item.price) &&
-                typeof l.qty === 'number' && !Number.isNaN(l.qty)
-            )
-        );
-    }, [setCart]);
 
     // タブが変わったら実行（cart → それ以外 になった時にだけ掃除）
     useEffect(() => {
@@ -724,11 +443,6 @@ export default function UserPilotApp() {
     }, [tab, setCart]);
     const [focusedShop, setFocusedShop] = useState<string | undefined>(undefined);
     const [detail, setDetail] = useState<{ shopId: string; item: Item } | null>(null);
-    const [allergyOpen, setAllergyOpen] = useState(false);
-    // 商品詳細モーダル・ギャラリー用（ネイティブ touch を非パッシブで束ねる）
-    const carouselWrapRef = useRef<HTMLDivElement | null>(null);
-    const touchStateRef = useRef<{ sx: number; sy: number } | null>(null);
-
     useLockBodyScroll(!!detail); // ← 追加：モーダル開閉に連動してスクロール停止
     const detailImages = useMemo<string[]>(() => {
         if (!detail?.item) return [];
@@ -738,147 +452,16 @@ export default function UserPilotApp() {
             detail.item.sub_image_path2,
         ].filter((x): x is string => !!x);
     }, [detail]);
-
-
-
-    // ギャラリー（モーダル）state
-    const [gallery, setGallery] = useState<null | { name: string; paths: string[] }>(null);
-    const [gIndex, setGIndex] = useState(0);
-    // ループ用に左右にクローンを1枚ずつ追加したトラック位置
-    // pos は 0..imgCount+1 を取り、1 が「本来の先頭」
-    const [pos, setPos] = useState(1);
-    const [anim, setAnim] = useState(false); // true のときだけ CSS transition を効かせる
-    const targetIndexRef = useRef(0);        // 次に確定させる gIndex（transition 終了タイミングで反映）
-
-    // クローン付き画像配列 [last, ...detailImages, first]
-    const loopImages = useMemo(() => {
-        if (detailImages.length === 0) return [];
-        return [
-            detailImages[detailImages.length - 1],
-            ...detailImages,
-            detailImages[0],
-        ];
-    }, [detailImages]);
-
-    const imgCount = detailImages.length;
-
-    // 詳細を開いた / 画像セットが変わったときにリセット
-    useEffect(() => {
-        if (!detail || imgCount === 0) return;
-        setGIndex(0);
-        setPos(1);       // 先頭の実画像に対応する位置
-        setAnim(false);  // トラックを一瞬で所定位置へ
-    }, [detail, imgCount]);
-
-    // 表示用URL生成
-    const getImgUrl = useCallback((idx: number) =>
-        `${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/public-images/${detailImages[idx]}`,
-        [detailImages]
-    );
-
-    // 画像プリロード（失敗しても resolve）
-    const preloadImage = useCallback((url: string) => new Promise<void>((resolve) => {
-        const img = new Image();
-        img.onload = () => resolve();
-        img.onerror = () => resolve();
-        img.src = url;
-    }), []);
-
-
-
-
-
     const supabase = useSupabase();
-    type DbProduct = { id: string; store_id?: string; name: string; price?: number; stock?: number; image_url?: string; updated_at?: string, pickup_slot_no?: number | null };
-    type DbStore = { id: string; name: string; created_at?: string; lat?: number; lng?: number; address?: string; cover_image_path?: string | null, current_pickup_slot_no?: number | null };
+    type DbProduct = { id: string; store_id?: string; name: string; price?: number; stock?: number; image_url?: string; updated_at?: string };
+    type DbStore = { id: string; name: string; created_at?: string; lat?: number; lng?: number; address?: string; cover_image_path?: string | null };
 
     const [dbProducts, setDbProducts] = useState<DbProduct[]>([]);
     const [dbStores, setDbStores] = useState<DbStore[]>([]);
-    const { presetMap, pickupLabelFor } = useStorePickupPresets(supabase, dbStores as any[], dbProducts as any[]);
-    // ★ Console から直接呼べるように公開
-    if (typeof window !== 'undefined') {
-        (window as any).pickupTest = (sid: string, slot?: number | null) => pickupLabelFor(sid, slot ?? null);
-        (window as any).presetMap = presetMap;
-    }
+    // ギャラリー（モーダル）state
+    const [gallery, setGallery] = useState<null | { name: string; paths: string[] }>(null);
+    const [gIndex, setGIndex] = useState(0);
 
-
-
-    // ギャラリー移動（無限ループ）
-
-    const goPrev = useCallback(() => {
-        if (imgCount <= 1 || anim) return;
-        const nextIndex = (gIndex - 1 + imgCount) % imgCount;
-        targetIndexRef.current = nextIndex;
-        setAnim(true);
-        setPos(p => p - 1); // 0 に到達したら onTransitionEnd でクローズアップ修正
-    }, [imgCount, anim, gIndex]);
-
-    const goNext = useCallback(() => {
-        if (imgCount <= 1 || anim) return;
-        const nextIndex = (gIndex + 1) % imgCount;
-        targetIndexRef.current = nextIndex;
-        setAnim(true);
-        setPos(p => p + 1); // imgCount+1 に到達したら onTransitionEnd で修正
-    }, [imgCount, anim, gIndex]);
-
-    // タッチ操作（非パッシブ）をネイティブで束ねる：黒画面/チラつき/3枚目で止まる問題を解消
-    useEffect(() => {
-        const el = carouselWrapRef.current;
-        if (!detail || !el) return;
-
-        const onStart = (e: TouchEvent) => {
-            const t = e.touches[0];
-            touchStateRef.current = { sx: t.clientX, sy: t.clientY };
-        };
-
-        const onMove = (e: TouchEvent) => {
-            const st = touchStateRef.current;
-            if (!st) return;
-            const t = e.touches[0];
-            const dx = t.clientX - st.sx;
-            const dy = t.clientY - st.sy;
-            // 水平優位ならスクロールを抑止（※ passive:false なので preventDefault 可）
-            if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 10) {
-                e.preventDefault();
-            }
-        };
-
-        const onEnd = (e: TouchEvent) => {
-            const st = touchStateRef.current;
-            touchStateRef.current = null;
-            if (!st) return;
-            const t = e.changedTouches[0];
-            const dx = t.clientX - st.sx;
-            const dy = t.clientY - st.sy;
-            if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 30) {
-                if (dx > 0) { goPrev(); } else { goNext(); }
-            }
-        };
-
-        // 🔑 passive:false がポイント
-        el.addEventListener('touchstart', onStart, { passive: false });
-        el.addEventListener('touchmove', onMove, { passive: false });
-        el.addEventListener('touchend', onEnd, { passive: false });
-
-        return () => {
-            el.removeEventListener('touchstart', onStart);
-            el.removeEventListener('touchmove', onMove);
-            el.removeEventListener('touchend', onEnd);
-        };
-    }, [detail, goPrev, goNext]);
-
-
-
-    // ←→ キーでも移動
-    useEffect(() => {
-        if (!detail || imgCount <= 1) return;
-        const onKey = (e: KeyboardEvent) => {
-            if (e.key === 'ArrowLeft') { e.preventDefault(); goPrev(); }
-            if (e.key === 'ArrowRight') { e.preventDefault(); goNext(); }
-        };
-        window.addEventListener('keydown', onKey);
-        return () => window.removeEventListener('keydown', onKey);
-    }, [detail, imgCount, goPrev, goNext]);
 
 
     // --- Hydration対策（SSRとクライアント差異を回避） ---
@@ -892,7 +475,7 @@ export default function UserPilotApp() {
         return () => window.removeEventListener('keydown', onKey);
     }, [detail]);
     // 画像を開くたびに先頭へ
-    useEffect(() => { if (detail) { setGIndex(0); setAllergyOpen(false); } }, [detail, setGIndex]);
+    useEffect(() => { if (detail) setGIndex(0); }, [detail, setGIndex]);
 
     const [clock, setClock] = useState<string>("");
     useEffect(() => {
@@ -915,7 +498,8 @@ export default function UserPilotApp() {
         if (!supabase) return;
         (async () => {
             const q = supabase
-                .from("products").select("id,store_id,name,price,stock,updated_at,main_image_path,sub_image_path1,sub_image_path2,pickup_slot_no")
+                .from("products").select("*, main_image_path, sub_image_path1, sub_image_path2")
+
 
             // 必要なら在庫>0や公開フラグで絞ってOK（例）
             // .gt("stock", 0).eq("is_published", true)
@@ -977,13 +561,16 @@ export default function UserPilotApp() {
     }, [supabase]);
 
 
+
+
+
     // DBから stores を読む（全件・上限あり）
     useEffect(() => {
         if (!supabase) return;
         (async () => {
             const { data, error } = await supabase
                 .from("stores")
-                .select("id, name, created_at, lat, lng, address, cover_image_path, current_pickup_slot_no")
+                .select("id, name, created_at, lat, lng, address, cover_image_path")
                 .order("created_at", { ascending: true })
                 .limit(200);
             if (error) {
@@ -1009,9 +596,7 @@ export default function UserPilotApp() {
             const rawStock = (p?.stock ?? p?.quantity ?? p?.stock_count ?? 0);
             const stock = Math.max(0, Number(rawStock) || 0);
 
-            const sid = String(p?.store_id ?? "");
-            const pick = pickupLabelFor(sid, (p as any)?.pickup_slot_no ?? null) || "—";
-
+            // ★ サムネは main → sub1 → sub2 の優先順
             const primary =
                 p?.main_image_path ??
                 p?.sub_image_path1 ??
@@ -1023,10 +608,10 @@ export default function UserPilotApp() {
                 name: String(p.name ?? "不明"),
                 price: Math.max(0, Number(p.price ?? 0) || 0),
                 stock,
-                pickup: pick,                  // ← ここがDB由来になる
+                pickup: "18:00-20:00",
                 note: "",
                 photo: "🛍️",
-                main_image_path: primary,
+                main_image_path: p?.main_image_path ?? null,
                 sub_image_path1: p?.sub_image_path1 ?? null,
                 sub_image_path2: p?.sub_image_path2 ?? null,
             };
@@ -1047,7 +632,7 @@ export default function UserPilotApp() {
         }));
 
         setShops(prev => (JSON.stringify(prev) === JSON.stringify(built) ? prev : built));
-    }, [dbStores, dbProducts, presetMap, setShops]);
+    }, [dbStores, dbProducts, setShops]);
 
     // トースト購読
     const [toast, setToast] = useState<ToastPayload | null>(null);
@@ -1255,10 +840,13 @@ export default function UserPilotApp() {
         };
     }, [pendingKey]); // ← 依存はこのキーだけ（orders丸ごとは不可）
 
+
+
     useEffect(() => {
         console.log('[diag] ANON head =', (process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '').slice(0, 12));
         console.log('[diag] URL  head =', (process.env.NEXT_PUBLIC_SUPABASE_URL || '').slice(0, 20));
     }, []);
+
 
     // DBの商品が取れていて storeId が指定されていれば、その店舗の items を DB で差し替え
     const shopsWithDb = useMemo(() => {
@@ -1267,22 +855,21 @@ export default function UserPilotApp() {
         if (!Array.isArray(dbProducts) || dbProducts.length === 0 || !storeId) return shops;
 
         const mapToItem = (p: any): Item => {
+            // stock / quantity / stock_count のどれかが入っている想定
             const rawStock = (p?.stock ?? p?.quantity ?? p?.stock_count ?? 0);
             const stock = Math.max(0, Number(rawStock) || 0);
-
-            const sid = String(p?.store_id ?? storeId ?? "");
-            const pick = sid ? (pickupLabelFor(sid, (p as any)?.pickup_slot_no ?? null) || "—") : "—";
 
             return {
                 id: String(p.id),
                 name: String(p.name ?? "商品"),
                 price: Math.max(0, Number(p.price ?? 0) || 0),
                 stock,
-                pickup: pick,     // ← DBのプリセット由来へ
+                pickup: "18:00-20:00",
                 note: "",
                 photo: "🛍️",
             };
         };
+
 
         // shops[].id が UUID でない（ローカルID）場合のフォールバック：最初のショップに適用
         const idx = shops.findIndex(s => String(s.id) === String(storeId));
@@ -1292,9 +879,7 @@ export default function UserPilotApp() {
             i === targetIndex ? { ...s, items: dbProducts.map(mapToItem) } : s
         );
 
-        // プリセットが来たら再計算
-    }, [shops, dbProducts, storeId, dbStores, presetMap]);
-
+    }, [shops, dbProducts, storeId, dbStores]);
 
     const shopsSorted = useMemo<ShopWithDistance[]>(
         () => shopsWithDb.map((s, i) => ({ ...s, distance: distKm(i) })),
@@ -1328,67 +913,17 @@ export default function UserPilotApp() {
     }, [cart]);
     const getReserved = (sid: string, itemId: string) => reservedMap.get(`${sid}:${itemId}`) || 0;
 
-    // === ここから「店舗ID＋受取時間グループ」版 ===
-
-    // 店舗→行 の一次グルーピング（これは従来どおり）
-    const cartByStore = useMemo(() => {
-        const g: Record<string, CartLine[]> = {};
-        for (const l of cart) {
-            if (!l || !l.shopId || !l.item) continue;
-            g[l.shopId] ||= [];
-            g[l.shopId].push(l);
-        }
-        return g;
+    // 店舗別のカート情報
+    const cartByShop = useMemo(() => {
+        const g: Record<string, CartLine[]> = {}; for (const l of cart) { (g[l.shopId] ||= []).push(l); } return g;
     }, [cart]);
-
-    // 店舗ごとに「受取時間オーバーラップ」で二次グルーピング
-    const cartGroups = useMemo(() => {
-        const out: Record<string, CartGroup> = {};
-        for (const sid of Object.keys(cartByStore)) {
-            const groups = groupCartLinesByPickup(cartByStore[sid]);
-            for (const g of groups) out[g.key] = g;
-        }
-        return out;
-    }, [cartByStore]);
-
-    // 金額と数量は「グループキー」単位で
-    const totalsByGroup = useMemo(() => {
-        const t: Record<string, number> = {};
-        for (const key in cartGroups) {
-            const lines = cartGroups[key]?.lines ?? [];
-            t[key] = lines.reduce((a, l) => {
-                const price = Number(l?.item?.price ?? 0);
-                const qty = Number(l?.qty ?? 0);
-                return a + (Number.isFinite(price) ? price : 0) * (Number.isFinite(qty) ? qty : 0);
-            }, 0);
-        }
-        return t;
-    }, [cartGroups]);
-
-
-    const qtyByGroup = useMemo(() => {
-        const q: Record<string, number> = {};
-        for (const key in cartGroups) {
-            const lines = cartGroups[key]?.lines ?? [];
-            q[key] = lines.reduce((a, l) => a + (Number.isFinite(Number(l?.qty)) ? Number(l?.qty) : 0), 0);
-        }
-        return q;
-    }, [cartGroups]);
-
-    // 店舗ごとの数量合計（= 旧 qtyByShop 互換）
+    const totalsByShop = useMemo(() => {
+        const t: Record<string, number> = {}; for (const sid in cartByShop) { t[sid] = cartByShop[sid].reduce((a, l) => a + l.item.price * l.qty, 0); } return t;
+    }, [cartByShop]);
     const qtyByShop = useMemo(() => {
-        const m: Record<string, number> = {};
-        for (const gkey in qtyByGroup) {
-            const sid = cartGroups[gkey]?.storeId;
-            if (!sid) continue;
-            m[sid] = (m[sid] || 0) + qtyByGroup[gkey];
-        }
-        return m;
-    }, [qtyByGroup, cartGroups]);
-
-
-    const groupTotal = (gkey: string) => totalsByGroup[gkey] || 0;
-
+        const q: Record<string, number> = {}; for (const sid in cartByShop) { q[sid] = cartByShop[sid].reduce((a, l) => a + l.qty, 0); } return q;
+    }, [cartByShop]);
+    const shopTotal = (sid: string) => totalsByShop[sid] || 0;
 
     // 数量変更（±チップと追加ボタン共通）
     // 置き換え（以前の changeQty をこの実装に）
@@ -1410,7 +945,7 @@ export default function UserPilotApp() {
 
     // 店舗ごとのカートを空にする
     const clearShopCart = (sid: string) => {
-        const count = (cartByStore[sid]?.length ?? 0);
+        const count = (cartByShop[sid]?.length ?? 0);
         if (count === 0) { emitToast("info", "この店舗のカートは空です"); return; }
         setCart(cs => cs.filter(l => l.shopId !== sid));
         const name = shopsById.get(sid)?.name || sid;
@@ -1489,12 +1024,6 @@ export default function UserPilotApp() {
     const [paymentMethod, setPaymentMethod] = useState<"card" | "paypay">("card"); // 支払方法（テスト）
     const unredeemedOrders = useMemo(() => orders.filter(o => o.status === 'paid'), [orders]);
     const redeemedOrders = useMemo(() => orders.filter(o => o.status === 'redeemed'), [orders]);
-    // テストカードのブランド表示（失敗/未入力は TEST 扱い）
-    const payBrand = (() => {
-        const r = validateTestCard(cardDigits);
-        return (r as any).brand || 'TEST';
-    })();
-
 
     // 注文ステータス表示テキスト
     const statusText = (s: Order["status"]) => (
@@ -1532,16 +1061,24 @@ export default function UserPilotApp() {
         setIsPaying(true);
 
         try {
-            // ★ orderTarget は「グループキー」
-            const gkey = orderTarget;
-            const g = gkey ? cartGroups[gkey] : undefined;
-            if (!g) { emitToast("error", "対象カートが見つかりません"); return; }
+            const sid = orderTarget;
 
-            const sid = g.storeId; // 実店舗ID
-            const linesSnapshot = g.lines.map(l => ({ ...l })); // グループ内の行だけ
+            // カード検証
+            let payBrand = "TEST";
+            if (paymentMethod === "card") {
+                const card = validateTestCard(cardDigits);
+                if (!card.ok) { emitToast("error", card.msg); return; }
+                payBrand = card.brand || "TEST";
+            } else {
+                // TODO(req v2): PayPay 本実装。現状はテストとして即時成功扱い。
+                payBrand = "PayPay";
+            }
+
+            // 対象店舗のカートをスナップショット
+            const linesSnapshot = (cartByShop[sid] || []).map(l => ({ ...l }));
             if (linesSnapshot.length === 0) { emitToast("error", "対象カートが空です"); return; }
 
-            // 在庫検証（実店舗IDで参照）
+            // 在庫検証
             for (const l of linesSnapshot) {
                 const inv = itemsById.get(sid)?.get(l.item.id)?.stock ?? 0;
                 if (l.qty > inv) {
@@ -1549,11 +1086,18 @@ export default function UserPilotApp() {
                     return;
                 }
             }
+
             // 金額確定
             const amount = linesSnapshot.reduce((a, l) => a + l.item.price * l.qty, 0);
             const oid = uid();
 
             // Supabase用ペイロード（店舗側は PENDING で受け取り待ち）
+            // store_id は ENV（NEXT_PUBLIC_STORE_ID）の UUID を使用する
+            if (!storeId) {
+                emitToast("error", "STORE_ID が未設定です（.env.local の NEXT_PUBLIC_STORE_ID を確認）");
+                return;
+            }
+
             const orderPayload = {
                 store_id: sid as any, // 購入店舗の id（stores.id）を保存
                 code: to6(oid),
@@ -1663,9 +1207,7 @@ export default function UserPilotApp() {
                         }),
                     }
             );
-            const groupItemKeys = new Set(linesSnapshot.map(l => `${l.shopId}:${l.item.id}`));
-            const nextCart = cart.filter(l => !groupItemKeys.has(`${l.shopId}:${l.item.id}`));
-
+            const nextCart = cart.filter(l => l.shopId !== sid);
 
             startTransition(() => {
                 setShops(nextShops);
@@ -1680,7 +1222,7 @@ export default function UserPilotApp() {
             isPayingRef.current = false;
             setIsPaying(false);
         }
-    }, [orderTarget, isPaying, cardDigits, cartGroups, itemsById, shops, cart, userEmail, supabase, paymentMethod]);
+    }, [orderTarget, isPaying, cardDigits, cartByShop, itemsById, shops, cart, userEmail, supabase, paymentMethod]);
 
     // --- 開発用：この店舗の注文をすべてリセット（削除） ---
     const devResetOrders = useCallback(async () => {
@@ -1751,7 +1293,7 @@ export default function UserPilotApp() {
 
     // 共通：商品1行（ホーム/カートで再利用）
     // noChrome=true のとき、外枠（rounded/border/bg）を外す
-    const ProductLine = React.memo(function ProductLineBase({
+    const ProductLine = ({
         sid,
         it,
         noChrome = false,
@@ -1759,7 +1301,7 @@ export default function UserPilotApp() {
         sid: string;
         it: Item;
         noChrome?: boolean;
-    }) {
+    }) => {
         const reserved = getReserved(sid, it.id);
         const remain = Math.max(0, it.stock - reserved);
 
@@ -1790,25 +1332,18 @@ export default function UserPilotApp() {
                         title="画像を開く"
                     >
                         {it.main_image_path ? (
-                            <div
-                                aria-hidden="true"
-                                className="absolute inset-0 pointer-events-none transition-transform group-hover:scale-[1.02]"
-                                style={{
-                                    backgroundImage: `url(${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/public-images/${it.main_image_path})`,
-                                    backgroundSize: 'cover',
-                                    backgroundPosition: 'center',
-                                    // ▼ 再描画時に“真っ白”を見せないためのプレースホルダ色（容器と同系）
-                                    backgroundColor: '#f4f4f5',
-                                    // ▼ GPU面に載せてフラッシュを防止
-                                    transform: 'translateZ(0)',
-                                    backfaceVisibility: 'hidden',
-                                    willChange: 'transform'
-                                }}
+                            <img
+                                src={`${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/public-images/${it.main_image_path}`}
+                                alt={it.name}
+                                className="w-full h-full object-cover transition-transform group-hover:scale-[1.02] pointer-events-none"
+                                loading="lazy"
+                                decoding="async"
                             />
                         ) : (
-                            <span className="text-4xl pointer-events-none">{it.photo ?? "🛍️"}</span>
+                            <span className="text-4xl pointer-events-none">
+                                {it.photo ?? "🛍️"}
+                            </span>
                         )}
-
 
                         {/* のこり個数チップ（クリック非干渉） */}
                         <span aria-hidden="true" className="pointer-events-none absolute left-1.5 bottom-1.5">
@@ -1844,30 +1379,14 @@ export default function UserPilotApp() {
                 </div>
             </div>
         );
-    });
-
-
+    };
 
 
     // 店舗カード詳細メタ開閉
     const [metaOpen, setMetaOpen] = useState<Record<string, boolean>>({});
 
 
-    // ホーム以外で表示する「戻る」ボタン用の簡易履歴
-    const [tabHistory, setTabHistory] = useState<Array<'home' | 'cart' | 'order' | 'account'>>(['home']);
-    useEffect(() => {
-        try { setTabHistory(h => (h[h.length - 1] === (tab as any) ? h : [...h, tab as any])); } catch {/* noop */ }
-    }, [tab]);
-    const goBack = useCallback(() => {
-        setTabHistory(h => {
-            const next = h.slice(0, Math.max(1, h.length - 1));
-            const prev = next[next.length - 1] ?? 'home';
-            try { if (prev === 'order') setOrderTarget(undefined); } catch {/* noop */ }
-            try { setTab(prev as any); } catch {/* noop */ }
-            return next;
-        });
-    }, [setTab, setOrderTarget]);
-
+    // SSR時は描画を保留してクライアントで初回描画
     if (!hydrated) return null;
 
     return (
@@ -1875,34 +1394,10 @@ export default function UserPilotApp() {
             <div className="min-h-screen bg-[#f6f1e9]">{/* 柔らかいベージュ背景 */}
                 <header className="sticky top-0 z-20 bg-white/85 backdrop-blur border-b">
                     <div className="max-w-[448px] mx-auto px-4 py-3 flex items-center justify-between" suppressHydrationWarning>
-                        {/* ← 左：戻るボタン（home以外で表示） */}
-                        <div className="min-w-[40px]">
-                            {tab !== 'home' ? (
-                                <button
-                                    type="button"
-                                    onClick={goBack}
-                                    aria-label="戻る"
-                                    className="inline-flex items-center justify-center w-9 h-9 rounded-full border bg-white hover:bg-zinc-50"
-                                    title="戻る"
-                                >
-                                    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2"
-                                        strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                                        <polyline points="15 18 9 12 15 6"></polyline>
-                                    </svg>
-                                    <span className="sr-only">戻る</span>
-                                </button>
-                            ) : (
-                                /* ※ home のときは幅合わせのダミー */
-                                <span className="inline-block w-9 h-9" aria-hidden="true" />
-                            )}
-                        </div>
-
-                        {/* 中央のタイトルは削除（空にしてセンタリング維持したいなら空スパンでもOK） */}
-                        <span className="sr-only">ヘッダー</span>
-
-                        {/* → 右：時計＆カートは現状のまま */}
+                        <h1 className="text-lg font-bold">ユーザーアプリ モック v3</h1>
                         <div className="flex items-center gap-3">
                             <div className="text-xs text-zinc-500">{clock || "—"}</div>
+                            {/* カートバッジ */}
                             <button className="relative px-2 py-1 rounded-full border bg-white cursor-pointer" onClick={() => setTab('cart')} aria-label="カートへ">
                                 <span>🛒</span>
                                 <span className="absolute -top-1 -right-1 min-w-5 h-5 px-1 rounded-full bg-zinc-900 text-white text-[10px] flex items-center justify-center">
@@ -1912,7 +1407,6 @@ export default function UserPilotApp() {
                         </div>
                     </div>
                 </header>
-
 
                 <main className="max-w-[448px] mx-auto px-4 pb-28">
                     {tab === "home" && (
@@ -2164,102 +1658,66 @@ export default function UserPilotApp() {
                                     aria-disabled={cart.length === 0}
                                 >カートを全て空にする</button>
                             </div>
-                            {Object.keys(cartGroups).length === 0 && <p className="text-sm text-zinc-500">カートは空です</p>}
-                            {Object.keys(cartGroups).map(gkey => {
-                                const g = cartGroups[gkey];
-                                const sid = g.storeId;
-                                const storeName = shopsById.get(sid)?.name || sid;
-                                const groupQty = qtyByGroup[gkey] || 0;
+                            {Object.keys(cartByShop).length === 0 && <p className="text-sm text-zinc-500">カートは空です</p>}
+                            {Object.keys(cartByShop).map(sid => (
+                                <div key={sid} className="rounded-2xl border bg-white">
+                                    <div className="p-4 border-b flex items-center justify-between">
+                                        <div className="text-sm font-semibold">{shopsById.get(sid)?.name || sid}</div>
+                                    </div>
+                                    <div className="p-4 divide-y divide-zinc-200">
+                                        {(cartByShop[sid] || []).map((l) => (
+                                            <ProductLine key={`${l.item.id}-${sid}`} sid={sid} it={l.item} noChrome />
+                                        ))}
+                                    </div>
 
-                                return (
-                                    <div key={gkey} className="rounded-2xl border bg-white">
-                                        <div className="p-4 border-b flex items-center justify-between">
-                                            <div className="text-sm font-semibold">
-                                                {storeName}
-                                                {/* 同一店舗で複数セクションが並ぶ可能性があるが、UIは既存のまま */}
-                                            </div>
-                                            <button
-                                                type="button"
-                                                onClick={() => {
-                                                    if (g.lines.length === 0) {
-                                                        emitToast("info", "このカートは空です");
-                                                        return;
-                                                    }
-                                                    if (confirm("このグループのカートを空にしますか？")) {
-                                                        // このグループに含まれる行だけを削除
-                                                        const ids = new Set(g.lines.map(l => `${l.shopId}:${l.item.id}`));
-                                                        setCart(cs => cs.filter(l => !ids.has(`${l.shopId}:${l.item.id}`)));
-                                                        emitToast("success", "カートを空にしました");
-                                                    }
-                                                }}
-                                                disabled={g.lines.length === 0}
-                                                className="text-[11px] px-2 py-1 rounded border cursor-pointer disabled:opacity-40"
-                                                aria-disabled={g.lines.length === 0}
-                                                title="このグループのカートを空にする"
-                                            >
-                                                このカートを空にする
-                                            </button>
-                                        </div>
-
-                                        <div className="p-4 divide-y divide-zinc-200">
-                                            {(g.lines ?? [])
-                                                .filter(l => l && l.item && typeof l.qty === "number")
-                                                .map((l, i) => (
-                                                    <ProductLine key={`${l.item?.id ?? "unknown"}-${i}`} sid={sid} it={l.item} noChrome />
-                                                ))}
-
-                                        </div>
-
-                                        {/* 受け取り予定時間（必須）: グループキーで保持 */}
-                                        <div className="px-4">
-                                            <div className="border-t mt-2 pt-3">
-                                                <PickupTimeSelector
-                                                    storeId={sid}
-                                                    value={pickupByGroup[gkey] ?? null}
-                                                    onSelect={(slot) => setPickupByGroup(prev => ({ ...prev, [gkey]: slot }))}
-                                                    limitWindow={cartGroups[gkey]?.window ?? undefined}
-                                                    stepOverride={(presetMap[sid]?.slots?.[presetMap[sid]?.current ?? 1]?.step) ?? 10}
-                                                />
-                                                {!pickupByGroup[gkey] && (
-                                                    <p className="mt-2 text-xs text-red-500">受け取り予定時間を選択してください。</p>
-                                                )}
-                                            </div>
-                                        </div>
-
-                                        <div className="px-4 pt-3">
-                                            <div className="flex items-center justify-between text-sm">
-                                                <span className="font-medium">合計金額</span>
-                                                <span className="tabular-nums font-bold text-lg">{currency(groupTotal(gkey))}</span>
-                                            </div>
-                                        </div>
-
-                                        <div className="p-4 border-t mt-2">
-                                            <button
-                                                type="button"
-                                                onClick={() => {
-                                                    const sel = pickupByGroup[gkey];
-                                                    if (!sel) return;
-                                                    const startMin = Number(sel.start.slice(0, 2)) * 60 + Number(sel.start.slice(3, 5));
-                                                    const nowMin = nowMinutesJST();
-                                                    if (startMin < nowMin + LEAD_CUTOFF_MIN) {
-                                                        alert(`受け取り開始まで${Math.max(0, startMin - nowMin)}分です。直近枠は選べません（${LEAD_CUTOFF_MIN}分前まで）。`);
-                                                        return;
-                                                    }
-                                                    // ★ 注文ターゲットは "グループキー"
-                                                    toOrder(gkey);
-                                                }}
-                                                disabled={!pickupByGroup[gkey]}
-                                                className={`w-full px-3 py-2 rounded text-white cursor-pointer
-            ${!pickupByGroup[gkey] ? "bg-zinc-300 cursor-not-allowed" : "bg-zinc-900 hover:bg-zinc-800"}`}
-                                                aria-disabled={!pickupByGroup[gkey]}
-                                            >
-                                                注文画面へ
-                                            </button>
+                                    {/* 受け取り予定時間（必須） */}
+                                    <div className="px-4">
+                                        <div className="border-t mt-2 pt-3">
+                                            <PickupTimeSelector
+                                                storeId={sid}
+                                                value={pickupByShop[sid] ?? null}
+                                                onSelect={(slot) => setPickupByShop(prev => ({ ...prev, [sid]: slot }))}
+                                            // leadCutoffMin={20}       // ← 省略すると20
+                                            // nearThresholdMin={30}    // ← 省略すると30（任意）
+                                            />
+                                            {!pickupByShop[sid] && (
+                                                <p className="mt-2 text-xs text-red-500">受け取り予定時間を選択してください。</p>
+                                            )}
                                         </div>
                                     </div>
-                                );
-                            })}
 
+
+                                    <div className="px-4 pt-3">
+                                        <div className="flex items-center justify-between text-sm">
+                                            <span className="font-medium">合計金額</span>
+                                            <span className="tabular-nums font-bold text-lg">{currency(shopTotal(sid))}</span>
+                                        </div>
+                                    </div>
+                                    <div className="p-4 border-t mt-2">
+                                        <button
+                                            type="button"
+                                            onClick={() => {
+                                                const sel = pickupByShop[sid];
+                                                if (!sel) return;
+                                                const startMin = Number(sel.start.slice(0, 2)) * 60 + Number(sel.start.slice(3, 5));
+                                                const nowMin = nowMinutesJST();
+                                                if (startMin < nowMin + LEAD_CUTOFF_MIN) {
+                                                    alert(`受け取り開始まで${Math.max(0, startMin - nowMin)}分です。直近枠は選べません（${LEAD_CUTOFF_MIN}分前まで）。`);
+                                                    return;
+                                                }
+                                                toOrder(sid);
+                                            }}
+
+                                            disabled={!pickupByShop[sid]}
+                                            className={`w-full px-3 py-2 rounded text-white cursor-pointer
+    ${!pickupByShop[sid] ? "bg-zinc-300 cursor-not-allowed" : "bg-zinc-900 hover:bg-zinc-800"}`}
+                                            aria-disabled={!pickupByShop[sid]}
+                                        >
+                                            注文画面へ
+                                        </button>
+                                    </div>
+                                </div>
+                            ))}
                         </section>
                     )}
 
@@ -2294,7 +1752,7 @@ export default function UserPilotApp() {
                                                     <div id={`ticket-${o.id}`}>
                                                         <div className="grid grid-cols-2 gap-4 items-center mt-3">
                                                             <div>
-
+                                                                <div className="text-xs text-zinc-500">6桁コード</div>
                                                                 <div className="text-2xl font-mono tracking-widest">{o.code6}</div>
                                                                 <div className="text-xs text-zinc-500 mt-2">合計</div>
                                                                 <div className="text-base font-semibold">{currency(o.amount)}</div>
@@ -2343,124 +1801,150 @@ export default function UserPilotApp() {
                             )}
                         </section>
                     )}
-
+                    {/*
+                    {tab === "order" && orderTarget && (
+                            <h2 className="text-base font-semibold">注文の最終確認</h2>
+                            {!orderTarget && <p className="text-sm text-red-600">対象の店舗カートが見つかりません</p>}
+                            {orderTarget && (
+                                <div className="rounded-2xl border bg-white">
+                                    <div className="p-4 border-b flex items-center justify-between">
+                                        <div className="text-sm font-semibold">{shopsById.get(orderTarget)?.name}</div>
+                                        <div className="text-sm font-semibold">{currency(shopTotal(orderTarget))}</div>
+                                    </div>
+                                    <div className="p-4 space-y-2">
+                                        {(cartByShop[orderTarget] || []).map((l) => (
+                                            <div key={`${l.item.id}-${orderTarget}`} className="text-sm flex items-start justify-between">
+                                                <div>
+                                                    <div className="font-medium">{l.item.name} × {l.qty}</div>
+                                                    <div className="text-xs text-zinc-500">受取 {l.item.pickup} / 注記 {l.item.note || "-"}</div>
+                                                </div>
+                                                <div className="tabular-nums">{currency(l.item.price * l.qty)}</div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                    <div className="p-4 border-t space-y-2">
+                                        <div className="text-xs text-zinc-500">テスト決済：4242… は成功。400000… は失敗（例：4000 0000 0000 0002）。未入力も成功扱い。</div>
+                                        {(() => {
+                                            const d = cardDigits.replace(/\D/g, "").slice(0, 16); const formatted = (d.match(/.{1,4}/g)?.join(" ") ?? d); const len = d.length; return (
+                                                <>
+                                                    <input
+                                                        className="w-full px-3 py-2 rounded border font-mono tracking-widest"
+                                                        placeholder="4242 4242 4242 4242"
+                                                        value={formatted}
+                                                        onChange={e => { const nd = e.target.value.replace(/\D/g, "").slice(0, 16); setCardDigits(nd); }}
+                                                        inputMode="numeric"
+                                                        maxLength={19}
+                                                        autoComplete="cc-number"
+                                                        aria-label="カード番号（テスト）"
+                                                        aria-describedby="card-help"
+                                                    />
+                                                    <div id="card-help" className="flex items-center justify-between text-[11px] text-zinc-500">
+                                                        <span>{len}/16 桁</span>
+                                                        <span>4桁ごとに自動スペース</span>
+                                                    </div>
+                                                    <div className="h-1 bg-zinc-200 rounded">
+                                                        <div className="h-1 bg-zinc-900 rounded" style={{ width: `${(len / 16) * 100}%` }} />
+                                                    </div>
+                                                </>
+                                            );
+                                        })()}
+                                        <button type="button" className="w-full px-3 py-2 rounded border cursor-pointer disabled:opacity-40" onClick={confirmPay} disabled={isPaying || cardDigits.length < 16 || ((cartByShop[orderTarget]?.length ?? 0) === 0)}>注文を確定する（支払い）</button>
+                                    </div>
+                                </div>
+                            )}
+                        </section>
+                    )}
+                    */}
                     {tab === "order" && orderTarget && (
                         <section className="mt-4 space-y-4">
                             <h2 className="text-base font-semibold">注文の最終確認</h2>
-                            {(() => {
-                                const g = cartGroups[orderTarget];           // ★ グループを取得
-                                if (!g) return <div className="text-sm text-red-600">対象カートが見つかりません</div>;
-                                const sid = g.storeId;
-                                const storeName = shopsById.get(sid)?.name || sid;
-                                const total = groupTotal(orderTarget);
-
-                                return (
-                                    <div className="rounded-2xl border bg-white">
-                                        <div className="p-4 border-b flex items-center justify-between">
-                                            <div className="text-sm font-semibold">{storeName}</div>
-                                            <div className="text-sm font-semibold">{currency(total)}</div>
+                            <div className="rounded-2xl border bg-white">
+                                <div className="p-4 border-b flex items-center justify-between">
+                                    <div className="text-sm font-semibold">{shopsById.get(orderTarget)?.name}</div>
+                                    <div className="text-sm font-semibold">{currency(shopTotal(orderTarget))}</div>
+                                </div>
+                                <div className="p-4 space-y-2">
+                                    {(cartByShop[orderTarget] || []).map((l) => (
+                                        <div key={`${l.item.id}-${orderTarget}`} className="text-sm flex items-start justify-between">
+                                            <div>
+                                                <div className="font-medium">{l.item.name} × {l.qty}</div>
+                                                <div className="text-xs text-zinc-500">受取 {l.item.pickup} / 注意 {l.item.note || "-"}</div>
+                                            </div>
+                                            <div className="tabular-nums">{currency(l.item.price * l.qty)}</div>
                                         </div>
-
-                                        {/* カートで選んだ受取時間の表示（グループ基準） */}
+                                    ))}
+                                </div>
+                                <div className="p-4 border-t space-y-2">
+                                    {/* 支払い方法 */}
+                                    <div className="grid grid-cols-2 gap-2" role="group" aria-label="支払い方法">
                                         {(() => {
-                                            const sel = pickupByGroup[orderTarget] ?? null;
+                                            const base = "w-full px-3 py-2 rounded border cursor-pointer text-sm";
+                                            const active = "bg-zinc-900 text-white border-zinc-900";
+                                            const inactive = "bg-white text-zinc-700";
                                             return (
-                                                <div className="p-4 bg-zinc-50 border-t">
-                                                    <div className="text-xs text-zinc-500">受取予定時間</div>
-                                                    <div className="mt-1 text-sm font-medium">
-                                                        {sel ? `${sel.start}〜${sel.end}` : "未選択"}
-                                                    </div>
-                                                </div>
+                                                <>
+                                                    <button
+                                                        type="button"
+                                                        className={`${base} ${paymentMethod === 'card' ? active : inactive}`}
+                                                        aria-pressed={paymentMethod === 'card'}
+                                                        onClick={() => setPaymentMethod('card')}
+                                                    >
+                                                        クレカ
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        className={`${base} ${paymentMethod === 'paypay' ? active : inactive}`}
+                                                        aria-pressed={paymentMethod === 'paypay'}
+                                                        onClick={() => setPaymentMethod('paypay')}
+                                                    >
+                                                        PayPay
+                                                    </button>
+                                                </>
                                             );
                                         })()}
-
-                                        <div className="p-4 space-y-2">
-                                            {(g.lines ?? [])
-                                                .filter(l => l && l.item && typeof l.qty === "number")
-                                                .map((l, i) => (
-                                                    <div key={`${l.item?.id ?? "unknown"}-${i}`} className="text-sm flex items-start justify-between">
-                                                        <div>
-                                                            <div className="font-medium">{l.item?.name ?? "商品"} × {l.qty}</div>
-                                                            <div className="text-xs text-zinc-500">受取 {l.item?.pickup ?? "—"} / 注意 {l.item?.note || "-"}</div>
-                                                        </div>
-                                                        <div className="tabular-nums">{currency((l.item?.price ?? 0) * l.qty)}</div>
-                                                    </div>
-                                                ))}
-
-                                        </div>
-                                        <div className="p-4 border-t space-y-2">
-                                            {/* 支払い方法 */}
-                                            <div className="grid grid-cols-2 gap-2" role="group" aria-label="支払い方法">
-                                                {(() => {
-                                                    const base = "w-full px-3 py-2 rounded border cursor-pointer text-sm";
-                                                    const active = "bg-zinc-900 text-white border-zinc-900";
-                                                    const inactive = "bg-white text-zinc-700";
-                                                    return (
-                                                        <>
-                                                            <button
-                                                                type="button"
-                                                                className={`${base} ${paymentMethod === 'card' ? active : inactive}`}
-                                                                aria-pressed={paymentMethod === 'card'}
-                                                                onClick={() => setPaymentMethod('card')}
-                                                            >
-                                                                クレカ
-                                                            </button>
-                                                            <button
-                                                                type="button"
-                                                                className={`${base} ${paymentMethod === 'paypay' ? active : inactive}`}
-                                                                aria-pressed={paymentMethod === 'paypay'}
-                                                                onClick={() => setPaymentMethod('paypay')}
-                                                            >
-                                                                PayPay
-                                                            </button>
-                                                        </>
-                                                    );
-                                                })()}
-                                            </div>
-                                            <div className="text-xs text-zinc-500">テストカード例: 4242… は成功。400000… は失敗（例: 4000 0000 0000 0002）。入力は数字のみ。</div>
-                                            {(() => {
-                                                const d = cardDigits.replace(/\D/g, "").slice(0, 16);
-                                                const formatted = (d.match(/.{1,4}/g)?.join(" ") ?? d);
-                                                const len = d.length;
-                                                return (
-                                                    <>
-                                                        <input
-                                                            className="w-full px-3 py-2 rounded border font-mono tracking-widest"
-                                                            placeholder="4242 4242 4242 4242"
-                                                            value={formatted}
-                                                            onChange={e => { const nd = e.target.value.replace(/\D/g, "").slice(0, 16); setCardDigits(nd); }}
-                                                            inputMode="numeric"
-                                                            maxLength={19}
-                                                            autoComplete="cc-number"
-                                                            aria-label="カード番号（テスト）"
-                                                            aria-describedby="card-help"
-                                                        />
-                                                        <div id="card-help" className="flex items-center justify-between text-[11px] text-zinc-500">
-                                                            <span>{len}/16 桁</span>
-                                                            <span>4桁ごとにスペース</span>
-                                                        </div>
-                                                        <div className="h-1 bg-zinc-200 rounded">
-                                                            <div className="h-1 bg-zinc-900 rounded" style={{ width: `${(len / 16) * 100}%` }} />
-                                                        </div>
-                                                    </>
-                                                );
-                                            })()}
-                                            <button
-                                                type="button"
-                                                className="w-full px-3 py-2 rounded border cursor-pointer disabled:opacity-40"
-                                                onClick={confirmPay}
-                                                disabled={
-                                                    isPaying ||
-                                                    ((cartGroups[orderTarget]?.lines.length ?? 0) === 0) ||
-                                                    (paymentMethod === 'card' && cardDigits.length < 16)
-                                                }
-                                            >
-                                                支払いを確定する（テスト）
-                                            </button>
-                                        </div>
                                     </div>
-                                );
-                            })()}
+                                    <div className="text-xs text-zinc-500">テストカード例: 4242… は成功。400000… は失敗（例: 4000 0000 0000 0002）。入力は数字のみ。</div>
+                                    {(() => {
+                                        const d = cardDigits.replace(/\D/g, "").slice(0, 16);
+                                        const formatted = (d.match(/.{1,4}/g)?.join(" ") ?? d);
+                                        const len = d.length;
+                                        return (
+                                            <>
+                                                <input
+                                                    className="w-full px-3 py-2 rounded border font-mono tracking-widest"
+                                                    placeholder="4242 4242 4242 4242"
+                                                    value={formatted}
+                                                    onChange={e => { const nd = e.target.value.replace(/\D/g, "").slice(0, 16); setCardDigits(nd); }}
+                                                    inputMode="numeric"
+                                                    maxLength={19}
+                                                    autoComplete="cc-number"
+                                                    aria-label="カード番号（テスト）"
+                                                    aria-describedby="card-help"
+                                                />
+                                                <div id="card-help" className="flex items-center justify-between text-[11px] text-zinc-500">
+                                                    <span>{len}/16 桁</span>
+                                                    <span>4桁ごとにスペース</span>
+                                                </div>
+                                                <div className="h-1 bg-zinc-200 rounded">
+                                                    <div className="h-1 bg-zinc-900 rounded" style={{ width: `${(len / 16) * 100}%` }} />
+                                                </div>
+                                            </>
+                                        );
+                                    })()}
+                                    <button
+                                        type="button"
+                                        className="w-full px-3 py-2 rounded border cursor-pointer disabled:opacity-40"
+                                        onClick={confirmPay}
+                                        disabled={
+                                            isPaying ||
+                                            ((cartByShop[orderTarget]?.length ?? 0) === 0) ||
+                                            (paymentMethod === 'card' && cardDigits.length < 16)
+                                        }
+                                    >
+                                        支払いを確定する（テスト）
+                                    </button>
+                                </div>
+                            </div>
                         </section>
                     )}
                     {tab === "account" && (
@@ -2495,79 +1979,40 @@ export default function UserPilotApp() {
                             onClick={() => setDetail(null)}
                         />
                         <div className="absolute inset-0 flex items-center justify-center p-4 z-[2001]">
-                            <div className="max-w-[520px] w-full bg-white rounded-2xl shadow-xl max-h-[85vh] flex flex-col overflow-hidden">
-                                <div
-                                    className="relative" ref={carouselWrapRef}
-                                >
+                            <div className="max-w-[520px] w-full bg-white rounded-2xl overflow-hidden shadow-xl">
+                                <div className="relative">
                                     {/* メイン画像（3枚ギャラリー） */}
                                     {detailImages.length > 0 ? (
-                                        <div className="relative overflow-hidden rounded-t-2xl bg-black aspect-[16/9]">
-                                            <div
-                                                className="absolute inset-0 h-full"
-                                                style={{
-                                                    display: 'flex',
-                                                    width: `${(imgCount + 2) * 100}%`, // クローン込みの幅
-                                                    height: '100%',
-                                                    transform: `translateX(-${pos * (100 / (imgCount + 2))}%)`,
-                                                    transition: anim ? 'transform 320ms ease' : 'none',
-                                                    willChange: 'transform',
-                                                    backfaceVisibility: 'hidden',
-                                                }}
-                                                onTransitionEnd={() => {
-                                                    // 1) どのケースでもアニメ終了後は必ず解除
-                                                    setAnim(false);
+                                        <img
+                                            key={detailImages[gIndex]}
+                                            src={`${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/public-images/${detailImages[gIndex]}`}
+                                            alt={`${detail.item.name} 画像 ${gIndex + 1}/${detailImages.length}`}
+                                            className="w-full aspect-[4/3] object-cover bg-black"
+                                            loading="eager"
+                                            decoding="async"
+                                        />
 
-                                                    // 2) クローン端にいたら本物へ瞬間ジャンプ（transition なし）
-                                                    setPos((p) => {
-                                                        if (p === 0) return imgCount;        // 左端クローン → 末尾の実画像へ
-                                                        if (p === imgCount + 1) return 1;    // 右端クローン → 先頭の実画像へ
-                                                        return p;                            // 中間ならそのまま
-                                                    });
-
-                                                    // 3) 表示中インデックスを確定
-                                                    setGIndex(targetIndexRef.current);
-                                                }}
-                                            >
-                                                {loopImages.map((path, i) => (
-                                                    <div key={`slide-${i}-${path}`} style={{ width: `${100 / (imgCount + 2)}%`, height: '100%', flex: `0 0 ${100 / (imgCount + 2)}%` }}>
-                                                        <img
-                                                            src={`${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/public-images/${path}`}
-                                                            alt={i === pos ? `${detail.item.name} 画像 ${gIndex + 1}/${imgCount}` : ''}
-                                                            className="w-full h-full object-cover select-none"
-                                                            draggable={false}
-                                                            loading={i === pos ? 'eager' : 'lazy'}
-                                                            decoding={i === pos ? 'sync' : 'async'}
-                                                            style={{ transform: 'translateZ(0)', backfaceVisibility: 'hidden' }}
-                                                        />
-                                                    </div>
-                                                ))}
-                                            </div>
-
-                                            {/* 枚数バッジ n/n */}
-                                            <div className="absolute right-2 bottom-2 px-2 py-0.5 rounded-full bg-black/60 text-white text-xs">
-                                                {imgCount > 0 ? (gIndex + 1) : 0}/{imgCount}
-                                            </div>
-                                        </div>
                                     ) : (
-                                        <div className="w-full h-56 bg-zinc-100 flex items-center justify-center text-6xl rounded-t-2xl">
+                                        <div className="w-full h-56 bg-zinc-100 flex items-center justify-center text-6xl">
                                             <span>{detail.item.photo}</span>
                                         </div>
                                     )}
 
-
-                                    {/* 左右ナビ（2枚以上） */}
-                                    {imgCount > 1 && (
+                                    {/* 左右ナビ（画像が2枚以上あるときだけ） */}
+                                    {detailImages.length > 1 && (
                                         <>
                                             <button
                                                 type="button"
                                                 className="absolute left-2 top-1/2 -translate-y-1/2 px-3 py-2 rounded-full bg-white/90 border shadow hover:bg-white"
-                                                onClick={goPrev}
+                                                onClick={() => setGIndex(i => Math.max(0, i - 1))}
+                                                disabled={gIndex === 0}
                                                 aria-label="前の画像"
                                             >‹</button>
                                             <button
                                                 type="button"
                                                 className="absolute right-2 top-1/2 -translate-y-1/2 px-3 py-2 rounded-full bg-white/90 border shadow hover:bg-white"
-                                                onClick={goNext}
+                                                onClick={() => setGIndex(i => Math.min(detailImages.length - 1, i + 1))}
+                                                disabled={gIndex === detailImages.length - 1}
                                                 aria-label="次の画像"
                                             >›</button>
                                         </>
@@ -2582,8 +2027,31 @@ export default function UserPilotApp() {
                                     >✕</button>
                                 </div>
 
-                                <div className="p-4 space-y-3 overflow-auto">
+                                <div className="p-4 space-y-3">
+                                    {/* サムネトレイ（クリックで切替） */}
+                                    {detailImages.length > 1 && (
+                                        <div className="border-b pb-3 -mt-1">
+                                            <div className="flex items-center gap-2 overflow-x-auto">
+                                                {detailImages.map((pth, idx) => (
+                                                    <button
+                                                        key={pth}
+                                                        className={`relative w-16 h-16 rounded border overflow-hidden ${idx === gIndex ? "ring-2 ring-zinc-900" : ""}`}
+                                                        onClick={() => setGIndex(idx)}
+                                                        aria-label={`サムネイル ${idx + 1}`}
+                                                    >
+                                                        <img
+                                                            src={`${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/public-images/${pth}`}
+                                                            alt={`${detail.item.name} thumb ${idx + 1}`}
+                                                            className="w-full h-full object-cover transition-transform group-hover:scale-[1.02]"
+                                                            loading="lazy"
+                                                            decoding="async"
+                                                        />
 
+                                                    </button>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    )}
 
                                     <div className="text-lg font-semibold leading-tight break-words">{detail.item.name}</div>
                                     <div className="text-sm text-zinc-600 flex items-center gap-3">
@@ -2596,19 +2064,6 @@ export default function UserPilotApp() {
                                     <div className="text-sm text-zinc-700 bg-zinc-50 rounded-xl p-3">
                                         {detail.item.note ? detail.item.note : 'お店のおすすめ商品です。数量限定のため、お早めにお求めください。'}
                                     </div>
-                                    <div className="pt-1">
-                                        <button
-                                            type="button"
-                                            onClick={() => setAllergyOpen(true)}
-                                            className="inline-flex items-center gap-1 text-[13px] text-[#6b0f0f] underline decoration-1 underline-offset-2"
-                                        >
-                                            <span
-                                                aria-hidden
-                                                className="inline-grid place-items-center w-4 h-4 rounded-full bg-[#6b0f0f] text-white text-[10px]"
-                                            >i</span>
-                                            <span>アレルギー・原材料について</span>
-                                        </button>
-                                    </div>
                                     <div className="flex items-center justify-between pt-2">
                                         <div className="text-base font-semibold">{currency(detail.item.price)}</div>
                                         <div className="rounded-full  px-2 py-1">
@@ -2616,37 +2071,13 @@ export default function UserPilotApp() {
                                         </div>
                                     </div>
                                     <div className="grid grid-cols-2 gap-2 pt-1">
-                                        <button type="button" className="px-3 py-2 rounded-xl border" onClick={() => { setAllergyOpen(false); setDetail(null); }}>閉じる</button>
+                                        <button type="button" className="px-3 py-2 rounded-xl border" onClick={() => setDetail(null)}>閉じる</button>
                                         <button type="button" className="px-3 py-2 rounded-xl border bg-zinc-900 text-white" onClick={() => { addToCart(detail.shopId, detail.item); emitToast('success', 'カートに追加しました'); setDetail(null); }}>カートに追加</button>
                                     </div>
                                 </div>
 
                             </div>
                         </div>
-                        {allergyOpen && (
-                            <div className="absolute inset-0 z-[2002] pointer-events-none">
-                                <div className="absolute inset-0 bg-black/30 pointer-events-auto" onClick={() => setAllergyOpen(false)} />
-                                <div className="absolute left-1/2 -translate-x-1/2 bottom-4 w-full max-w-[520px] px-4 pointer-events-auto">
-                                    <div className="mx-auto rounded-2xl bg-white border shadow-2xl overflow-hidden">
-                                        <div className="py-2 grid place-items-center"><div aria-hidden className="h-1.5 w-12 rounded-full bg-zinc-300" /></div>
-                                        <div className="px-4 pb-4">
-                                            <div className="flex items-center justify-center mb-2">
-                                                <span className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-red-700 text-white text-sm" aria-hidden>i</span>
-                                            </div>
-                                            <h3 className="text-lg font-semibold text-center mb-2">アレルギー・原材料について</h3>
-                                            <div className="text-sm text-zinc-700 space-y-2">
-                                                <p>当アプリの商品は食品ロス削減を目的とした性質上、多くの場合、受け取りまで中身がわからない「福袋形式」での販売となります。そのため、個別商品のアレルゲンに関する詳細なご案内が難しいケースがあります。</p>
-                                                <p>ご不安がある場合は、恐れ入りますが<strong>お店へ直接お問い合わせ</strong>ください。可能な範囲でご案内いたします。</p>
-                                                <p className="text-zinc-500">なお、アレルギー等を理由とした商品の指定や入れ替えはお受けできない場合があります。</p>
-                                            </div>
-                                            <div className="mt-3 text-right">
-                                                <button type="button" className="px-3 py-2 rounded-xl border bg-white hover:bg-zinc-50 text-sm" onClick={() => setAllergyOpen(false)}>閉じる</button>
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-                        )}
                     </div>
                 )}
             </div >
@@ -2851,7 +2282,9 @@ function AccountView({
                                     <div id={`history-${o.id}`} className="mt-2 px-1 text-sm">
                                         <div className="grid grid-cols-2 gap-4">
                                             <div>
-                                                <div className="text-xs text-zinc-500">ステータス</div>
+                                                <div className="text-xs text-zinc-500">6桁コード</div>
+                                                <div className="text-base font-mono tracking-widest">{o.code6}</div>
+                                                <div className="text-xs text-zinc-500 mt-2">ステータス</div>
                                                 <div className="text-sm font-medium">{statusText(o.status)}</div>
                                                 <div className="text-xs text-zinc-500 mt-2">合計</div>
                                                 <div className="text-base font-semibold">{currency(o.amount)}</div>
@@ -2888,10 +2321,3 @@ function AccountView({
         </section>
     );
 }
-
-
-
-
-
-
-

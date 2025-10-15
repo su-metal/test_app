@@ -194,7 +194,14 @@ function groupCartLinesByPickup(lines: CartLine[]): CartGroup[] {
 
     const noWin: CartLine[] = [];
     const hasWin: { line: CartLine; w: Win }[] = [];
-    for (const r of rows) (r.w ? hasWin : noWin).push(r as any);
+    for (const r of rows) {
+        if (r.w) {
+            hasWin.push({ line: r.line, w: r.w });
+        } else {
+            noWin.push(r.line);
+        }
+    }
+
 
     // 2) 開始→終了の安定ソート
     hasWin.sort((a, b) => (a.w.start - b.w.start) || (a.w.end - b.w.end));
@@ -634,6 +641,19 @@ export default function UserPilotApp() {
     // 永続化
     const [shops, setShops] = useLocalStorageState<Shop[]>(K.shops, seedShops);
     const [cart, setCart] = useLocalStorageState<CartLine[]>(K.cart, []);
+    // item が無い / 価格が数値でない / qty が数値でない行を除去（localStorage 移行時の破損対策）
+    useEffect(() => {
+        setCart(cs =>
+            (cs || []).filter(l =>
+                l &&
+                typeof l.shopId === "string" &&
+                l.item &&
+                typeof l.item.price === "number" && !Number.isNaN(l.item.price) &&
+                typeof l.qty === "number" && !Number.isNaN(l.qty)
+            )
+        );
+    }, [setCart]);
+
     const [orders, setOrders] = useLocalStorageState<Order[]>(K.orders, []);
     const [pickupByGroup, setPickupByGroup] = useState<Record<string, PickupSlot | null>>({});
 
@@ -1310,6 +1330,7 @@ export default function UserPilotApp() {
         return t;
     }, [cartGroups]);
 
+
     const qtyByGroup = useMemo(() => {
         const q: Record<string, number> = {};
         for (const key in cartGroups) {
@@ -1738,8 +1759,8 @@ export default function UserPilotApp() {
                                 src={`${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/public-images/${it.main_image_path}`}
                                 alt={it.name}
                                 className="w-full h-full object-cover transition-transform group-hover:scale-[1.02] pointer-events-none"
-                                loading="lazy"
-                                decoding="async"
+                                loading="eager"
+                                decoding="sync"
                             />
                         ) : (
                             <span className="text-4xl pointer-events-none">
@@ -2137,9 +2158,12 @@ export default function UserPilotApp() {
                                         </div>
 
                                         <div className="p-4 divide-y divide-zinc-200">
-                                            {g.lines.map(l => (
-                                                <ProductLine key={`${l.item.id}-${gkey}`} sid={sid} it={l.item} noChrome />
-                                            ))}
+                                            {(g.lines ?? [])
+                                                .filter(l => l && l.item && typeof l.qty === "number")
+                                                .map((l, i) => (
+                                                    <ProductLine key={`${l.item?.id ?? "unknown"}-${i}`} sid={sid} it={l.item} noChrome />
+                                                ))}
+
                                         </div>
 
                                         {/* 受け取り予定時間（必須）: グループキーで保持 */}
@@ -2307,15 +2331,18 @@ export default function UserPilotApp() {
                                         })()}
 
                                         <div className="p-4 space-y-2">
-                                            {g.lines.map((l) => (
-                                                <div key={`${l.item.id}-${orderTarget}`} className="text-sm flex items-start justify-between">
-                                                    <div>
-                                                        <div className="font-medium">{l.item.name} × {l.qty}</div>
-                                                        <div className="text-xs text-zinc-500">受取 {l.item.pickup} / 注意 {l.item.note || "-"}</div>
+                                            {(g.lines ?? [])
+                                                .filter(l => l && l.item && typeof l.qty === "number")
+                                                .map((l, i) => (
+                                                    <div key={`${l.item?.id ?? "unknown"}-${i}`} className="text-sm flex items-start justify-between">
+                                                        <div>
+                                                            <div className="font-medium">{l.item?.name ?? "商品"} × {l.qty}</div>
+                                                            <div className="text-xs text-zinc-500">受取 {l.item?.pickup ?? "—"} / 注意 {l.item?.note || "-"}</div>
+                                                        </div>
+                                                        <div className="tabular-nums">{currency((l.item?.price ?? 0) * l.qty)}</div>
                                                     </div>
-                                                    <div className="tabular-nums">{currency(l.item.price * l.qty)}</div>
-                                                </div>
-                                            ))}
+                                                ))}
+
                                         </div>
                                         <div className="p-4 border-t space-y-2">
                                             {/* 支払い方法 */}

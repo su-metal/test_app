@@ -634,6 +634,28 @@ const IconExternal = ({ className = "" }: { className?: string }) => (
     </svg>
 );
 
+// 画像だけを再レンダーから守る（src/altが変わらない限り再描画しない）
+const ItemImage = React.memo(
+    function ItemImageBase({
+        src,
+        alt,
+        className,
+    }: { src: string; alt: string; className?: string }) {
+        return (
+            <img
+                src={src}
+                alt={alt}
+                className={className}
+                loading="lazy"
+                decoding="async"
+                draggable={false}
+                // transformの再計算での白フラッシュを抑える
+                style={{ willChange: 'transform' }}
+            />
+        );
+    },
+    (prev, next) => prev.src === next.src && prev.alt === next.alt && prev.className === next.className
+);
 
 
 export default function UserPilotApp() {
@@ -938,9 +960,6 @@ export default function UserPilotApp() {
     }, [supabase]);
 
 
-
-
-
     // DBから stores を読む（全件・上限あり）
     useEffect(() => {
         if (!supabase) return;
@@ -995,7 +1014,6 @@ export default function UserPilotApp() {
                 sub_image_path2: p?.sub_image_path2 ?? null,
             };
         };
-
 
 
         const fallback = { lat: 35.171, lng: 136.881 }; // 名古屋駅など任意
@@ -1755,18 +1773,15 @@ export default function UserPilotApp() {
                         title="画像を開く"
                     >
                         {it.main_image_path ? (
-                            <img
+                            <ItemImage
                                 src={`${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/public-images/${it.main_image_path}`}
                                 alt={it.name}
                                 className="w-full h-full object-cover transition-transform group-hover:scale-[1.02] pointer-events-none"
-                                loading="eager"
-                                decoding="sync"
                             />
                         ) : (
-                            <span className="text-4xl pointer-events-none">
-                                {it.photo ?? "🛍️"}
-                            </span>
+                            <span className="text-4xl pointer-events-none">{it.photo ?? "🛍️"}</span>
                         )}
+
 
                         {/* のこり個数チップ（クリック非干渉） */}
                         <span aria-hidden="true" className="pointer-events-none absolute left-1.5 bottom-1.5">

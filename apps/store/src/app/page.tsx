@@ -1954,7 +1954,7 @@ export default function StoreApp() {
     <div className="min-h-screen bg-zinc-50">
       <header className="sticky top-0 z-40 bg-white/80 backdrop-blur supports-[backdrop-filter]:bg-white/60 border-b">
         <div className="mx-auto max-w-[448px] px-4 py-3 flex items-center justify-between gap-2">
-          <div className="text-base font-semibold tracking-tight shrink-0">店側アプリ</div>
+          {/* <div className="text-base font-semibold tracking-tight shrink-0">店側アプリ</div> */}
           <nav className="flex flex-wrap items-center gap-1 gap-y-1 text-sm">
             <a href="#/orders" className={`px-3 py-1.5 rounded-lg border shrink-0 ${routeForUI === 'orders' ? 'bg-zinc-900 text-white border-zinc-900' : 'bg-white text-zinc-700 hover:bg-zinc-50'}`} suppressHydrationWarning>注文管理</a>
             <a href="#/products" className={`px-3 py-1.5 rounded-lg border shrink-0 ${routeForUI === 'products' ? 'bg-zinc-900 text-white border-zinc-900' : 'bg-white text-zinc-700 hover:bg-zinc-50'}`} suppressHydrationWarning>商品管理</a>
@@ -1965,6 +1965,13 @@ export default function StoreApp() {
               suppressHydrationWarning
             >
               受取時間
+            </a>
+
+            <a
+              href="/analytics"
+              className="px-3 py-1.5 rounded-lg border shrink-0 bg-white text-zinc-700 hover:bg-zinc-50"
+            >
+              売上・分析
             </a>
 
           </nav>

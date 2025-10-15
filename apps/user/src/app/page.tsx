@@ -73,6 +73,7 @@ function getSupabaseSingleton() {
                 headers: {
                     apikey: anon,
                     Authorization: `Bearer ${anon}`,
+                    'x-store-id': process.env.NEXT_PUBLIC_STORE_ID || '',
                 },
             },
         });
@@ -156,7 +157,7 @@ const normalizeCode6 = (v: unknown): string => {
     if (digits.length === 6) return digits;
     if (digits.length < 6) return digits.padStart(6, '0');
     // 6桁より長い場合は比較に使わない（不一致扱い）
-    return digits;
+    return digits.slice(-6);
 };
 
 // ---- Toast（非同期通知） ----
@@ -1499,6 +1500,22 @@ export default function UserPilotApp() {
 
 
     // SSR時は描画を保留してクライアントで初回描画
+
+    // ホーム以外で表示する「戻る」ボタン用の簡易履歴
+    const [tabHistory, setTabHistory] = useState<Array<'home' | 'cart' | 'order' | 'account'>>(['home']);
+    useEffect(() => {
+        try { setTabHistory(h => (h[h.length - 1] === (tab as any) ? h : [...h, tab as any])); } catch {/* noop */ }
+    }, [tab]);
+    const goBack = useCallback(() => {
+        setTabHistory(h => {
+            const next = h.slice(0, Math.max(1, h.length - 1));
+            const prev = next[next.length - 1] ?? 'home';
+            try { if (prev === 'order') setOrderTarget(undefined); } catch {/* noop */ }
+            try { setTab(prev as any); } catch {/* noop */ }
+            return next;
+        });
+    }, [setTab, setOrderTarget]);
+
     if (!hydrated) return null;
 
     return (
@@ -1521,6 +1538,22 @@ export default function UserPilotApp() {
                 </header>
 
                 <main className="max-w-[448px] mx-auto px-4 pb-28">
+                    {tab !== 'home' && (
+                        <div className="pt-3">
+                            <button
+                                type="button"
+                                onClick={goBack}
+                                aria-label="戻る"
+                                className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full border bg-white hover:bg-zinc-50"
+                                title="戻る"
+                            >
+                                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                    <polyline points="15 18 9 12 15 6"></polyline>
+                                </svg>
+                                <span className="text-sm">戻る</span>
+                            </button>
+                        </div>
+                    )}
                     {tab === "home" && (
                         <section className="mt-4 space-y-4">
                             <h2 className="text-base font-semibold">近くのお店</h2>
@@ -1775,7 +1808,26 @@ export default function UserPilotApp() {
                                 <div key={sid} className="rounded-2xl border bg-white">
                                     <div className="p-4 border-b flex items-center justify-between">
                                         <div className="text-sm font-semibold">{shopsById.get(sid)?.name || sid}</div>
+                                        <button
+                                            type="button"
+                                            onClick={() => {
+                                                if (!cartByShop[sid] || cartByShop[sid].length === 0) {
+                                                    emitToast("info", "この店舗のカートは空です");
+                                                    return;
+                                                }
+                                                if (confirm("この店舗のカートを空にしますか？")) {
+                                                    clearShopCart(sid);
+                                                }
+                                            }}
+                                            disabled={!cartByShop[sid] || cartByShop[sid].length === 0}
+                                            className="text-[11px] px-2 py-1 rounded border cursor-pointer disabled:opacity-40"
+                                            aria-disabled={!cartByShop[sid] || cartByShop[sid].length === 0}
+                                            title="この店舗のカートを空にする"
+                                        >
+                                            この店舗を空にする
+                                        </button>
                                     </div>
+
                                     <div className="p-4 divide-y divide-zinc-200">
                                         {(cartByShop[sid] || []).map((l) => (
                                             <ProductLine key={`${l.item.id}-${sid}`} sid={sid} it={l.item} noChrome />
@@ -1864,7 +1916,7 @@ export default function UserPilotApp() {
                                                     <div id={`ticket-${o.id}`}>
                                                         <div className="grid grid-cols-2 gap-4 items-center mt-3">
                                                             <div>
-                                                                <div className="text-xs text-zinc-500">6桁コード</div>
+
                                                                 <div className="text-2xl font-mono tracking-widest">{o.code6}</div>
                                                                 <div className="text-xs text-zinc-500 mt-2">合計</div>
                                                                 <div className="text-base font-semibold">{currency(o.amount)}</div>
@@ -1975,6 +2027,20 @@ export default function UserPilotApp() {
                                     <div className="text-sm font-semibold">{shopsById.get(orderTarget)?.name}</div>
                                     <div className="text-sm font-semibold">{currency(shopTotal(orderTarget))}</div>
                                 </div>
+
+                                {/* ▼ 追加：カートで選んだ受取時間の表示（店舗ごと） */}
+                                {(() => {
+                                    const sel = pickupByShop[orderTarget] ?? null;
+                                    return (
+                                        <div className="p-4 bg-zinc-50 border-t">
+                                            <div className="text-xs text-zinc-500">受取予定時間</div>
+                                            <div className="mt-1 text-sm font-medium">
+                                                {sel ? `${sel.start}〜${sel.end}` : "未選択"}
+                                            </div>
+                                        </div>
+                                    );
+                                })()}
+
                                 <div className="p-4 space-y-2">
                                     {(cartByShop[orderTarget] || []).map((l) => (
                                         <div key={`${l.item.id}-${orderTarget}`} className="text-sm flex items-start justify-between">
@@ -2394,9 +2460,7 @@ function AccountView({
                                     <div id={`history-${o.id}`} className="mt-2 px-1 text-sm">
                                         <div className="grid grid-cols-2 gap-4">
                                             <div>
-                                                <div className="text-xs text-zinc-500">6桁コード</div>
-                                                <div className="text-base font-mono tracking-widest">{o.code6}</div>
-                                                <div className="text-xs text-zinc-500 mt-2">ステータス</div>
+                                                <div className="text-xs text-zinc-500">ステータス</div>
                                                 <div className="text-sm font-medium">{statusText(o.status)}</div>
                                                 <div className="text-xs text-zinc-500 mt-2">合計</div>
                                                 <div className="text-base font-semibold">{currency(o.amount)}</div>
@@ -2433,3 +2497,6 @@ function AccountView({
         </section>
     );
 }
+
+
+

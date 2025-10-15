@@ -1332,18 +1332,25 @@ export default function UserPilotApp() {
                         title="画像を開く"
                     >
                         {it.main_image_path ? (
-                            <img
-                                src={`${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/public-images/${it.main_image_path}`}
-                                alt={it.name}
-                                className="w-full h-full object-cover transition-transform group-hover:scale-[1.02] pointer-events-none"
-                                loading="lazy"
-                                decoding="async"
+                            <div
+                                aria-hidden="true"
+                                className="absolute inset-0 pointer-events-none transition-transform group-hover:scale-[1.02]"
+                                style={{
+                                    backgroundImage: `url(${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/public-images/${it.main_image_path})`,
+                                    backgroundSize: 'cover',
+                                    backgroundPosition: 'center',
+                                    // ▼ 再描画時に“真っ白”を見せないためのプレースホルダ色（容器と同系）
+                                    backgroundColor: '#f4f4f5',
+                                    // ▼ GPU面に載せてフラッシュを防止
+                                    transform: 'translateZ(0)',
+                                    backfaceVisibility: 'hidden',
+                                    willChange: 'transform'
+                                }}
                             />
                         ) : (
-                            <span className="text-4xl pointer-events-none">
-                                {it.photo ?? "🛍️"}
-                            </span>
+                            <span className="text-4xl pointer-events-none">{it.photo ?? "🛍️"}</span>
                         )}
+
 
                         {/* のこり個数チップ（クリック非干渉） */}
                         <span aria-hidden="true" className="pointer-events-none absolute left-1.5 bottom-1.5">

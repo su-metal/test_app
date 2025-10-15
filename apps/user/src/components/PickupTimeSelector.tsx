@@ -50,6 +50,10 @@ export default function PickupTimeSelector(props: {
     nearThresholdMin?: number;
     /** 受け取り開始の何分前から選べないようにするか（分）。既定20分 */
     leadCutoffMin?: number;
+    /** 追加: この分区間だけで候補を生成（例: {start:600,end:840} = 10:00〜14:00） */
+    limitWindow?: { start: number; end: number };
+    /** 追加: 分刻みの上書き。未指定ならプリセットの slot_minutes を使用 */
+    stepOverride?: number;
 }) {
     const {
         storeId,
@@ -58,6 +62,8 @@ export default function PickupTimeSelector(props: {
         className = "",
         nearThresholdMin = 30,
         leadCutoffMin = 20,
+        limitWindow,
+        stepOverride,
     } = props;
 
 
@@ -74,6 +80,28 @@ export default function PickupTimeSelector(props: {
     useEffect(() => {
         (async () => {
             setLoading(true);
+
+            // ★ 先に limitWindow を評価。妥当ならプリセットを参照せず、ここから直接スロット生成
+            const hasValidLimit =
+                !!limitWindow &&
+                Number.isFinite(limitWindow.start) &&
+                Number.isFinite(limitWindow.end) &&
+                limitWindow.end > limitWindow.start;
+            if (hasValidLimit) {
+                const start = Math.max(0, Math.floor(limitWindow!.start));
+                const end = Math.min(24 * 60, Math.floor(limitWindow!.end));
+                const step = stepOverride ?? 10; // プリセットが無くても 10分刻みにフォールバック
+                const out: PickupSlot[] = [];
+                for (let t = start; t + step <= end; t += step) {
+                    const s = minutesToHHmm(t);
+                    const e = minutesToHHmm(t + step);
+                    out.push({ label: `${s}–${e}`, start: s, end: e });
+                }
+                setPreset(null);     // ラベルは後段で表示名を用意（共通枠）
+                setAllSlots(out);
+                setLoading(false);
+                return;              // ← ここで完了。プリセット取得へは進まない
+            }
 
             const { data: store } = await supabase
                 .from("stores")
@@ -101,7 +129,7 @@ export default function PickupTimeSelector(props: {
             if (p) {
                 const start = hhmmToMinutes(p.start_time);
                 const end = hhmmToMinutes(p.end_time);
-                const step = p.slot_minutes;
+                const step = stepOverride ?? p.slot_minutes;  // ← 上書き可能に
                 const out: PickupSlot[] = [];
                 for (let t = start; t + step <= end; t += step) {
                     const s = minutesToHHmm(t);
@@ -115,14 +143,31 @@ export default function PickupTimeSelector(props: {
 
             setLoading(false);
         })();
-    }, [storeId]);
+    }, [storeId, stepOverride, limitWindow]);  // ← 依存に limitWindow を追加
+
+    // ==== グループの共通交差（分）で絞り込み（指定があるときだけ適用） ====
+    const windowedSlots = useMemo(() => {
+        if (!limitWindow || !(limitWindow.end > limitWindow.start)) return allSlots;
+        const smin = Math.max(0, limitWindow.start);
+        const emin = Math.min(24 * 60, limitWindow.end);
+        return allSlots.filter(s => {
+            const st = hhmmToMinutes(s.start);
+            const en = hhmmToMinutes(s.end);
+            return st >= smin && en <= emin; // 完全に内側のスロットだけ許可
+        });
+    }, [allSlots, limitWindow]);
+
 
     // ==== 現在以降に限定（JST） ====
     const futureSlots = useMemo(() => {
-        const gate = nowMin + leadCutoffMin;     // ← ここがポイント
-        return allSlots.filter(s => hhmmToMinutes(s.start) >= gate);
-    }, [allSlots, nowMin, leadCutoffMin]);
+        const gate = nowMin + leadCutoffMin;
+        return windowedSlots.filter(s => hhmmToMinutes(s.start) >= gate);
+    }, [windowedSlots, nowMin, leadCutoffMin]);
 
+    const displayPresetName = useMemo(
+        () => preset?.name ?? (limitWindow ? "共通枠" : "—"),
+        [preset?.name, limitWindow]
+    );
 
     // ==== 「時 → 分」グルーピング ====
     const groups = useMemo(() => {
@@ -178,13 +223,14 @@ export default function PickupTimeSelector(props: {
     };
 
     if (loading) return <div className={`text-xs text-zinc-500 ${className}`}>受取時間を読み込み中…</div>;
-    if (!preset || allSlots.length === 0) return <div className={`text-xs text-zinc-500 ${className}`}>受取時間の候補がありません。</div>;
+    if (allSlots.length === 0) return <div className={`text-xs text-zinc-500 ${className}`}>受取時間の候補がありません。</div>;
     if (futureSlots.length === 0) {
+
         return (
             <div className={`w-full ${className}`}>
                 <div className="mb-1.5 text-sm font-medium">
                     受け取り予定時間 <span className="text-red-500 ml-1">必須</span>
-                    <span className="ml-2 text-[11px] text-zinc-500">（{preset.name}）</span>
+                    <span className="ml-2 text-[11px] text-zinc-500">（{displayPresetName}）</span>
                 </div>
                 <div className="text-xs text-zinc-500">本日の受け取り可能時間は終了しました。</div>
             </div>
@@ -200,7 +246,7 @@ export default function PickupTimeSelector(props: {
             <div className="mb-1.5 flex items-center justify-between">
                 <div className="text-sm font-medium">
                     受け取り予定時間 <span className="text-red-500 ml-1">必須</span>
-                    <span className="ml-2 text-[11px] text-zinc-500">（{preset.name}）</span>
+                    <span className="ml-2 text-[11px] text-zinc-500">（{displayPresetName}）</span>
                 </div>
             </div>
 

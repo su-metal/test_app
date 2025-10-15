@@ -172,6 +172,7 @@ type CartGroup = {
  *  ※ 連鎖は不許可。10–14 と 15–19 は別グループ。
  */
 function groupCartLinesByPickup(lines: CartLine[]): CartGroup[] {
+    lines = (lines || []).filter(l => l && l.item && typeof l.item.price === 'number' && typeof l.qty === 'number');
     if (lines.length <= 1) {
         const sid = lines[0]?.shopId ?? "";
         return lines.length
@@ -641,6 +642,18 @@ export default function UserPilotApp() {
     const [tab, setTab] = useState<"home" | "cart" | "order" | "account">("home");
     // タブの直前値を覚えておく
     const prevTabRef = useRef<typeof tab>(tab);
+
+    // 既存の state 定義のすぐ後あたりに追加
+    useEffect(() => {
+        // item が無い / 価格が数値でない / qty が数値でない行を除去
+        setCart(cs =>
+            cs.filter(l =>
+                l && typeof l.shopId === 'string' &&
+                l.item && typeof l.item.price === 'number' && !Number.isNaN(l.item.price) &&
+                typeof l.qty === 'number' && !Number.isNaN(l.qty)
+            )
+        );
+    }, [setCart]);
 
     // タブが変わったら実行（cart → それ以外 になった時にだけ掃除）
     useEffect(() => {
@@ -1265,7 +1278,11 @@ export default function UserPilotApp() {
     // 店舗→行 の一次グルーピング（これは従来どおり）
     const cartByStore = useMemo(() => {
         const g: Record<string, CartLine[]> = {};
-        for (const l of cart) (g[l.shopId] ||= []).push(l);
+        for (const l of cart) {
+            if (!l || !l.shopId || !l.item) continue;
+            g[l.shopId] ||= [];
+            g[l.shopId].push(l);
+        }
         return g;
     }, [cart]);
 
@@ -1283,7 +1300,12 @@ export default function UserPilotApp() {
     const totalsByGroup = useMemo(() => {
         const t: Record<string, number> = {};
         for (const key in cartGroups) {
-            t[key] = cartGroups[key].lines.reduce((a, l) => a + l.item.price * l.qty, 0);
+            const lines = cartGroups[key]?.lines ?? [];
+            t[key] = lines.reduce((a, l) => {
+                const price = Number(l?.item?.price ?? 0);
+                const qty = Number(l?.qty ?? 0);
+                return a + (Number.isFinite(price) ? price : 0) * (Number.isFinite(qty) ? qty : 0);
+            }, 0);
         }
         return t;
     }, [cartGroups]);
@@ -1291,7 +1313,8 @@ export default function UserPilotApp() {
     const qtyByGroup = useMemo(() => {
         const q: Record<string, number> = {};
         for (const key in cartGroups) {
-            q[key] = cartGroups[key].lines.reduce((a, l) => a + l.qty, 0);
+            const lines = cartGroups[key]?.lines ?? [];
+            q[key] = lines.reduce((a, l) => a + (Number.isFinite(Number(l?.qty)) ? Number(l?.qty) : 0), 0);
         }
         return q;
     }, [cartGroups]);

@@ -453,6 +453,7 @@ class MinimalErrorBoundary extends React.Component<React.PropsWithChildren, { ha
                             <button className="px-3 py-2 rounded border cursor-pointer" onClick={() => location.reload()}>再読み込み</button>
                             <button className="px-3 py-2 rounded border cursor-pointer" onClick={async () => { const data = localStorage.getItem("app_logs") || "[]"; const ok = await safeCopy(data); emitToast(ok ? "success" : "error", ok ? "ログをコピーしました" : "ログのコピーに失敗しました"); }}>ログをコピー</button>
                         </div>
+
                     </div>
                 </div>
             );
@@ -547,6 +548,11 @@ export default function UserPilotApp() {
     }, [tab, setCart]);
     const [focusedShop, setFocusedShop] = useState<string | undefined>(undefined);
     const [detail, setDetail] = useState<{ shopId: string; item: Item } | null>(null);
+    const [allergyOpen, setAllergyOpen] = useState(false);
+    // 商品詳細モーダル・ギャラリー用（ネイティブ touch を非パッシブで束ねる）
+    const carouselWrapRef = useRef<HTMLDivElement | null>(null);
+    const touchStateRef = useRef<{ sx: number; sy: number } | null>(null);
+
     useLockBodyScroll(!!detail); // ← 追加：モーダル開閉に連動してスクロール停止
     const detailImages = useMemo<string[]>(() => {
         if (!detail?.item) return [];
@@ -556,6 +562,56 @@ export default function UserPilotApp() {
             detail.item.sub_image_path2,
         ].filter((x): x is string => !!x);
     }, [detail]);
+
+
+
+    // ギャラリー（モーダル）state
+    const [gallery, setGallery] = useState<null | { name: string; paths: string[] }>(null);
+    const [gIndex, setGIndex] = useState(0);
+    // ループ用に左右にクローンを1枚ずつ追加したトラック位置
+    // pos は 0..imgCount+1 を取り、1 が「本来の先頭」
+    const [pos, setPos] = useState(1);
+    const [anim, setAnim] = useState(false); // true のときだけ CSS transition を効かせる
+    const targetIndexRef = useRef(0);        // 次に確定させる gIndex（transition 終了タイミングで反映）
+
+    // クローン付き画像配列 [last, ...detailImages, first]
+    const loopImages = useMemo(() => {
+        if (detailImages.length === 0) return [];
+        return [
+            detailImages[detailImages.length - 1],
+            ...detailImages,
+            detailImages[0],
+        ];
+    }, [detailImages]);
+
+    const imgCount = detailImages.length;
+
+    // 詳細を開いた / 画像セットが変わったときにリセット
+    useEffect(() => {
+        if (!detail || imgCount === 0) return;
+        setGIndex(0);
+        setPos(1);       // 先頭の実画像に対応する位置
+        setAnim(false);  // トラックを一瞬で所定位置へ
+    }, [detail, imgCount]);
+
+    // 表示用URL生成
+    const getImgUrl = useCallback((idx: number) =>
+        `${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/public-images/${detailImages[idx]}`,
+        [detailImages]
+    );
+
+    // 画像プリロード（失敗しても resolve）
+    const preloadImage = useCallback((url: string) => new Promise<void>((resolve) => {
+        const img = new Image();
+        img.onload = () => resolve();
+        img.onerror = () => resolve();
+        img.src = url;
+    }), []);
+
+
+
+
+
     const supabase = useSupabase();
     type DbProduct = { id: string; store_id?: string; name: string; price?: number; stock?: number; image_url?: string; updated_at?: string, pickup_slot_no?: number | null };
     type DbStore = { id: string; name: string; created_at?: string; lat?: number; lng?: number; address?: string; cover_image_path?: string | null, current_pickup_slot_no?: number | null };
@@ -570,9 +626,83 @@ export default function UserPilotApp() {
     }
 
 
-    // ギャラリー（モーダル）state
-    const [gallery, setGallery] = useState<null | { name: string; paths: string[] }>(null);
-    const [gIndex, setGIndex] = useState(0);
+
+    // ギャラリー移動（無限ループ）
+
+    const goPrev = useCallback(() => {
+        if (imgCount <= 1 || anim) return;
+        const nextIndex = (gIndex - 1 + imgCount) % imgCount;
+        targetIndexRef.current = nextIndex;
+        setAnim(true);
+        setPos(p => p - 1); // 0 に到達したら onTransitionEnd でクローズアップ修正
+    }, [imgCount, anim, gIndex]);
+
+    const goNext = useCallback(() => {
+        if (imgCount <= 1 || anim) return;
+        const nextIndex = (gIndex + 1) % imgCount;
+        targetIndexRef.current = nextIndex;
+        setAnim(true);
+        setPos(p => p + 1); // imgCount+1 に到達したら onTransitionEnd で修正
+    }, [imgCount, anim, gIndex]);
+
+    // タッチ操作（非パッシブ）をネイティブで束ねる：黒画面/チラつき/3枚目で止まる問題を解消
+    useEffect(() => {
+        const el = carouselWrapRef.current;
+        if (!detail || !el) return;
+
+        const onStart = (e: TouchEvent) => {
+            const t = e.touches[0];
+            touchStateRef.current = { sx: t.clientX, sy: t.clientY };
+        };
+
+        const onMove = (e: TouchEvent) => {
+            const st = touchStateRef.current;
+            if (!st) return;
+            const t = e.touches[0];
+            const dx = t.clientX - st.sx;
+            const dy = t.clientY - st.sy;
+            // 水平優位ならスクロールを抑止（※ passive:false なので preventDefault 可）
+            if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 10) {
+                e.preventDefault();
+            }
+        };
+
+        const onEnd = (e: TouchEvent) => {
+            const st = touchStateRef.current;
+            touchStateRef.current = null;
+            if (!st) return;
+            const t = e.changedTouches[0];
+            const dx = t.clientX - st.sx;
+            const dy = t.clientY - st.sy;
+            if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 30) {
+                if (dx > 0) { goPrev(); } else { goNext(); }
+            }
+        };
+
+        // 🔑 passive:false がポイント
+        el.addEventListener('touchstart', onStart, { passive: false });
+        el.addEventListener('touchmove', onMove, { passive: false });
+        el.addEventListener('touchend', onEnd, { passive: false });
+
+        return () => {
+            el.removeEventListener('touchstart', onStart);
+            el.removeEventListener('touchmove', onMove);
+            el.removeEventListener('touchend', onEnd);
+        };
+    }, [detail, goPrev, goNext]);
+
+
+
+    // ←→ キーでも移動
+    useEffect(() => {
+        if (!detail || imgCount <= 1) return;
+        const onKey = (e: KeyboardEvent) => {
+            if (e.key === 'ArrowLeft') { e.preventDefault(); goPrev(); }
+            if (e.key === 'ArrowRight') { e.preventDefault(); goNext(); }
+        };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+    }, [detail, imgCount, goPrev, goNext]);
 
 
     // --- Hydration対策（SSRとクライアント差異を回避） ---
@@ -586,7 +716,7 @@ export default function UserPilotApp() {
         return () => window.removeEventListener('keydown', onKey);
     }, [detail]);
     // 画像を開くたびに先頭へ
-    useEffect(() => { if (detail) setGIndex(0); }, [detail, setGIndex]);
+    useEffect(() => { if (detail) { setGIndex(0); setAllergyOpen(false); } }, [detail, setGIndex]);
 
     const [clock, setClock] = useState<string>("");
     useEffect(() => {
@@ -1499,8 +1629,6 @@ export default function UserPilotApp() {
     const [metaOpen, setMetaOpen] = useState<Record<string, boolean>>({});
 
 
-    // SSR時は描画を保留してクライアントで初回描画
-
     // ホーム以外で表示する「戻る」ボタン用の簡易履歴
     const [tabHistory, setTabHistory] = useState<Array<'home' | 'cart' | 'order' | 'account'>>(['home']);
     useEffect(() => {
@@ -1523,10 +1651,34 @@ export default function UserPilotApp() {
             <div className="min-h-screen bg-[#f6f1e9]">{/* 柔らかいベージュ背景 */}
                 <header className="sticky top-0 z-20 bg-white/85 backdrop-blur border-b">
                     <div className="max-w-[448px] mx-auto px-4 py-3 flex items-center justify-between" suppressHydrationWarning>
-                        <h1 className="text-lg font-bold">ユーザーアプリ モック v3</h1>
+                        {/* ← 左：戻るボタン（home以外で表示） */}
+                        <div className="min-w-[40px]">
+                            {tab !== 'home' ? (
+                                <button
+                                    type="button"
+                                    onClick={goBack}
+                                    aria-label="戻る"
+                                    className="inline-flex items-center justify-center w-9 h-9 rounded-full border bg-white hover:bg-zinc-50"
+                                    title="戻る"
+                                >
+                                    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2"
+                                        strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                        <polyline points="15 18 9 12 15 6"></polyline>
+                                    </svg>
+                                    <span className="sr-only">戻る</span>
+                                </button>
+                            ) : (
+                                /* ※ home のときは幅合わせのダミー */
+                                <span className="inline-block w-9 h-9" aria-hidden="true" />
+                            )}
+                        </div>
+
+                        {/* 中央のタイトルは削除（空にしてセンタリング維持したいなら空スパンでもOK） */}
+                        <span className="sr-only">ヘッダー</span>
+
+                        {/* → 右：時計＆カートは現状のまま */}
                         <div className="flex items-center gap-3">
                             <div className="text-xs text-zinc-500">{clock || "—"}</div>
-                            {/* カートバッジ */}
                             <button className="relative px-2 py-1 rounded-full border bg-white cursor-pointer" onClick={() => setTab('cart')} aria-label="カートへ">
                                 <span>🛒</span>
                                 <span className="absolute -top-1 -right-1 min-w-5 h-5 px-1 rounded-full bg-zinc-900 text-white text-[10px] flex items-center justify-center">
@@ -1537,23 +1689,8 @@ export default function UserPilotApp() {
                     </div>
                 </header>
 
+
                 <main className="max-w-[448px] mx-auto px-4 pb-28">
-                    {tab !== 'home' && (
-                        <div className="pt-3">
-                            <button
-                                type="button"
-                                onClick={goBack}
-                                aria-label="戻る"
-                                className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full border bg-white hover:bg-zinc-50"
-                                title="戻る"
-                            >
-                                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                                    <polyline points="15 18 9 12 15 6"></polyline>
-                                </svg>
-                                <span className="text-sm">戻る</span>
-                            </button>
-                        </div>
-                    )}
                     {tab === "home" && (
                         <section className="mt-4 space-y-4">
                             <h2 className="text-base font-semibold">近くのお店</h2>
@@ -2157,40 +2294,78 @@ export default function UserPilotApp() {
                             onClick={() => setDetail(null)}
                         />
                         <div className="absolute inset-0 flex items-center justify-center p-4 z-[2001]">
-                            <div className="max-w-[520px] w-full bg-white rounded-2xl overflow-hidden shadow-xl">
-                                <div className="relative">
+                            <div className="max-w-[520px] w-full bg-white rounded-2xl shadow-xl max-h-[85vh] flex flex-col overflow-hidden">
+                                <div
+                                    className="relative" ref={carouselWrapRef}
+                                >
                                     {/* メイン画像（3枚ギャラリー） */}
                                     {detailImages.length > 0 ? (
-                                        <img
-                                            key={detailImages[gIndex]}
-                                            src={`${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/public-images/${detailImages[gIndex]}`}
-                                            alt={`${detail.item.name} 画像 ${gIndex + 1}/${detailImages.length}`}
-                                            className="w-full aspect-[4/3] object-cover bg-black"
-                                            loading="eager"
-                                            decoding="async"
-                                        />
+                                        <div className="relative overflow-hidden rounded-t-2xl bg-black aspect-[16/9]">
+                                            <div
+                                                className="absolute inset-0 h-full"
+                                                style={{
+                                                    display: 'flex',
+                                                    width: `${(imgCount + 2) * 100}%`, // クローン込みの幅
+                                                    height: '100%',
+                                                    transform: `translateX(-${pos * (100 / (imgCount + 2))}%)`,
+                                                    transition: anim ? 'transform 320ms ease' : 'none',
+                                                    willChange: 'transform',
+                                                    backfaceVisibility: 'hidden',
+                                                }}
+                                                onTransitionEnd={() => {
+                                                    // 1) どのケースでもアニメ終了後は必ず解除
+                                                    setAnim(false);
 
+                                                    // 2) クローン端にいたら本物へ瞬間ジャンプ（transition なし）
+                                                    setPos((p) => {
+                                                        if (p === 0) return imgCount;        // 左端クローン → 末尾の実画像へ
+                                                        if (p === imgCount + 1) return 1;    // 右端クローン → 先頭の実画像へ
+                                                        return p;                            // 中間ならそのまま
+                                                    });
+
+                                                    // 3) 表示中インデックスを確定
+                                                    setGIndex(targetIndexRef.current);
+                                                }}
+                                            >
+                                                {loopImages.map((path, i) => (
+                                                    <div key={`slide-${i}-${path}`} style={{ width: `${100 / (imgCount + 2)}%`, height: '100%', flex: `0 0 ${100 / (imgCount + 2)}%` }}>
+                                                        <img
+                                                            src={`${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/public-images/${path}`}
+                                                            alt={i === pos ? `${detail.item.name} 画像 ${gIndex + 1}/${imgCount}` : ''}
+                                                            className="w-full h-full object-cover select-none"
+                                                            draggable={false}
+                                                            loading={i === pos ? 'eager' : 'lazy'}
+                                                            decoding="async"
+                                                        />
+                                                    </div>
+                                                ))}
+                                            </div>
+
+                                            {/* 枚数バッジ n/n */}
+                                            <div className="absolute right-2 bottom-2 px-2 py-0.5 rounded-full bg-black/60 text-white text-xs">
+                                                {imgCount > 0 ? (gIndex + 1) : 0}/{imgCount}
+                                            </div>
+                                        </div>
                                     ) : (
-                                        <div className="w-full h-56 bg-zinc-100 flex items-center justify-center text-6xl">
+                                        <div className="w-full h-56 bg-zinc-100 flex items-center justify-center text-6xl rounded-t-2xl">
                                             <span>{detail.item.photo}</span>
                                         </div>
                                     )}
 
-                                    {/* 左右ナビ（画像が2枚以上あるときだけ） */}
-                                    {detailImages.length > 1 && (
+
+                                    {/* 左右ナビ（2枚以上） */}
+                                    {imgCount > 1 && (
                                         <>
                                             <button
                                                 type="button"
                                                 className="absolute left-2 top-1/2 -translate-y-1/2 px-3 py-2 rounded-full bg-white/90 border shadow hover:bg-white"
-                                                onClick={() => setGIndex(i => Math.max(0, i - 1))}
-                                                disabled={gIndex === 0}
+                                                onClick={goPrev}
                                                 aria-label="前の画像"
                                             >‹</button>
                                             <button
                                                 type="button"
                                                 className="absolute right-2 top-1/2 -translate-y-1/2 px-3 py-2 rounded-full bg-white/90 border shadow hover:bg-white"
-                                                onClick={() => setGIndex(i => Math.min(detailImages.length - 1, i + 1))}
-                                                disabled={gIndex === detailImages.length - 1}
+                                                onClick={goNext}
                                                 aria-label="次の画像"
                                             >›</button>
                                         </>
@@ -2205,31 +2380,8 @@ export default function UserPilotApp() {
                                     >✕</button>
                                 </div>
 
-                                <div className="p-4 space-y-3">
-                                    {/* サムネトレイ（クリックで切替） */}
-                                    {detailImages.length > 1 && (
-                                        <div className="border-b pb-3 -mt-1">
-                                            <div className="flex items-center gap-2 overflow-x-auto">
-                                                {detailImages.map((pth, idx) => (
-                                                    <button
-                                                        key={pth}
-                                                        className={`relative w-16 h-16 rounded border overflow-hidden ${idx === gIndex ? "ring-2 ring-zinc-900" : ""}`}
-                                                        onClick={() => setGIndex(idx)}
-                                                        aria-label={`サムネイル ${idx + 1}`}
-                                                    >
-                                                        <img
-                                                            src={`${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/public-images/${pth}`}
-                                                            alt={`${detail.item.name} thumb ${idx + 1}`}
-                                                            className="w-full h-full object-cover transition-transform group-hover:scale-[1.02]"
-                                                            loading="lazy"
-                                                            decoding="async"
-                                                        />
+                                <div className="p-4 space-y-3 overflow-auto">
 
-                                                    </button>
-                                                ))}
-                                            </div>
-                                        </div>
-                                    )}
 
                                     <div className="text-lg font-semibold leading-tight break-words">{detail.item.name}</div>
                                     <div className="text-sm text-zinc-600 flex items-center gap-3">
@@ -2242,6 +2394,19 @@ export default function UserPilotApp() {
                                     <div className="text-sm text-zinc-700 bg-zinc-50 rounded-xl p-3">
                                         {detail.item.note ? detail.item.note : 'お店のおすすめ商品です。数量限定のため、お早めにお求めください。'}
                                     </div>
+                                    <div className="pt-1">
+                                        <button
+                                            type="button"
+                                            onClick={() => setAllergyOpen(true)}
+                                            className="inline-flex items-center gap-1 text-[13px] text-[#6b0f0f] underline decoration-1 underline-offset-2"
+                                        >
+                                            <span
+                                                aria-hidden
+                                                className="inline-grid place-items-center w-4 h-4 rounded-full bg-[#6b0f0f] text-white text-[10px]"
+                                            >i</span>
+                                            <span>アレルギー・原材料について</span>
+                                        </button>
+                                    </div>
                                     <div className="flex items-center justify-between pt-2">
                                         <div className="text-base font-semibold">{currency(detail.item.price)}</div>
                                         <div className="rounded-full  px-2 py-1">
@@ -2249,13 +2414,37 @@ export default function UserPilotApp() {
                                         </div>
                                     </div>
                                     <div className="grid grid-cols-2 gap-2 pt-1">
-                                        <button type="button" className="px-3 py-2 rounded-xl border" onClick={() => setDetail(null)}>閉じる</button>
+                                        <button type="button" className="px-3 py-2 rounded-xl border" onClick={() => { setAllergyOpen(false); setDetail(null); }}>閉じる</button>
                                         <button type="button" className="px-3 py-2 rounded-xl border bg-zinc-900 text-white" onClick={() => { addToCart(detail.shopId, detail.item); emitToast('success', 'カートに追加しました'); setDetail(null); }}>カートに追加</button>
                                     </div>
                                 </div>
 
                             </div>
                         </div>
+                        {allergyOpen && (
+                            <div className="absolute inset-0 z-[2002] pointer-events-none">
+                                <div className="absolute inset-0 bg-black/30 pointer-events-auto" onClick={() => setAllergyOpen(false)} />
+                                <div className="absolute left-1/2 -translate-x-1/2 bottom-4 w-full max-w-[520px] px-4 pointer-events-auto">
+                                    <div className="mx-auto rounded-2xl bg-white border shadow-2xl overflow-hidden">
+                                        <div className="py-2 grid place-items-center"><div aria-hidden className="h-1.5 w-12 rounded-full bg-zinc-300" /></div>
+                                        <div className="px-4 pb-4">
+                                            <div className="flex items-center justify-center mb-2">
+                                                <span className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-red-700 text-white text-sm" aria-hidden>i</span>
+                                            </div>
+                                            <h3 className="text-lg font-semibold text-center mb-2">アレルギー・原材料について</h3>
+                                            <div className="text-sm text-zinc-700 space-y-2">
+                                                <p>当アプリの商品は食品ロス削減を目的とした性質上、多くの場合、受け取りまで中身がわからない「福袋形式」での販売となります。そのため、個別商品のアレルゲンに関する詳細なご案内が難しいケースがあります。</p>
+                                                <p>ご不安がある場合は、恐れ入りますが<strong>お店へ直接お問い合わせ</strong>ください。可能な範囲でご案内いたします。</p>
+                                                <p className="text-zinc-500">なお、アレルギー等を理由とした商品の指定や入れ替えはお受けできない場合があります。</p>
+                                            </div>
+                                            <div className="mt-3 text-right">
+                                                <button type="button" className="px-3 py-2 rounded-xl border bg-white hover:bg-zinc-50 text-sm" onClick={() => setAllergyOpen(false)}>閉じる</button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
                     </div>
                 )}
             </div >
@@ -2497,6 +2686,7 @@ function AccountView({
         </section>
     );
 }
+
 
 
 

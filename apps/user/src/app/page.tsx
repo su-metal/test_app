@@ -634,7 +634,7 @@ const IconExternal = ({ className = "" }: { className?: string }) => (
     </svg>
 );
 
-// 画像だけを再レンダーから守る（src/altが変わらない限り再描画しない）
+/// 画像だけを再レンダーから守る（src/altが変わらない限り再描画しない）
 const ItemImage = React.memo(
     function ItemImageBase({
         src,
@@ -646,16 +646,19 @@ const ItemImage = React.memo(
                 src={src}
                 alt={alt}
                 className={className}
+                // ← ここを同期表示に。lazy/async は “再レンダー時に白に戻る” 原因になる
                 loading="lazy"
                 decoding="async"
                 draggable={false}
-                // transformの再計算での白フラッシュを抑える
-                style={{ willChange: 'transform' }}
+                // ペイントの白化を閉じ込める（再ペイントしても周囲に影響させない）
+                style={{ transform: 'translateZ(0)', backfaceVisibility: 'hidden', willChange: 'transform', contain: 'paint' as any }}
             />
         );
     },
-    (prev, next) => prev.src === next.src && prev.alt === next.alt && prev.className === next.className
+    (prev, next) =>
+        prev.src === next.src && prev.alt === next.alt && prev.className === next.className
 );
+
 
 
 export default function UserPilotApp() {
@@ -1782,7 +1785,6 @@ export default function UserPilotApp() {
                             <span className="text-4xl pointer-events-none">{it.photo ?? "🛍️"}</span>
                         )}
 
-
                         {/* のこり個数チップ（クリック非干渉） */}
                         <span aria-hidden="true" className="pointer-events-none absolute left-1.5 bottom-1.5">
                             <RemainChip remain={remain} className="shadow-sm" />
@@ -2858,6 +2860,9 @@ function AccountView({
         </section>
     );
 }
+
+
+
 
 
 

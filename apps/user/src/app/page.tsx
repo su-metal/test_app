@@ -156,6 +156,16 @@ function parsePickupWindow(label: string): { start: number; end: number } | null
     if (!(start >= 0 && end > start)) return null;
     return { start, end };
 }
+
+// 受け取り終了（＝現在時刻が受取窓の end を過ぎている）かどうか
+function isPickupExpired(label: string): boolean {
+    const win = parsePickupWindow(label);
+    if (!win) return false; // ラベル不正や未設定は表示対象のまま
+    const now = nowMinutesJST();
+    return now >= win.end;  // end を過ぎたら「期限切れ」
+}
+
+
 const overlaps = (a: { start: number, end: number }, b: { start: number, end: number }) =>
     a.start < b.end && b.start < a.end; // 端点だけ接する(= end==start)は非重複
 
@@ -1714,8 +1724,9 @@ export default function UserPilotApp() {
         );
     };
 
-    // 共通：商品1行（ホーム/カートで再利用）
+
     // noChrome=true のとき、外枠（rounded/border/bg）を外す
+    // 共通：商品1行（ホーム/カートで再利用）
     const ProductLine = ({
         sid,
         it,
@@ -1727,13 +1738,16 @@ export default function UserPilotApp() {
     }) => {
         const reserved = getReserved(sid, it.id);
         const remain = Math.max(0, it.stock - reserved);
+        // 「決済で在庫が引かれた（＝ products.stock が 0）」ときだけ Sold out を表示
+        const isSoldOut = it.stock <= 0;
+
 
         const wrapBase = "relative flex gap-3 p-2 pr-3";
         const chrome = "rounded-2xl border bg-white";
         const wrapperCls = `${wrapBase} ${noChrome ? "" : chrome}`;
 
         return (
-            <div className={wrapperCls}>
+            <div className={`${wrapperCls} ${isSoldOut ? "opacity-85" : ""}`}>
                 <div className="flex items-start gap-3 flex-1 min-w-0">
                     {/* サムネ（main → sub1 → sub2 → 絵文字） */}
                     <button
@@ -1747,12 +1761,10 @@ export default function UserPilotApp() {
                                 (e.currentTarget as HTMLButtonElement).click();
                             }
                         }}
-                        onClick={() => {
-                            setDetail({ shopId: sid, item: it });
-                            setGIndex(0);
-                        }}
+                        onClick={() => { setDetail({ shopId: sid, item: it }); setGIndex(0); }}
                         className="relative w-24 h-24 overflow-hidden rounded-xl bg-zinc-100 flex items-center justify-center shrink-0 border cursor-pointer group focus:outline-none focus:ring-2 focus:ring-zinc-900/50"
                         title="画像を開く"
+                        aria-disabled={isSoldOut}
                     >
                         {it.main_image_path ? (
                             <div
@@ -1762,9 +1774,7 @@ export default function UserPilotApp() {
                                     backgroundImage: `url(${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/public-images/${it.main_image_path})`,
                                     backgroundSize: 'cover',
                                     backgroundPosition: 'center',
-                                    // ▼ 再描画時に“真っ白”を見せないためのプレースホルダ色（容器と同系）
                                     backgroundColor: '#f4f4f5',
-                                    // ▼ GPU面に載せてフラッシュを防止
                                     transform: 'translateZ(0)',
                                     backfaceVisibility: 'hidden',
                                     willChange: 'transform'
@@ -1774,6 +1784,19 @@ export default function UserPilotApp() {
                             <span className="text-4xl pointer-events-none">{it.photo ?? "🛍️"}</span>
                         )}
 
+                        {/* 売り切れオーバーレイ */}
+                        {isSoldOut && (
+                            <div className="absolute inset-0 bg-black/45 pointer-events-none rounded-xl" aria-hidden="true" />
+                        )}
+
+                        {/* 売り切れリボン */}
+                        {isSoldOut && (
+                            <div className="absolute -left-3 top-2 rotate-[-18deg] pointer-events-none" aria-hidden="true">
+                                <span className="inline-block bg-red-600 text-white text-[11px] px-3 py-1 rounded">
+                                    Sold out
+                                </span>
+                            </div>
+                        )}
 
                         {/* のこり個数チップ（クリック非干渉） */}
                         <span aria-hidden="true" className="pointer-events-none absolute left-1.5 bottom-1.5">
@@ -1792,24 +1815,29 @@ export default function UserPilotApp() {
                         <div className="w-full text-md font-bold leading-tight break-words line-clamp-2 min-h-[2.5rem]">
                             {it.name}
                         </div>
-                        <div className="mt-0.5 text-xs text-zinc-500 flex items-center gap-1 w-full">
-                            <span>⏰</span>
-                            <span className="truncate">受取 {it.pickup}</span>
-                        </div>
+                        {/* ★ 売り切れサブテキスト */}
+                        {isSoldOut ? (
+                            <div className="mt-0.5 text-[11px] text-zinc-500">
+                                ありがとうございました！またのご利用をお待ちしています。
+                            </div>
+                        ) : (
+                            <div className="mt-0.5 text-xs text-zinc-500 flex items-center gap-1 w-full">
+                                <span>⏰</span>
+                                <span className="truncate">受取 {it.pickup}</span>
+                            </div>
+                        )}
                         <div className="mt-2 text-base font-semibold">{currency(it.price)}</div>
                     </button>
                 </div>
 
-                {/* 右下：数量チップ */}
-                <div
-                    className="absolute bottom-0 right-1 rounded-full px-2 py-1"
-                    onClick={(e) => e.stopPropagation()}
-                >
+                {/* 右下：数量チップ（元から remain<=0 ならボタンはdisabledになる） */}
+                <div className="absolute bottom-0 right-1 rounded-full px-2 py-1" onClick={(e) => e.stopPropagation()}>
                     <QtyChip sid={sid} it={it} />
                 </div>
             </div>
         );
     };
+
 
 
     // 店舗カード詳細メタ開閉
@@ -1910,8 +1938,12 @@ export default function UserPilotApp() {
                                     const visibleItems = s.items.filter(it => {
                                         const r = getReserved(s.id, it.id);
                                         const remain = Math.max(0, it.stock - r);
-                                        return it.stock > 0 && (remain > 0 || r > 0);
+                                        const expired = isPickupExpired(it.pickup);
+                                        // 受取期限を過ぎたものは出さないが、売り切れ（remain<=0）でも「Sold out」表示のため残す
+                                        return !expired && it.stock >= 0;
                                     });
+
+
                                     const hasAny = visibleItems.length > 0;
                                     const remainingTotal = visibleItems.reduce(
                                         (a, it) => a + Math.max(0, it.stock - getReserved(s.id, it.id)),

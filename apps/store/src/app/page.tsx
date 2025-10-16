@@ -62,6 +62,7 @@ type ProductsRow = {
   sub_image_path2: string | null;
   pickup_slot_no?: number | null;
   publish_at?: string | null;
+  note?: string | null;
 };
 
 type Product = {
@@ -74,6 +75,7 @@ type Product = {
   sub_image_path2: string | null;
   pickup_slot_no?: number | null;
   publish_at?: string | null;
+  note?: string | null;
 };
 
 // ===== Util =====
@@ -133,6 +135,7 @@ function mapProduct(r: ProductsRow): Product {
     sub_image_path2: r.sub_image_path2 ?? null,
     pickup_slot_no: (r as any).pickup_slot_no ?? null,
     publish_at: (r as any).publish_at ?? null,
+    note: (r as any).note ?? null,
   };
 }
 
@@ -300,7 +303,7 @@ function useProducts() {
     if (!supabase) return; setPloading(true); setPerr(null);
     const { data, error } = await supabase
       .from('products')
-      .select('id,store_id,name,price,stock,updated_at,main_image_path,sub_image_path1,sub_image_path2,pickup_slot_no,publish_at')
+      .select('id,store_id,name,price,stock,updated_at,main_image_path,sub_image_path1,sub_image_path2,pickup_slot_no,publish_at,note')
       .eq('store_id', getStoreId())
       .order('updated_at', { ascending: false });
     if (error) setPerr(error.message || '商品の取得に失敗しました');
@@ -364,6 +367,7 @@ function useProducts() {
       stock: number;
       pickup_slot_no?: number | null;
       publish_at?: string | null;
+      note?: string | null;
     }): Promise<Product | null> => {
       if (!payload.name) { setPerr('商品名を入力してください'); return null; }
       if (!supabase) return null;
@@ -371,8 +375,13 @@ function useProducts() {
       setPloading(true); setPerr(null);
       const { data, error } = await supabase
         .from('products')
-        .insert({ ...payload, store_id: getStoreId(), pickup_slot_no: payload.pickup_slot_no ?? null })
-        .select('id,store_id,name,price,stock,updated_at,main_image_path,sub_image_path1,sub_image_path2,pickup_slot_no,publish_at')
+        .insert({
+          ...payload,
+          store_id: getStoreId(),
+          pickup_slot_no: payload.pickup_slot_no ?? null,
+          note: payload.note ?? null,
+        })
+        .select('id,store_id,name,price,stock,updated_at,main_image_path,sub_image_path1,sub_image_path2,pickup_slot_no,publish_at,note')
         .single();
 
       if (error) {
@@ -432,7 +441,7 @@ function useProducts() {
       .update({ pickup_slot_no: slot })
       .eq('id', id)
       .eq('store_id', getStoreId())
-      .select('id,store_id,name,price,stock,updated_at,main_image_path,sub_image_path1,sub_image_path2,pickup_slot_no,publish_at')
+      .select('id,store_id,name,price,stock,updated_at,main_image_path,sub_image_path1,sub_image_path2,pickup_slot_no,publish_at,note')
       .single();
     if (error) {
       // 失敗時はリロードで整合
@@ -460,6 +469,33 @@ function useProducts() {
       setProducts(prev => prev.map(p => p.id === id ? mapProduct(data as ProductsRow) : p));
     }
   }, [supabase, load]);
+
+  const updateNote = useCallback(async (id: string, nextRaw: string | null) => {
+    // 300 文字・trim・空なら null
+    const normalized = (nextRaw ?? "").trim().slice(0, 300) || null;
+
+    // 楽観更新（まずローカル反映）
+    setProducts(prev => prev.map(p => p.id === id ? { ...p, note: normalized } : p));
+
+    if (!supabase) return;
+    const { data, error } = await supabase
+      .from('products')
+      .update({ note: normalized })
+      .eq('id', id)
+      .eq('store_id', getStoreId())
+      .select('id,store_id,name,price,stock,updated_at,main_image_path,sub_image_path1,sub_image_path2,pickup_slot_no,publish_at,note')
+      .single();
+
+    if (error) {
+      // 失敗時は再同期（ロールバック）
+      await load();
+      return;
+    }
+    if (data) {
+      setProducts(prev => prev.map(p => p.id === id ? mapProduct(data as ProductsRow) : p));
+    }
+  }, [supabase, load]);
+
 
   // ── 予約公開の到来を検知して自動反映 ─────────────────────────────
   useEffect(() => {
@@ -489,7 +525,8 @@ function useProducts() {
   return {
     products, perr, ploading,
     add, remove, updateStock, updatePickupSlot,
-    updatePublishAt,            // ← これを追加
+    updatePublishAt,
+    updateNote,
     reload: load
   } as const;
 
@@ -1021,6 +1058,63 @@ function PickupSlotModal({
   );
 }
 
+// ひとこと編集モーダル（300文字まで）
+function NoteEditModal({
+  open,
+  productName,
+  initial,         // 初期値（null/undefinedなら空文字）
+  onClose,
+  onCommit,        // (next: string | null) => void
+  disabled,
+}: {
+  open: boolean;
+  productName: string;
+  initial: string | null | undefined;
+  onClose: () => void;
+  onCommit: (val: string | null) => void;
+  disabled: boolean;
+}) {
+  const [val, setVal] = React.useState<string>("");
+  React.useEffect(() => {
+    if (!open) return;
+    setVal(String(initial ?? "").slice(0, 300));
+  }, [open, initial]);
+
+  if (!open) return null;
+
+  const remain = 300 - (val?.length ?? 0);
+
+  return (
+    <div className="fixed inset-0 z-[60] grid place-items-center bg-black/40 p-4" role="dialog" aria-modal="true" onClick={onClose}>
+      <div className="w-full max-w-md rounded-2xl bg-white shadow-xl border p-4" onClick={e => e.stopPropagation()}>
+        <div className="text-base font-semibold mb-1">「お店からのひとこと」を編集</div>
+        <div className="text-sm text-zinc-600 mb-3">対象: {productName}</div>
+
+        <textarea
+          className="w-full rounded-md border border-zinc-300 px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-zinc-300"
+          placeholder="例）おすすめ商品です。数量限定につきお早めに！"
+          rows={6}
+          maxLength={300}
+          value={val}
+          onChange={(e) => setVal(e.target.value.slice(0, 300))}
+          autoFocus
+        />
+        <div className="mt-1 text-right text-[11px] text-zinc-500">{val.length}/300</div>
+
+        <div className="mt-3 flex items-center justify-end gap-2">
+          <button onClick={onClose} className="rounded-xl border px-4 py-2 text-sm" disabled={disabled}>キャンセル</button>
+          <button
+            onClick={() => onCommit((val ?? "").trim() ? (val ?? "").trim() : null)}
+            className={`rounded-xl px-4 py-2 text-sm text-white ${disabled ? 'bg-zinc-400 cursor-not-allowed' : 'bg-zinc-900 hover:bg-zinc-800'}`}
+            disabled={disabled}
+          >
+            保存
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 
 function useImageUpload() {
@@ -1334,15 +1428,21 @@ function ProductImageSlot(props: StagedProps | ExistingProps) {
 
 function ProductForm() {
   useEnsureAuth(); // ★ 追加：匿名ログインで authenticated を確保
-  const { products, perr, ploading, add, remove, updateStock, updatePickupSlot, reload } = useProducts();
-
+  const { products, perr, ploading, add, remove, updateStock, updatePickupSlot, updateNote, reload } = useProducts();
   // ★ 画像のキャッシュ破り用バージョン
   const [imgVer, setImgVer] = useState(0);
   const [adjust, setAdjust] = useState<null | { id: string; name: string; stock: number }>(null);
   const [pending, setPending] = useState<Record<string, { id: string; name: string; current: number; next: number }>>({});
   const [name, setName] = useState("");
+  const [note, setNote] = useState("");
   const [price, setPrice] = useState("");
   const [stock, setStock] = useState("");
+
+
+
+  // ▼ 既存商品の「ひとこと」編集用
+  const [noteDlg, setNoteDlg] = useState<null | { id: string; name: string; note: string }>(null); // ★ 追加
+
   const [pickupSlotForNew, setPickupSlotForNew] = useState<number | null>(null); // null=未指定
   // ▼ メイン画像（必須）
   const [mainImageFile, setMainImageFile] = useState<File | null>(null);
@@ -1465,6 +1565,7 @@ function ProductForm() {
             stock: stockNum,
             pickup_slot_no: pickupSlotForNew,
             publish_at: publishISO,
+            note: note.trim() || null,
           });
 
           if (!created) return;
@@ -1497,6 +1598,7 @@ function ProductForm() {
 
           // 3) クリア
           setName(""); setPrice(""); setStock("");
+          setNote("");
           setPickupSlotForNew(null);
           setPublishMode('now'); setPublishLocal("");
           setMainImageFile(null);
@@ -1504,7 +1606,6 @@ function ProductForm() {
           setSubImageFile2(null);
           if (subImageInputRef1.current) subImageInputRef1.current.value = "";
           if (subImageInputRef2.current) subImageInputRef2.current.value = "";
-
           if (mainImageInputRef.current) mainImageInputRef.current.value = "";
           if (mainPickerRef.current) mainPickerRef.current.value = "";
           if (sub1PickerRef.current) sub1PickerRef.current.value = "";
@@ -1612,6 +1713,20 @@ function ProductForm() {
           <p className="mt-2 text-[11px] text-zinc-600">
             メインは必須／サブは任意。タップで画像を選択、「カメラで撮る」で撮影。横長または正方形推奨・~5MB 目安。
           </p>
+        </div>
+
+        {/* お店からのひとこと（任意） */}
+        <div className="md:col-span-2">
+          <label className="block text-xs text-zinc-600 mb-1">お店からのひとこと（任意）</label>
+          <textarea
+            className="w-full rounded-md border border-zinc-300 px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-zinc-300"
+            placeholder="例）おすすめ商品です。数量限定につきお早めに！"
+            rows={4}
+            maxLength={300}
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+          />
+          <div className="mt-1 text-right text-[11px] text-zinc-500">{note.length}/300</div>
         </div>
 
 
@@ -1791,7 +1906,6 @@ function ProductForm() {
                 {/* 2) 受け取り時間（表示 + 変更ボタン → モーダルで編集） */}
                 <div>
                   <div className="text-sm font-medium mb-1">受け取り時間</div>
-
                   <div className="flex items-center justify-between gap-2">
                     <div className="text-sm text-zinc-800">{labelForSlot(p.pickup_slot_no)}</div>
                     <button
@@ -1802,6 +1916,40 @@ function ProductForm() {
                     </button>
                   </div>
                 </div>
+
+                {/* ひとこと（表示＋編集） */}
+                <div className="pt-1">
+                  <div className="text-sm font-medium mb-1">お店からのひとこと</div>
+
+                  {/* 表示部（常に数行だけ・全文は編集モーダルで開く） */}
+                  <div
+                    className="text-sm text-zinc-700 bg-zinc-50 rounded-xl p-3 line-clamp-2"
+                    title={p.note ?? undefined}
+                  >
+                    {(p.note && p.note.trim().length > 0)
+                      ? p.note
+                      : 'お店のおすすめ商品です。数量限定のため、お早めにお求めください。'}
+                  </div>
+
+
+                  {/* 編集トグル（店側UI）：タップで編集欄を開閉 */}
+                  <div className="mt-2 text-right">
+                    <button
+                      type="button"
+                      className="rounded-xl border px-3 py-1.5 text-sm hover:bg-zinc-50"
+                      onClick={() => {
+                        setNoteDlg({
+                          id: p.id,
+                          name: p.name,
+                          note: String(p.note ?? "").slice(0, 300),
+                        });
+                      }}
+                    >
+                      編集（全文表示）
+                    </button>
+                  </div>
+                </div>
+
 
                 {/* 3) 在庫調整 / 削除（横並び） */}
                 <div className="grid grid-cols-2 gap-3">
@@ -2029,6 +2177,20 @@ function ProductForm() {
         }}
       />
 
+      {/* ひとこと編集モーダル */}
+      <NoteEditModal
+        open={!!noteDlg}
+        productName={noteDlg?.name ?? ""}
+        initial={noteDlg?.note ?? ""}
+        disabled={ploading}
+        onClose={() => setNoteDlg(null)}
+        onCommit={async (next) => {
+          if (!noteDlg) return;
+          await updateNote(noteDlg.id, next);
+          setNoteDlg(null);
+          alert('「ひとこと」を更新しました');
+        }}
+      />
     </div>
   )
 }

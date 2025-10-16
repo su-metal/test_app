@@ -1993,10 +1993,12 @@ export default function UserPilotApp() {
         sid,
         it,
         noChrome = false,
+        onRemove,
     }: {
         sid: string;
         it: Item;
         noChrome?: boolean;
+        onRemove?: () => void;
     }) => {
         const reserved = getReserved(sid, it.id);
         const remain = Math.max(0, it.stock - reserved);
@@ -2068,16 +2070,18 @@ export default function UserPilotApp() {
                         <span className="pointer-events-none absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity bg-black/5" />
                     </button>
 
+
                     {/* テキスト側 → 詳細モーダルを開く */}
                     <button
                         type="button"
                         onClick={() => setDetail({ shopId: sid, item: it })}
-                        className="flex-1 min-w-0 text-left"
+                        // ★ 追加: 右上の🗑️分だけ右パディングを空ける（7=28px分の少し余裕を見て pr-10）
+                        className={`flex-1 min-w-0 text-left ${onRemove ? "pr-10" : ""}`}
                     >
-                        <div className="w-full text-md font-bold leading-tight break-words line-clamp-2 min-h-[2.5rem]">
+                        <div className="w-full text-md font-bold pt-1 leading-tight break-words line-clamp-2 min-h-[2.5rem]">
                             {it.name}
                         </div>
-                        {/* ★ 売り切れサブテキスト */}
+                        {/* 以下既存そのまま */}
                         {isSoldOut ? (
                             <div className="mt-0.5 text-[11px] text-zinc-500">
                                 ありがとうございました！またのご利用をお待ちしています。
@@ -2090,12 +2094,25 @@ export default function UserPilotApp() {
                         )}
                         <div className="mt-2 text-base font-semibold">{currency(it.price)}</div>
                     </button>
+
                 </div>
 
                 {/* 右下：数量チップ（元から remain<=0 ならボタンはdisabledになる） */}
                 <div className="absolute bottom-0 right-1 rounded-full px-2 py-1" onClick={(e) => e.stopPropagation()}>
                     <QtyChip sid={sid} it={it} />
                 </div>
+                {/* ★ 追加：右上に「削除」ボタン（onRemove が渡された場合のみ表示） */}
+                {onRemove && (
+                    <button
+                        type="button"
+                        aria-label="この商品をカートから削除"
+                        title="この商品をカートから削除"
+                        onClick={(e) => { e.stopPropagation(); onRemove(); }}
+                        className="absolute top-2 right-1 inline-flex items-center justify-center w-7 h-7 rounded-full border bg-white hover:bg-zinc-50 text-[13px]"
+                    >
+                        🗑️
+                    </button>
+                )}
             </div>
         );
     };
@@ -2463,11 +2480,23 @@ export default function UserPilotApp() {
                                         <div className="p-4 divide-y divide-zinc-200">
                                             {(g.lines ?? [])
                                                 .filter(l => l && l.item && typeof l.qty === "number")
-                                                .map((l, i) => (
-                                                    <ProductLine key={`${l.item?.id ?? "unknown"}-${i}`} sid={sid} it={l.item} noChrome />
-                                                ))}
-
+                                                .map((l, i) => {
+                                                    const rmKey = `${sid}:${l.item.id}`;
+                                                    return (
+                                                        <ProductLine
+                                                            key={`${l.item?.id ?? "unknown"}-${i}`}
+                                                            sid={sid}
+                                                            it={l.item}
+                                                            noChrome
+                                                            onRemove={() => {
+                                                                setCart(cs => cs.filter(x => `${x.shopId}:${x.item.id}` !== rmKey));
+                                                                emitToast("success", "商品をカートから削除しました");
+                                                            }}
+                                                        />
+                                                    );
+                                                })}
                                         </div>
+
 
                                         {/* 受け取り予定時間（必須）: グループキーで保持 */}
                                         <div className="px-4">
@@ -2480,10 +2509,15 @@ export default function UserPilotApp() {
                                                     const nowMin = nowMinutesJST();
                                                     const minStart = nowMin + LEAD_CUTOFF_MIN;
 
+                                                    // ★ 追加：10分単位に切り上げる関数（分→分）
+                                                    const ceilTo10 = (m: number) => Math.ceil(m / 10) * 10;
+
                                                     // baseWin があるときだけ start を切り上げる
                                                     let adjustedWin: { start: number; end: number } | null = null;
                                                     if (baseWin) {
-                                                        const start = Math.max(baseWin.start, minStart);
+                                                        // 元の開始とリードタイムを比較し、さらに「10分単位」に切り上げ
+                                                        const rawStart = Math.max(baseWin.start, minStart);
+                                                        const start = ceilTo10(rawStart);       // ← ここで 00/10/20… 始まりを保証
                                                         const end = baseWin.end;
                                                         adjustedWin = (start < end) ? { start, end } : null;
                                                     }
@@ -2505,16 +2539,14 @@ export default function UserPilotApp() {
                                                                     }
                                                                     setPickupByGroup(prev => ({ ...prev, [gkey]: slot }));
                                                                 }}
-                                                                // ★ ポイント：baseWin がある時だけ渡す。無い時は undefined（セレクタに任せる）
+                                                                // ★ ポイント：10分切り上げ済みの開始時刻を渡す
                                                                 limitWindow={adjustedWin ?? undefined}
                                                                 stepOverride={(() => {
-                                                                    // ★ ここで一度だけ参照して TS の推論崩壊を防ぐ
                                                                     const info = (presetMap as Record<string, StorePresetInfo | undefined>)[sid];
                                                                     const cur = (info?.current ?? 1) as number;
                                                                     return info?.slots?.[cur]?.step ?? 10;
                                                                 })()}
                                                             />
-                                                            {/* baseWin が存在していて、切り上げ後に枠が消えた場合だけ補足を出す */}
                                                             {noSlot && (
                                                                 <p className="mt-2 text-xs text-zinc-500">
                                                                     直近枠は選択不可のため、現在は選べる時間帯がありません。時間をおいてお試しください。

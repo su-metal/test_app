@@ -1173,7 +1173,7 @@ function ProductForm() {
     <div className="rounded-2xl border bg-white p-4 space-y-3">
       <SectionTitle>商品</SectionTitle>
       <form
-        className="flex flex-wrap items-center gap-2"
+        className="grid grid-cols-1 md:grid-cols-2 gap-2 md:gap-3 items-start"
         onSubmit={(e) => {
           e.preventDefault();
 
@@ -1193,7 +1193,6 @@ function ProductForm() {
           let publishISO: string | null = null;
           if (publishMode === 'schedule') {
             if (!publishLocal) { alert('公開開始の日時を入力してください'); return; }
-            // ローカル → UTC ISO（timestamptz に合わせる）
             const local = publishLocal; // 'YYYY-MM-DDTHH:mm'
             const iso = new Date(local.replace(' ', 'T')).toISOString();
             publishISO = iso;
@@ -1204,7 +1203,7 @@ function ProductForm() {
             price: priceNum,
             stock: stockNum,
             pickup_slot_no: pickupSlotForNew,
-            publish_at: publishISO,         // ★追加
+            publish_at: publishISO,
           });
 
           setName(""); setPrice(""); setStock("");
@@ -1212,102 +1211,138 @@ function ProductForm() {
           setPublishMode('now'); setPublishLocal("");
         }}
       >
+        {/* 商品名（2カラムまたぎ） */}
+        <div className="md:col-span-2">
+          <label className="block text-xs text-zinc-600 mb-1">商品名</label>
+          <input
+            className="w-full rounded-md border border-zinc-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-zinc-300"
+            placeholder="商品名"
+            value={name}
+            onChange={e => setName(e.target.value)}
+            required
+          />
+        </div>
 
-        <input
-          className="rounded-xl border px-3 py-2 text-sm"
-          placeholder="商品名"
-          value={name}
-          onChange={e => setName(e.target.value)}
-          required
-        />
-
-        <input
-          className="rounded-xl border px-3 py-2 text-sm"
-          placeholder="価格"
-          type="number"
-          inputMode="numeric"
-          min={1}
-          step={1}
-          value={price}
-          onChange={e => setPrice(e.target.value)}
-          required
-        />
-
-        <input
-          className="rounded-xl border px-3 py-2 text-sm"
-          placeholder="在庫"
-          type="number"
-          inputMode="numeric"
-          min={0}
-          step={1}
-          value={stock}
-          onChange={e => setStock(e.target.value)}
-          required
-        />
-
-        <select
-          className="rounded-xl border px-3 py-2 text-sm"
-          value={pickupSlotForNew === null ? '' : String(pickupSlotForNew)}
-          onChange={(e) => {
-            const v = e.target.value;
-            setPickupSlotForNew(v === '' ? null : Number(v));
-          }}
-          aria-label="受取プリセット"
-          title="受取プリセット"
-        >
-          <option value="">未指定</option>
-          <option value="1">{presets[1]?.name}（{presets[1]?.start}〜{presets[1]?.end}）</option>
-          <option value="2">{presets[2]?.name}（{presets[2]?.start}〜{presets[2]?.end}）</option>
-          <option value="3">{presets[3]?.name}（{presets[3]?.start}〜{presets[3]?.end}）</option>
-        </select>
-
-        {/* ▼ 公開タイミング（新規登録時のみ設定可能）— select の外に置く */}
-        <div className="flex items-center gap-2 text-sm ml-2">
-          <label className="inline-flex items-center gap-1">
+        {/* 価格 */}
+        <div>
+          <label className="block text-xs text-zinc-600 mb-1">価格</label>
+          <div className="flex items-center gap-2">
             <input
-              type="radio"
-              name="pub"
-              checked={publishMode === 'now'}
-              onChange={() => setPublishMode('now')}
+              className="w-full rounded-md border border-zinc-300 px-3 py-2 text-sm [appearance:textfield] focus:outline-none focus:ring-2 focus:ring-zinc-300"
+              placeholder="0"
+              type="number"
+              inputMode="numeric"
+              min={1}
+              step={1}
+              value={price}
+              onChange={e => setPrice(e.target.value)}
+              required
             />
-            今すぐ公開
-          </label>
-          <label className="inline-flex items-center gap-1">
+            <span className="shrink-0 text-sm text-zinc-500">円</span>
+          </div>
+        </div>
+
+        {/* 在庫 */}
+        <div>
+          <label className="block text-xs text-zinc-600 mb-1">在庫</label>
+          <div className="flex items-center gap-2">
             <input
-              type="radio"
-              name="pub"
-              checked={publishMode === 'schedule'}
-              onChange={() => setPublishMode('schedule')}
+              className="w-full rounded-md border border-zinc-300 px-3 py-2 text-sm [appearance:textfield] focus:outline-none focus:ring-2 focus:ring-zinc-300"
+              placeholder="0"
+              type="number"
+              inputMode="numeric"
+              min={0}
+              step={1}
+              value={stock}
+              onChange={e => setStock(e.target.value)}
+              required
             />
-            予約して公開
-          </label>
+            <span className="shrink-0 text-sm text-zinc-500">個</span>
+          </div>
+        </div>
+
+        {/* 受け取り時間（プリセット） */}
+        <div>
+          <label className="block text-xs text-zinc-600 mb-1">受け取り時間</label>
+          <select
+            className="w-full rounded-md border border-zinc-300 px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-zinc-300"
+            value={pickupSlotForNew === null ? '' : String(pickupSlotForNew)}
+            onChange={(e) => {
+              const v = e.target.value;
+              setPickupSlotForNew(v === '' ? null : Number(v));
+            }}
+            aria-label="受取プリセット"
+            title="受取プリセット"
+          >
+            <option value="">未指定</option>
+            <option value="1">{presets[1]?.name}（{presets[1]?.start}〜{presets[1]?.end}）</option>
+            <option value="2">{presets[2]?.name}（{presets[2]?.start}〜{presets[2]?.end}）</option>
+            <option value="3">{presets[3]?.name}（{presets[3]?.start}〜{presets[3]?.end}）</option>
+          </select>
+        </div>
+
+        {/* 公開タイミング（今すぐ / 予約して公開） */}
+        <div>
+          <label className="block text-xs text-zinc-600 mb-1">公開</label>
+          <div className="grid grid-cols-2 rounded-lg border border-zinc-300 overflow-hidden">
+            <label className="flex items-center justify-center gap-2 py-2 text-sm cursor-pointer">
+              <input
+                type="radio"
+                name="pub"
+                checked={publishMode === 'now'}
+                onChange={() => setPublishMode('now')}
+              />
+              今すぐ公開
+            </label>
+            <label className="flex items-center justify-center gap-2 py-2 text-sm cursor-pointer border-l border-zinc-300">
+              <input
+                type="radio"
+                name="pub"
+                checked={publishMode === 'schedule'}
+                onChange={() => setPublishMode('schedule')}
+              />
+              予約して公開
+            </label>
+          </div>
           {publishMode === 'schedule' && (
-            <input
-              type="datetime-local"
-              className="rounded-xl border px-3 py-2"
-              value={publishLocal}
-              onChange={(e) => setPublishLocal(e.target.value)}
-              step={60}
-              aria-label="公開開始（ローカル）"
-            />
+            <div className="mt-2">
+              <input
+                type="datetime-local"
+                className="w-full rounded-md border border-zinc-300 px-3 py-2 text-sm"
+                value={publishLocal}
+                onChange={(e) => setPublishLocal(e.target.value)}
+                step={60}
+                aria-label="公開開始（ローカル）"
+              />
+            </div>
           )}
         </div>
 
-        <input className="rounded-xl border px-3 py-2 text-sm bg-zinc-50" value={`店側受取額 ${yen(take)}`} readOnly aria-label="店側受取額" />
-        <button
-          className="rounded-xl bg-zinc-900 text-white px-3 py-2 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
-          disabled={
-            ploading ||
-            !name.trim() ||
-            !price.trim() ||
-            !stock.trim() ||
-            pickupSlotForNew === null
-          }
-        >
-          追加
-        </button>
+        {/* 店側受取額（サマリ行・右寄せ） */}
+        <div className="md:col-span-2 flex items-center justify-between pt-1">
+          <span className="text-xs text-zinc-500">手数料差引後</span>
+          <span className="text-sm font-medium text-zinc-800 tabular-nums">
+            店側受取額 {yen(take)}
+          </span>
+        </div>
 
+        {/* 追加ボタン（フル幅・親指タップしやすく） */}
+        <div className="md:col-span-2">
+          <button
+            className="w-full rounded-xl bg-zinc-900 text-white py-3 text-sm font-medium shadow-sm hover:opacity-90 active:opacity-80 disabled:opacity-50 disabled:cursor-not-allowed"
+            disabled={
+              ploading ||
+              !name.trim() ||
+              !price.trim() ||
+              !stock.trim() ||
+              pickupSlotForNew === null
+            }
+          >
+            追加
+          </button>
+        </div>
       </form>
+
       {perr ? <div className="text-sm text-red-600">{perr}</div> : null}
       <div className="grid grid-cols-1 gap-3">
         {products.map((p) => {

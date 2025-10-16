@@ -1107,6 +1107,48 @@ export default function UserPilotApp() {
         }
     }, [supabase]);
 
+    // フェールセーフ: products のポーリング再取得（Realtime 不達時の整合性担保）
+    // TODO(req v2): 本番では ETag/If-Modified-Since 等による差分取得や
+    //               updated_at によるインクリメンタル取得へ最適化する。
+    useEffect(() => {
+        if (!supabase) return;
+
+        let disposed = false;
+
+        const fetchAll = async () => {
+            try {
+                const { data, error } = await supabase
+                    .from("products")
+                    .select("id,store_id,name,price,stock,updated_at,main_image_path,sub_image_path1,sub_image_path2,pickup_slot_no,publish_at");
+                if (disposed) return;
+                if (error) {
+                    // 取得失敗は静かにスキップ（次周期で再試行）
+                    if (DEBUG) console.warn('[products:poll] error', error);
+                    return;
+                }
+                setDbProducts(Array.isArray(data) ? data : []);
+            } catch (e) {
+                if (DEBUG) console.warn('[products:poll] exception', e);
+            }
+        };
+
+        // 初回は軽く待ってから整合チェック（Realtime 即時反映と競合しにくくする）
+        const t0 = setTimeout(fetchAll, 1500);
+        // 周期ポーリング（10秒）
+        const t = setInterval(fetchAll, 10000);
+
+        // タブ復帰時も即座に整合を取りに行く
+        const onVis = () => { if (document.visibilityState === 'visible') fetchAll(); };
+        document.addEventListener('visibilitychange', onVis);
+
+        return () => {
+            disposed = true;
+            clearTimeout(t0);
+            clearInterval(t);
+            document.removeEventListener('visibilitychange', onVis);
+        };
+    }, [supabase]);
+
 
 
 

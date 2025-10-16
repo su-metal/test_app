@@ -496,6 +496,48 @@ function useProducts() {
     }
   }, [supabase, load]);
 
+  // まとめて更新（名前・価格・在庫・受取プリセット・公開・ひとこと）
+  const updateProduct = useCallback(async (id: string, patch: {
+    name?: string;
+    price?: number;
+    stock?: number;
+    pickup_slot_no?: number | null;
+    publish_at?: string | null;
+    note?: string | null;
+  }) => {
+    // 正規化（ビジネスルール）
+    const normalized = {
+      ...(patch.name !== undefined ? { name: String(patch.name).trim() } : {}),
+      ...(patch.price !== undefined ? { price: Math.max(0, Math.floor(Number(patch.price || 0))) } : {}),
+      ...(patch.stock !== undefined ? { stock: Math.max(0, Math.floor(Number(patch.stock || 0))) } : {}),
+      ...(patch.pickup_slot_no !== undefined ? { pickup_slot_no: (patch.pickup_slot_no ?? null) } : {}),
+      ...(patch.publish_at !== undefined ? { publish_at: patch.publish_at ?? null } : {}),
+      ...(patch.note !== undefined ? { note: (patch.note ?? '').trim().slice(0, 300) || null } : {}),
+    };
+
+    // 楽観更新
+    setProducts(prev => prev.map(p => p.id === id ? { ...p, ...normalized } as Product : p));
+
+    if (!supabase) return;
+    const { data, error } = await supabase
+      .from('products')
+      .update(normalized)
+      .eq('id', id)
+      .eq('store_id', getStoreId())
+      .select('id,store_id,name,price,stock,updated_at,main_image_path,sub_image_path1,sub_image_path2,pickup_slot_no,publish_at,note')
+      .single();
+
+    if (error) {
+      // 失敗時は再同期
+      await load();
+      return;
+    }
+    if (data) {
+      setProducts(prev => prev.map(p => p.id === id ? mapProduct(data as ProductsRow) : p));
+    }
+  }, [supabase, load]);
+
+
 
   // ── 予約公開の到来を検知して自動反映 ─────────────────────────────
   useEffect(() => {
@@ -527,6 +569,7 @@ function useProducts() {
     add, remove, updateStock, updatePickupSlot,
     updatePublishAt,
     updateNote,
+    updateProduct,
     reload: load
   } as const;
 
@@ -625,6 +668,32 @@ function useOrders() {
   const fulfilled = useMemo(() => orders.filter(o => o.status === 'FULFILLED'), [orders]);
   return { ready, err, orders, pending, fulfilled, fulfill, clearPending, clearFulfilled, retry: fetchAndSubscribe } as const;
 }
+
+
+// 画面背面のスクロールをロック（iOS対応）
+function useModalScrollLock(open: boolean) {
+  useEffect(() => {
+    if (!open) return;
+    const body = document.body;
+    const scrollY = window.scrollY;
+    const prev = body.style.cssText;
+
+    // 背面固定＋スクロール停止（iOS/SE対策）
+    body.style.position = 'fixed';
+    body.style.top = `-${scrollY}px`;
+    body.style.left = '0';
+    body.style.right = '0';
+    body.style.width = '100%';
+    body.style.overflow = 'hidden';
+    body.style.touchAction = 'none';
+
+    return () => {
+      body.style.cssText = prev;
+      window.scrollTo(0, scrollY); // 解除時に元の位置へ戻す
+    };
+  }, [open]);
+}
+
 
 // ===== UI =====
 const SectionTitle = React.memo(function SectionTitle({ children, badge }: { children: React.ReactNode; badge?: string; }) {
@@ -1116,6 +1185,253 @@ function NoteEditModal({
   );
 }
 
+// 登録済み商品のフル編集モーダル
+function EditProductModal({
+  open,
+  product,
+  presets,
+  disabled,
+  onClose,
+  onCommit, // (patch) => Promise<void>
+}: {
+  open: boolean;
+  product: Product;
+  presets: Record<1 | 2 | 3, { name: string; start: string; end: string }>;
+  disabled: boolean;
+  onClose: () => void;
+  onCommit: (patch: {
+    name: string;
+    price: number;
+    stock: number;
+    pickup_slot_no: number | null;
+    publish_at: string | null;
+    note: string | null;
+  }) => Promise<void>;
+}) {
+  const [name, setName] = React.useState(product.name);
+  const [price, setPrice] = React.useState(String(product.price));
+  const [stock, setStock] = React.useState(String(product.stock));
+  const [slot, setSlot] = React.useState<number | null>(product.pickup_slot_no ?? null);
+
+  const [stockDlgOpen, setStockDlgOpen] = React.useState(false); // ← 在庫調整モーダルの開閉
+
+  // 予約/即時 切替（予約なら datetime-local を編集）
+  const isScheduled = !!product.publish_at && Date.parse(product.publish_at) > Date.now();
+  const [pubMode, setPubMode] = React.useState<'now' | 'schedule'>(isScheduled ? 'schedule' : 'now');
+  const [publishLocal, setPublishLocal] = React.useState<string>(() => {
+    if (!product.publish_at) return '';
+    try {
+      const d = new Date(product.publish_at);
+      // ローカルのYYYY-MM-DDTHH:mm
+      const pad = (n: number) => String(n).padStart(2, '0');
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    } catch { return ''; }
+  });
+  const [note, setNote] = React.useState(String(product.note ?? '').slice(0, 300));
+
+  // 画像は即時更新（既存の ProductImageSlot をこのモーダル内でも使える）
+  if (!open) return null;
+
+  useModalScrollLock(open);
+
+
+  return (
+    <div className="fixed inset-0 z-[70] grid place-items-center bg-black/40 p-4 overscroll-contain" role="dialog" aria-modal="true" onClick={onClose}>
+      <div className="w-full max-w-lg rounded-2xl bg-white shadow-xl border p-4
+             max-h-[calc(100svh-2rem)] overflow-y-auto
+             sm:max-h-[calc(100svh-4rem)]
+             pb-[calc(env(safe-area-inset-bottom)+1.5rem)]" onClick={(e) => e.stopPropagation()}>
+        <div className="text-base font-semibold mb-2">内容を変更（{product.name}）</div>
+        <div className="grid grid-cols-1 gap-2">
+
+          <div>
+            <label className="block text-xs text-zinc-600 mb-1">商品名</label>
+            <input className="w-full rounded-md border border-zinc-300 px-3 py-2 text-sm"
+              value={name} onChange={e => setName(e.target.value)} />
+          </div>
+
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="block text-xs text-zinc-600 mb-1">価格</label>
+              <div className="flex items-center gap-2">
+                <input className="w-full rounded-md border border-zinc-300 px-3 py-2 text-sm [appearance:textfield]"
+                  type="number" inputMode="numeric" min={1} step={1}
+                  value={price} onChange={e => setPrice(e.target.value)} />
+                <span className="text-sm text-zinc-500">円</span>
+              </div>
+            </div>
+            <div>
+              <label className="block text-xs text-zinc-600 mb-1">在庫</label>
+              <div className="flex items-center gap-2">
+                <input
+                  className="w-full rounded-md border border-zinc-300 px-3 py-2 text-sm [appearance:textfield]"
+                  type="number"
+                  inputMode="numeric"
+                  min={0}
+                  step={1}
+                  value={stock}
+                  onChange={e => setStock(e.target.value)}
+                />
+                <span className="text-sm text-zinc-500">個</span>
+
+                {/* 以前の「+5」などがある在庫調整モーダルを開く */}
+                <button
+                  type="button"
+                  className="shrink-0 rounded-xl border px-3 py-2 text-sm bg-white hover:bg-zinc-50"
+                  onClick={() => setStockDlgOpen(true)}
+                  disabled={disabled}
+                >
+                  在庫変更
+                </button>
+              </div>
+            </div>
+
+          </div>
+
+          <div>
+            <label className="block text-xs text-zinc-600 mb-1">受け取り時間</label>
+            <select
+              className="w-full rounded-md border border-zinc-300 px-3 py-2 text-sm bg-white"
+              value={slot === null ? '' : String(slot)}
+              onChange={(e) => setSlot(e.target.value === '' ? null : Number(e.target.value))}
+            >
+              <option value="">未指定</option>
+              <option value="1">{presets[1]?.name}（{presets[1]?.start}〜{presets[1]?.end}）</option>
+              <option value="2">{presets[2]?.name}（{presets[2]?.start}〜{presets[2]?.end}）</option>
+              <option value="3">{presets[3]?.name}（{presets[3]?.start}〜{presets[3]?.end}）</option>
+            </select>
+          </div>
+
+          {/* 画像（即時反映型） */}
+          <div>
+            <label className="block text-xs text-zinc-600 mb-1">商品画像</label>
+            <div className="grid grid-cols-3 gap-2">
+              <ProductImageSlot
+                mode="existing"
+                productId={product.id}
+                slot="main"
+                label="メイン"
+                path={product.main_image_path}
+                onReload={async () => { }}
+                // ★ モーダルでは「カメラ」「変更」
+                actions={{ secondary: 'change' }}
+              />
+              <ProductImageSlot
+                mode="existing"
+                productId={product.id}
+                slot="sub1"
+                label="サブ1"
+                path={product.sub_image_path1}
+                onReload={async () => { }}
+                // ★ モーダルでは「カメラ」「削除」
+                actions={{ secondary: 'delete' }}
+              />
+              <ProductImageSlot
+                mode="existing"
+                productId={product.id}
+                slot="sub2"
+                label="サブ2"
+                path={product.sub_image_path2}
+                onReload={async () => { }}
+                // ★ モーダルでは「カメラ」「削除」
+                actions={{ secondary: 'delete' }}
+              />
+            </div>
+            <p className="mt-2 text-[11px] text-zinc-600">メインは必須／サブは任意。タップして画像を選択してください。</p>
+          </div>
+
+          <div>
+            <label className="block text-xs text-zinc-600 mb-1">お店からのひとこと（任意）</label>
+            <textarea
+              className="w-full rounded-md border border-zinc-300 px-3 py-2 text-sm"
+              rows={4} maxLength={300}
+              value={note} onChange={(e) => setNote(e.target.value.slice(0, 300))}
+              placeholder="例）おすすめ商品です。数量限定につきお早めに！"
+            />
+            <div className="mt-1 text-right text-[11px] text-zinc-500">{note.length}/300</div>
+          </div>
+
+          <div>
+            <label className="block text-xs text-zinc-600 mb-1">公開</label>
+            <div className="w-full rounded-lg border border-zinc-300 overflow-hidden bg-white">
+              <div className="grid grid-cols-2 divide-x divide-zinc-300">
+                <label className="flex items-center justify-center gap-2 py-2 text-sm cursor-pointer">
+                  <input type="radio" name="pub-edit" checked={pubMode === 'now'} onChange={() => setPubMode('now')} />
+                  <span>今すぐ公開</span>
+                </label>
+                <label className="flex items-center justify-center gap-2 py-2 text-sm cursor-pointer">
+                  <input type="radio" name="pub-edit" checked={pubMode === 'schedule'} onChange={() => setPubMode('schedule')} />
+                  <span>予約して公開</span>
+                </label>
+              </div>
+            </div>
+            {pubMode === 'schedule' && (
+              <div className="mt-2">
+                <input
+                  type="datetime-local"
+                  className="w-full rounded-md border border-zinc-300 px-3 py-2 text-sm bg-white"
+                  value={publishLocal}
+                  onChange={(e) => setPublishLocal(e.target.value)}
+                  step={60}
+                />
+              </div>
+            )}
+          </div>
+
+          <div className="flex items-center justify-end gap-2 pt-1">
+            <button type="button" className="rounded-xl border px-4 py-2 text-sm" onClick={onClose} disabled={disabled}>キャンセル</button>
+            <button
+              type="button"
+              className={`rounded-xl px-4 py-2 text-sm text-white ${disabled ? 'bg-zinc-400' : 'bg-zinc-900 hover:bg-zinc-800'}`}
+              onClick={async () => {
+                // バリデーション
+                const priceNum = Math.max(0, Math.floor(Number(price || 0)));
+                const stockNum = Math.max(0, Math.floor(Number(stock || 0)));
+                if (!name.trim()) { alert('商品名は必須です'); return; }
+                if (!Number.isFinite(priceNum) || priceNum < 1) { alert('価格は1以上の整数で入力してください'); return; }
+                if (!Number.isFinite(stockNum) || stockNum < 0) { alert('在庫は0以上の整数で入力してください'); return; }
+
+                let publishISO: string | null = null;
+                if (pubMode === 'schedule') {
+                  if (!publishLocal) { alert('公開開始の日時を入力してください'); return; }
+                  publishISO = new Date(publishLocal.replace(' ', 'T')).toISOString();
+                }
+
+                await onCommit({
+                  name: name.trim(),
+                  price: priceNum,
+                  stock: stockNum,
+                  pickup_slot_no: slot ?? null,
+                  publish_at: publishISO,
+                  note: (note ?? '').trim() ? (note ?? '').trim().slice(0, 300) : null,
+                });
+              }}
+              disabled={disabled}
+            >
+              保存
+            </button>
+            {/* 在庫調整モーダル（＋1/＋5/＋10 等のボタンUI） */}
+            <StockAdjustModal
+              open={stockDlgOpen}
+              initial={Math.max(0, Math.floor(Number(stock || 0)))}
+              productName={product.name}
+              disabled={disabled}
+              onClose={() => setStockDlgOpen(false)}
+              onCommit={(val) => {
+                // モーダルで確定した値を、この編集モーダルの在庫入力へ反映
+                setStock(String(Math.max(0, Math.floor(Number(val || 0)))));
+                setStockDlgOpen(false);
+              }}
+            />
+
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
 
 function useImageUpload() {
   const supabase = useSupabase();
@@ -1231,6 +1547,8 @@ type StagedProps = {
   required?: boolean;
   file: File | null;              // 現在のFile
   onChange: (f: File | null) => void;
+  actions?: { secondary: 'delete' | 'change' }; // ★ 追加（モーダル用：メインは'change'、サブは'delete'）
+
 };
 type ExistingProps = {
   mode: "existing";               // 登録済み商品の即時更新
@@ -1240,6 +1558,8 @@ type ExistingProps = {
   path: string | null;            // Supabase Storage のパス
   imgVer?: number;                // キャッシュ破り
   onReload: () => Promise<void>;  // 親のreload（DB再読込）
+  actions?: { secondary: 'delete' | 'change' }; // ★ 追加（モーダル用：メインは'change'、サブは'delete'）
+
 };
 
 function ProductImageSlot(props: StagedProps | ExistingProps) {
@@ -1295,6 +1615,9 @@ function ProductImageSlot(props: StagedProps | ExistingProps) {
         />
       );
     }
+
+
+
 
     return (
       <>
@@ -1373,6 +1696,8 @@ function ProductImageSlot(props: StagedProps | ExistingProps) {
   };
 
   const hasImage = props.mode === "staged" ? !!props.file : !!props.path;
+  type ActionCfg = { secondary: 'delete' | 'change' } | null;
+  const actions: ActionCfg = (props as any).actions ?? null; // ★ JSXに書かない！
 
   return (
     <Card>
@@ -1389,26 +1714,45 @@ function ProductImageSlot(props: StagedProps | ExistingProps) {
         className="hidden"
         onChange={onPick}
       />
+      {/* // ★ モーダル用のアクション上書き（任意）
+      //   - actions.secondary: 'delete' | 'change'
+      //     'change' は「変更」ボタンとしてファイル選択を開く */}
 
-      {/* 縦積みボタン（スクショ準拠） */}
-      <div className="mt-2 flex flex-col gap-1">
-        <button
-          type="button"
-          className="w-full rounded-lg border px-2 py-1 text-[11px] hover:bg-zinc-50"
-          onClick={() => setOpenCam(true)}
-          disabled={loading}
-        >
-          カメラで撮る
-        </button>
-        <button
-          type="button"
-          className="w-full rounded-lg border px-2 py-1 text-[11px] text-red-600 border-red-300 hover:bg-red-50 disabled:opacity-40"
-          onClick={onDelete}
-          disabled={loading || (!hasImage && props.mode === "staged")}
-        >
-          削除
-        </button>
-      </div>
+      {/* 縦積みボタン（新規登録フォーム or モーダル上書き時に表示） */}
+      {(props.mode === "staged" || actions) && (
+        <div className="mt-2 flex flex-col gap-1">
+          {/* カメラ */}
+          <button
+            type="button"
+            className="w-full rounded-lg border px-2 py-1 text-[11px] hover:bg-zinc-50"
+            onClick={() => setOpenCam(true)}
+            disabled={loading}
+          >
+            {/* モーダルでは短いラベルにする指定 */}
+            {actions ? "カメラ" : "カメラで撮る"}
+          </button>
+
+          {/* 削除 or 変更（モーダルのメイン画像は「変更」） */}
+          <button
+            type="button"
+            className={`w-full rounded-lg border px-2 py-1 text-[11px] ${actions?.secondary === 'change'
+              ? ''
+              : 'text-red-600 border-red-300 hover:bg-red-50'
+              } disabled:opacity-40`}
+            onClick={() => {
+              if (actions?.secondary === 'change') {
+                // 「変更」= ファイル選択ダイアログを開く
+                pickerRef.current?.click();
+              } else {
+                onDelete();
+              }
+            }}
+            disabled={loading || (!hasImage && props.mode === "staged" && actions?.secondary !== 'change')}
+          >
+            {actions?.secondary === 'change' ? '変更' : '削除'}
+          </button>
+        </div>
+      )}
 
       {/* 内蔵のカメラモーダル（既存のを流用） */}
       {openCam && (
@@ -1428,7 +1772,7 @@ function ProductImageSlot(props: StagedProps | ExistingProps) {
 
 function ProductForm() {
   useEnsureAuth(); // ★ 追加：匿名ログインで authenticated を確保
-  const { products, perr, ploading, add, remove, updateStock, updatePickupSlot, updateNote, reload } = useProducts();
+  const { products, perr, ploading, add, remove, updateStock, updatePickupSlot, updateNote, updateProduct, reload } = useProducts();
   // ★ 画像のキャッシュ破り用バージョン
   const [imgVer, setImgVer] = useState(0);
   const [adjust, setAdjust] = useState<null | { id: string; name: string; stock: number }>(null);
@@ -1441,7 +1785,9 @@ function ProductForm() {
 
 
   // ▼ 既存商品の「ひとこと」編集用
-  const [noteDlg, setNoteDlg] = useState<null | { id: string; name: string; note: string }>(null); // ★ 追加
+  const [noteDlg, setNoteDlg] = useState<null | { id: string; name: string; note: string }>(null);
+  const [editDlg, setEditDlg] = useState<null | Product>(null);
+
 
   const [pickupSlotForNew, setPickupSlotForNew] = useState<number | null>(null); // null=未指定
   // ▼ メイン画像（必須）
@@ -1646,6 +1992,14 @@ function ProductForm() {
           </div>
         </div>
 
+        {/* 店側受取額（サマリ行・右寄せ） */}
+        <div className="md:col-span-2 flex items-center justify-between pt-1">
+          <span className="text-xs text-zinc-500">手数料差引後</span>
+          <span className="text-xs font-medium text-zinc-800 tabular-nums">
+            店側受取額 {yen(take)}
+          </span>
+        </div>
+
         {/* 在庫 */}
         <div>
           <label className="block text-xs text-zinc-600 mb-1">在庫</label>
@@ -1773,18 +2127,10 @@ function ProductForm() {
         </div>
 
 
-        {/* 店側受取額（サマリ行・右寄せ） */}
-        <div className="md:col-span-2 flex items-center justify-between pt-1">
-          <span className="text-xs text-zinc-500">手数料差引後</span>
-          <span className="text-sm font-medium text-zinc-800 tabular-nums">
-            店側受取額 {yen(take)}
-          </span>
-        </div>
-
         {/* 追加ボタン（フル幅・親指タップしやすく） */}
         <div className="md:col-span-2">
           <button
-            className="w-full rounded-xl bg-zinc-900 text-white mb-8 py-3 text-sm font-medium shadow-sm hover:opacity-90 active:opacity-80 disabled:opacity-50 disabled:cursor-not-allowed"
+            className="w-full rounded-xl bg-zinc-900 text-white mt-6 mb-8 py-3 text-sm font-medium shadow-sm hover:opacity-90 active:opacity-80 disabled:opacity-50 disabled:cursor-not-allowed"
             disabled={
               ploading ||
               !name.trim() ||
@@ -1908,12 +2254,12 @@ function ProductForm() {
                   <div className="text-sm font-medium mb-1">受け取り時間</div>
                   <div className="flex items-center justify-between gap-2">
                     <div className="text-sm text-zinc-800">{labelForSlot(p.pickup_slot_no)}</div>
-                    <button
+                    {/* <button
                       className="rounded-xl border px-3 py-2 text-sm hover:bg-zinc-50"
                       onClick={() => setPickupDlg({ id: p.id, name: p.name, current: p.pickup_slot_no ?? 1 })}
                     >
                       変更
-                    </button>
+                    </button> */}
                   </div>
                 </div>
 
@@ -1933,7 +2279,7 @@ function ProductForm() {
 
 
                   {/* 編集トグル（店側UI）：タップで編集欄を開閉 */}
-                  <div className="mt-2 text-right">
+                  {/* <div className="mt-2 text-right">
                     <button
                       type="button"
                       className="rounded-xl border px-3 py-1.5 text-sm hover:bg-zinc-50"
@@ -1947,12 +2293,12 @@ function ProductForm() {
                     >
                       編集（全文表示）
                     </button>
-                  </div>
+                  </div> */}
                 </div>
 
 
                 {/* 3) 在庫調整 / 削除（横並び） */}
-                <div className="grid grid-cols-2 gap-3">
+                {/* <div className="grid grid-cols-2 gap-3">
                   <button
                     onClick={() => setAdjust({ id: p.id, name: p.name, stock: p.stock })}
                     className="w-full px-3 py-2 rounded-xl border text-sm hover:bg-zinc-50"
@@ -1968,7 +2314,7 @@ function ProductForm() {
                   >
                     商品削除
                   </button>
-                </div>
+                </div> */}
               </div>
 
 
@@ -2003,6 +2349,16 @@ function ProductForm() {
                     onReload={reload}
                   />
                 </div>
+              </div>
+
+              {/* 一括編集（モーダル） */}
+              <div>
+                <button
+                  onClick={() => setEditDlg(p)}
+                  className="w-full mt-4 mb-8 px-3 py-2 rounded-xl border text-sm bg-white hover:bg-zinc-50"
+                >
+                  内容を変更する
+                </button>
               </div>
             </div>
           );
@@ -2191,6 +2547,22 @@ function ProductForm() {
           alert('「ひとこと」を更新しました');
         }}
       />
+      {/* 登録済み商品のフル編集モーダル */}
+      {editDlg && (
+        <EditProductModal
+          open={true}
+          product={editDlg}
+          presets={presets}
+          disabled={ploading}
+          onClose={() => setEditDlg(null)}
+          onCommit={async (patch) => {
+            await updateProduct(editDlg.id, patch);
+            setEditDlg(null);
+            alert('商品内容を更新しました');
+          }}
+        />
+      )}
+
     </div>
   )
 }

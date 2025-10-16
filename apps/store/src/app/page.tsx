@@ -1129,6 +1129,208 @@ function useImageUpload() {
   return { uploadProductImage, deleteProductImage };
 }
 
+// ▼ 画像スロット共通カード（登録済み/新規どちらでも使える）
+// type Slot = "main" | "sub1" | "sub2";
+type StagedProps = {
+  mode: "staged";                 // 新規登録フォーム用（Fileを保持してsubmit時に一括アップ）
+  label: string;                  // メイン / サブ1 / サブ2
+  required?: boolean;
+  file: File | null;              // 現在のFile
+  onChange: (f: File | null) => void;
+};
+type ExistingProps = {
+  mode: "existing";               // 登録済み商品の即時更新
+  productId: string;
+  slot: Slot;
+  label: string;
+  path: string | null;            // Supabase Storage のパス
+  imgVer?: number;                // キャッシュ破り
+  onReload: () => Promise<void>;  // 親のreload（DB再読込）
+};
+
+function ProductImageSlot(props: StagedProps | ExistingProps) {
+  const { uploadProductImage, deleteProductImage } = useImageUpload();
+  const [openCam, setOpenCam] = React.useState(false);
+  const pickerRef = React.useRef<HTMLInputElement | null>(null);
+  const [loading, setLoading] = React.useState(false);
+
+  // 共通見た目クラス
+  const Card: React.FC<{ children: React.ReactNode }> = ({ children }) => (
+    <div className="rounded-[14px] border border-zinc-300 bg-white p-2">{children}</div>
+  );
+  const ThumbButton: React.FC<{ onClick: () => void; children: React.ReactNode }> = ({ onClick, children }) => (
+    <button
+      type="button"
+      onClick={onClick}
+      className="relative w-full aspect-square rounded-[12px] overflow-hidden bg-zinc-100 border border-zinc-300 flex items-center justify-center group focus:outline-none focus:ring-2 focus:ring-red-400/60"
+    >
+      {children}
+      <span className="pointer-events-none absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity bg-black/5" />
+    </button>
+  );
+
+  // プレビュー（stagedのみFileから）
+  const [preview, setPreview] = React.useState<string | null>(null);
+  React.useEffect(() => {
+    if (props.mode !== "staged") return;
+    if (!props.file) { setPreview(null); return; }
+    const url = URL.createObjectURL(props.file);
+    setPreview(url);
+    return () => { URL.revokeObjectURL(url); };
+  }, [props]);
+
+  // サムネの中身
+  const renderThumb = () => {
+    const label = props.label;
+    const addOrChange =
+      props.mode === "staged" ? (preview ? "変更" : "追加")
+        : (props.path ? "変更" : "追加");
+
+    let imgEl: React.ReactNode = <span className="text-3xl">{label === "メイン" ? "📷" : "🖼️"}</span>;
+    if (props.mode === "staged" && preview) {
+      imgEl = <img src={preview} alt={`${label}`} className="w-full h-full object-cover transition-transform group-hover:scale-[1.02]" />;
+    }
+    if (props.mode === "existing" && props.path) {
+      imgEl = (
+        <img
+          src={`${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/public-images/${props.path}?v=${props.imgVer ?? 0}`}
+          alt={label}
+          className="w-full h-full object-cover transition-transform group-hover:scale-[1.02]"
+          loading="lazy"
+          decoding="async"
+        />
+      );
+    }
+
+    return (
+      <>
+        {imgEl}
+        {/* 左上ラベル */}
+        <span className="absolute top-1 left-1 px-1.5 py-[2px] text-[11px] rounded-full bg-white/95 border border-zinc-300 text-zinc-700 shadow-[0_0_0_1px_rgba(0,0,0,0.02)]">
+          {label}{(props as StagedProps).required ? " *" : ""}
+        </span>
+        {/* 右下バッジ */}
+        <span className="absolute bottom-1 right-1 px-1.5 py-[2px] text-[11px] rounded-md bg-white/95 border border-zinc-300 text-zinc-700">
+          {addOrChange}
+        </span>
+        {loading && (
+          <div className="absolute inset-0 grid place-items-center text-xs bg-white/70">更新中…</div>
+        )}
+      </>
+    );
+  };
+
+  // ギャラリー選択（captureなし）
+  const onPick = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.currentTarget.files?.[0] || null;
+    e.currentTarget.value = "";
+    if (props.mode === "staged") {
+      props.onChange(f);
+    } else if (props.mode === "existing" && f) {
+      (async () => {
+        try {
+          setLoading(true);
+          await uploadProductImage(props.productId, f, props.slot);
+          await props.onReload();
+          alert(`${props.label}画像を更新しました`);
+        } catch (err: any) {
+          alert(`アップロードに失敗しました: ${err?.message ?? err}`);
+        } finally { setLoading(false); }
+      })();
+    }
+  };
+
+  // カメラ撮影で受け取ったBlobをFile化して共通処理へ
+  const onCaptured = (blob: Blob) => {
+    const file = new File([blob], "camera.jpg", { type: blob.type || "image/jpeg" });
+    if (props.mode === "staged") {
+      props.onChange(file);
+    } else if (props.mode === "existing") {
+      (async () => {
+        try {
+          setLoading(true);
+          await uploadProductImage(props.productId, file, props.slot);
+          await props.onReload();
+          alert(`${props.label}画像を更新しました`);
+        } catch (e: any) {
+          alert(`アップロードに失敗しました: ${e?.message ?? e}`);
+        } finally { setLoading(false); }
+      })();
+    }
+  };
+
+  // 削除処理
+  const onDelete = () => {
+    if (props.mode === "staged") {
+      props.onChange(null);
+    } else {
+      if (!confirm(`${props.label}画像を削除しますか？`)) return;
+      (async () => {
+        try {
+          setLoading(true);
+          await deleteProductImage(props.productId, props.slot);
+          await props.onReload();
+          alert(`${props.label}画像を削除しました`);
+        } catch (e: any) {
+          alert(`削除に失敗しました: ${e?.message ?? e}`);
+        } finally { setLoading(false); }
+      })();
+    }
+  };
+
+  const hasImage = props.mode === "staged" ? !!props.file : !!props.path;
+
+  return (
+    <Card>
+      {/* サムネ：タップでギャラリー起動 */}
+      <ThumbButton onClick={() => pickerRef.current?.click()}>
+        {renderThumb()}
+      </ThumbButton>
+
+      {/* 隠し input（ギャラリー） */}
+      <input
+        ref={pickerRef}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={onPick}
+      />
+
+      {/* 縦積みボタン（スクショ準拠） */}
+      <div className="mt-2 flex flex-col gap-1">
+        <button
+          type="button"
+          className="w-full rounded-lg border px-2 py-1 text-[11px] hover:bg-zinc-50"
+          onClick={() => setOpenCam(true)}
+          disabled={loading}
+        >
+          カメラで撮る
+        </button>
+        <button
+          type="button"
+          className="w-full rounded-lg border px-2 py-1 text-[11px] text-red-600 border-red-300 hover:bg-red-50 disabled:opacity-40"
+          onClick={onDelete}
+          disabled={loading || (!hasImage && props.mode === "staged")}
+        >
+          削除
+        </button>
+      </div>
+
+      {/* 内蔵のカメラモーダル（既存のを流用） */}
+      {openCam && (
+        <CameraCaptureModal
+          open={true}
+          title={`${props.label}画像を撮影`}
+          onClose={() => setOpenCam(false)}
+          onCapture={(b) => { onCaptured(b); setOpenCam(false); }}
+          facing="environment"
+        />
+      )}
+    </Card>
+  );
+}
+
+
 
 function ProductForm() {
   useEnsureAuth(); // ★ 追加：匿名ログインで authenticated を確保
@@ -1147,10 +1349,32 @@ function ProductForm() {
   // ▼ サブ画像（任意：2枚まで）
   const [subImageFile1, setSubImageFile1] = useState<File | null>(null);
   const [subImageFile2, setSubImageFile2] = useState<File | null>(null);
+  // ▼ 画像プレビューURL（ObjectURL）
+  const [imgPreview, setImgPreview] = useState<{ main?: string; sub1?: string; sub2?: string }>({});
+
+  // ファイル選択→プレビュー更新（メモリ解放込み）
+  useEffect(() => {
+    const next: { main?: string; sub1?: string; sub2?: string } = {};
+    if (mainImageFile) next.main = URL.createObjectURL(mainImageFile);
+    if (subImageFile1) next.sub1 = URL.createObjectURL(subImageFile1);
+    if (subImageFile2) next.sub2 = URL.createObjectURL(subImageFile2);
+    setImgPreview(next);
+    return () => {
+      try { if (next.main) URL.revokeObjectURL(next.main); } catch { }
+      try { if (next.sub1) URL.revokeObjectURL(next.sub1); } catch { }
+      try { if (next.sub2) URL.revokeObjectURL(next.sub2); } catch { }
+    };
+  }, [mainImageFile, subImageFile1, subImageFile2]);
+
   const subImageInputRef1 = useRef<HTMLInputElement | null>(null);
   const subImageInputRef2 = useRef<HTMLInputElement | null>(null);
 
   const mainImageInputRef = useRef<HTMLInputElement | null>(null);
+  // ▼ フォーム用：ギャラリー選択（capture なし）の input を3本
+  const mainPickerRef = useRef<HTMLInputElement | null>(null);
+  const sub1PickerRef = useRef<HTMLInputElement | null>(null);
+  const sub2PickerRef = useRef<HTMLInputElement | null>(null);
+
 
   const take = storeTake(Number(price || 0));
   const { uploadProductImage, deleteProductImage } = useImageUpload();
@@ -1159,6 +1383,9 @@ function ProductForm() {
   // 登録フォームに「公開タイミング」を追加
   const [publishMode, setPublishMode] = useState<'now' | 'schedule'>('now');
   const [publishLocal, setPublishLocal] = useState<string>(''); // 'YYYY-MM-DDTHH:mm' （ローカル）
+  // ▼ フォーム用：カメラ撮影モーダルの制御（登録済みと同じモーダルを使う）
+  const [formCam, setFormCam] = useState<null | { slot: "main" | "sub1" | "sub2"; label: string }>(null);
+
 
   // ▼▼ ギャラリー（モーダル）用 state
   const [gallery, setGallery] = useState<null | {
@@ -1279,6 +1506,10 @@ function ProductForm() {
           if (subImageInputRef2.current) subImageInputRef2.current.value = "";
 
           if (mainImageInputRef.current) mainImageInputRef.current.value = "";
+          if (mainPickerRef.current) mainPickerRef.current.value = "";
+          if (sub1PickerRef.current) sub1PickerRef.current.value = "";
+          if (sub2PickerRef.current) sub2PickerRef.current.value = "";
+
         }}
       >
 
@@ -1294,56 +1525,6 @@ function ProductForm() {
           />
         </div>
 
-        {/* メイン画像（必須） */}
-        <div className="md:col-span-2">
-          <label className="block text-xs text-zinc-600 mb-1">
-            メイン画像 <span className="text-red-600">*</span>
-          </label>
-          <input
-            ref={mainImageInputRef}
-            type="file"
-            accept="image/*"
-            capture="environment"
-            className="w-full rounded-md border border-zinc-300 px-3 py-2 text-sm bg-white"
-            onChange={(e) => {
-              const f = e.currentTarget.files?.[0] || null;
-              setMainImageFile(f || null);
-            }}
-            required
-          />
-          <p className="mt-1 text-[11px] text-zinc-500">
-            横長または正方形を推奨。最大5MB程度。
-          </p>
-        </div>
-
-        {/* サブ画像（任意） */}
-        <div className="md:col-span-2 grid grid-cols-1 md:grid-cols-2 gap-2">
-          {/* サブ画像1 */}
-          <div>
-            <label className="block text-xs text-zinc-600 mb-1">サブ画像 1（任意）</label>
-            <input
-              ref={subImageInputRef1}
-              type="file"
-              accept="image/*"
-              className="w-full rounded-md border border-zinc-300 px-3 py-2 text-sm bg-white"
-              onChange={(e) => setSubImageFile1(e.currentTarget.files?.[0] || null)}
-            />
-            <p className="mt-1 text-[11px] text-zinc-500">例：別角度/パッケージなど</p>
-          </div>
-
-          {/* サブ画像2 */}
-          <div>
-            <label className="block text-xs text-zinc-600 mb-1">サブ画像 2（任意）</label>
-            <input
-              ref={subImageInputRef2}
-              type="file"
-              accept="image/*"
-              className="w-full rounded-md border border-zinc-300 px-3 py-2 text-sm bg-white"
-              onChange={(e) => setSubImageFile2(e.currentTarget.files?.[0] || null)}
-            />
-            <p className="mt-1 text-[11px] text-zinc-500">必要に応じて</p>
-          </div>
-        </div>
 
         {/* 価格 */}
         <div>
@@ -1403,6 +1584,37 @@ function ProductForm() {
           </select>
         </div>
 
+        {/* 商品画像（メイン1＋サブ2） / 登録済みと同様の3サムネUI */}
+        {/* 商品画像（メイン1＋サブ2） / 共通カードで統一 */}
+        <div className="md:col-span-2">
+          <label className="block text-xs text-zinc-600 mb-1">商品画像</label>
+          <div className="grid grid-cols-3 gap-2">
+            <ProductImageSlot
+              mode="staged"
+              label="メイン"
+              required
+              file={mainImageFile}
+              onChange={setMainImageFile}
+            />
+            <ProductImageSlot
+              mode="staged"
+              label="サブ1"
+              file={subImageFile1}
+              onChange={setSubImageFile1}
+            />
+            <ProductImageSlot
+              mode="staged"
+              label="サブ2"
+              file={subImageFile2}
+              onChange={setSubImageFile2}
+            />
+          </div>
+          <p className="mt-2 text-[11px] text-zinc-600">
+            メインは必須／サブは任意。タップで画像を選択、「カメラで撮る」で撮影。横長または正方形推奨・~5MB 目安。
+          </p>
+        </div>
+
+
         {/* 公開タイミング（今すぐ / 予約して公開） */}
         <div>
           <label className="block text-xs text-zinc-600 mb-1">公開</label>
@@ -1451,7 +1663,7 @@ function ProductForm() {
         {/* 追加ボタン（フル幅・親指タップしやすく） */}
         <div className="md:col-span-2">
           <button
-            className="w-full rounded-xl bg-zinc-900 text-white py-3 text-sm font-medium shadow-sm hover:opacity-90 active:opacity-80 disabled:opacity-50 disabled:cursor-not-allowed"
+            className="w-full rounded-xl bg-zinc-900 text-white mb-8 py-3 text-sm font-medium shadow-sm hover:opacity-90 active:opacity-80 disabled:opacity-50 disabled:cursor-not-allowed"
             disabled={
               ploading ||
               !name.trim() ||
@@ -1465,6 +1677,24 @@ function ProductForm() {
           </button>
         </div>
       </form>
+
+      {/* フォーム用：カメラ撮影モーダル（登録済みと同一コンポーネントを再利用） */}
+      {formCam && (
+        <CameraCaptureModal
+          open={true}
+          title={`${formCam.label}画像を撮影`}
+          onClose={() => setFormCam(null)}
+          onCapture={(blob) => {
+            const file = new File([blob], "camera.jpg", { type: blob.type || "image/jpeg" });
+            if (formCam.slot === "main") setMainImageFile(file);
+            if (formCam.slot === "sub1") setSubImageFile1(file);
+            if (formCam.slot === "sub2") setSubImageFile2(file);
+            setFormCam(null);
+          }}
+          facing="environment"
+        />
+      )}
+
 
       {perr ? <div className="text-sm text-red-600">{perr}</div> : null}
       <div className="grid grid-cols-1 gap-3">
@@ -1590,167 +1820,36 @@ function ProductForm() {
 
               {/* 3枚サムネ（メイン/サブ1/サブ2）— スマホで列幅にフィット */}
               <div className="px-4 py-3">
-                {(() => {
-                  // ★ 追加：この商品の画像が全部空なら、サブをロック
-                  const allImagesEmpty =
-                    !p.main_image_path && !p.sub_image_path1 && !p.sub_image_path2;
-
-                  return (
-                    <div className="grid grid-cols-3 gap-2">
-                      {[
-                        { slot: "main" as const, label: "メイン", path: p.main_image_path },
-                        { slot: "sub1" as const, label: "", path: p.sub_image_path1 },
-                        { slot: "sub2" as const, label: "", path: p.sub_image_path2 },
-                      ].map(({ slot, label, path }) => {
-                        const inputId = `product-image-${p.id}-${slot}`;
-
-                        // ★ 追加：全空のときはメイン以外ロック
-                        const locked = allImagesEmpty && slot !== "main";
-
-                        return (
-                          <div key={slot} className="flex flex-col items-center w-full">
-                            {/* hidden input: 差し替え用 */}
-                            <input
-                              id={inputId}
-                              type="file"
-                              accept="image/*;capture=camera"
-                              capture="environment"
-                              className="hidden"
-                              onChange={async (e) => {
-                                const inputEl = e.currentTarget as HTMLInputElement | null;
-                                const file = inputEl?.files?.[0];
-                                if (!file) return;
-                                try {
-                                  setUploadingId(p.id);
-                                  await uploadProductImage(p.id, file, slot);
-                                  await reload();
-                                  setImgVer((v) => v + 1);
-                                  alert(`${(label || slotJp(slot))}画像を更新しました`);
-                                } catch (err: any) {
-                                  alert(`アップロードに失敗しました: ${err?.message ?? err}`);
-                                } finally {
-                                  setUploadingId(null);
-                                  if (inputEl) inputEl.value = "";
-                                }
-                              }}
-                              // ★ 追加：ロック時は input 自体も無効化
-                              disabled={locked || ploading || uploadingId === p.id}
-                            />
-
-                            {/* サムネ本体（クリックで input を開く） */}
-                            <label
-                              htmlFor={inputId}
-                              className={`relative block w-full aspect-square overflow-hidden rounded-xl border bg-zinc-50 cursor-pointer group`}
-                              aria-label={`${p.name} の${(label || slotJp(slot))}画像をアップロード/変更`}
-                              title={`${(label || slotJp(slot))}をタップしてアップロード/変更`}
-                              // ★ 追加：ロック時はクリックを止めてトースト
-                              onClick={(e) => {
-                                if (locked) {
-                                  e.preventDefault();
-                                  e.stopPropagation();
-                                  gentleWarn("まずはメイン画像を登録してください");
-                                }
-                              }}
-                            >
-                              {path ? (
-                                <img
-                                  src={`${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/public-images/${path}?v=${imgVer ?? 0}`}
-                                  alt={`${p.name} ${(label || slotJp(slot))}`}
-                                  className="w-full h-full object-cover transition-transform group-hover:scale-[1.02]"
-                                  loading="lazy"
-                                  decoding="async"
-                                />
-                              ) : (
-                                <div className="w-full h-full grid place-items-center text-[11px] text-zinc-500">
-
-                                  <div className="text-[10px] mt-0.5">
-                                    {locked ? "メイン登録後に追加" : "タップで追加"}
-                                  </div>
-                                </div>
-                              )}
-
-                              {/* 軽いホバーオーバーレイ */}
-                              <div className="pointer-events-none absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity bg-black/5" />
-
-                              {/* アップロード中オーバーレイ */}
-                              {uploadingId === p.id && (
-                                <div className="absolute inset-0 grid place-items-center text-xs bg-white/70">
-                                  更新中…
-                                </div>
-                              )}
-
-                              {/* 右下の「変更/追加」バッジ（SP常時/PCホバー） */}
-                              <span
-                                className="pointer-events-none absolute bottom-1 right-1 text-[10px] px-1 rounded bg-white/85 shadow-sm
-                             opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
-                              >
-                                {path ? "変更" : "追加"}
-                              </span>
-
-                              {/* 左上の「メイン/サブ」ラベル（常時表示） */}
-                              <span
-                                className="pointer-events-none absolute top-1 left-1 text-[10px] px-1 rounded bg-white/90 shadow-sm"
-                              >
-                                {label || slotJp(slot)}
-                              </span>
-
-                              {/* ★ 追加：ロック中かつ未画像のときはやさしい帯を表示（視覚補助） */}
-                              {locked && !path && (
-                                <div className="absolute inset-x-1 bottom-1 rounded bg-amber-50/95 text-amber-800 text-[10px] px-2 py-1 shadow-sm pointer-events-none">
-                                  メイン画像を先に登録してください
-                                </div>
-                              )}
-                            </label>
-
-                            {/* 下部の「カメラで撮る／削除」を使う場合はロック反映（任意） */}
-                            <div className="mt-1 w-full">
-                              <button
-                                type="button"
-                                className="w-full rounded-lg border px-2 py-1 text-[11px] hover:bg-zinc-50"
-                                onClick={() => {
-                                  if (locked) { gentleWarn("まずはメイン画像を登録してください"); return; }
-                                  setCam({ productId: p.id, slot, label: (label || slotJp(slot)), name: p.name });
-                                }}
-                                disabled={locked || ploading || uploadingId === p.id}
-                              >
-                                カメラで撮る
-                              </button>
-
-                              {path ? (
-                                <div className="mt-1 w-full">
-                                  <button
-                                    type="button"
-                                    className="w-full rounded-lg border px-2 py-1 text-[11px] text-red-600 hover:bg-red-50"
-                                    onClick={async () => {
-                                      if (locked) { gentleWarn("まずはメイン画像を登録してください"); return; }
-                                      if (!confirm(`${(label || slotJp(slot))}画像を削除しますか？`)) return;
-                                      try {
-                                        setUploadingId(p.id);
-                                        await deleteProductImage(p.id, slot);
-                                        await reload();
-                                        setImgVer(v => v + 1);
-                                        alert(`${(label || slotJp(slot))}画像を削除しました`);
-                                      } catch (e: any) {
-                                        alert(`削除に失敗しました: ${e?.message ?? e}`);
-                                      } finally {
-                                        setUploadingId(null);
-                                      }
-                                    }}
-                                    disabled={locked || ploading || uploadingId === p.id}
-                                  >
-                                    削除
-                                  </button>
-                                </div>
-                              ) : null}
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  );
-                })()}
+                <div className="grid grid-cols-3 gap-2">
+                  <ProductImageSlot
+                    mode="existing"
+                    productId={p.id}
+                    slot="main"
+                    label="メイン"
+                    path={p.main_image_path}
+                    imgVer={imgVer}
+                    onReload={reload}
+                  />
+                  <ProductImageSlot
+                    mode="existing"
+                    productId={p.id}
+                    slot="sub1"
+                    label="サブ1"
+                    path={p.sub_image_path1}
+                    imgVer={imgVer}
+                    onReload={reload}
+                  />
+                  <ProductImageSlot
+                    mode="existing"
+                    productId={p.id}
+                    slot="sub2"
+                    label="サブ2"
+                    path={p.sub_image_path2}
+                    imgVer={imgVer}
+                    onReload={reload}
+                  />
+                </div>
               </div>
-
             </div>
           );
         })}

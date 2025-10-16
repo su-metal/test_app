@@ -1351,7 +1351,7 @@ function EditProductModal({
             <div className="mt-1 text-right text-[11px] text-zinc-500">{note.length}/300</div>
           </div>
 
-          <div>
+          {/* <div>
             <label className="block text-xs text-zinc-600 mb-1">公開</label>
             <div className="w-full rounded-lg border border-zinc-300 overflow-hidden bg-white">
               <div className="grid grid-cols-2 divide-x divide-zinc-300">
@@ -1376,7 +1376,7 @@ function EditProductModal({
                 />
               </div>
             )}
-          </div>
+          </div> */}
 
           <div className="flex items-center justify-end gap-2 pt-1">
             <button type="button" className="rounded-xl border px-4 py-2 text-sm" onClick={onClose} disabled={disabled}>キャンセル</button>
@@ -2369,14 +2369,30 @@ function ProductForm() {
                 </div>
               </div>
 
-              {/* 一括編集（モーダル） */}
-              <div className="mt-4 mb-8 flex justify-center">
+              {/* 一括編集（モーダル） + 商品削除 */}
+              <div className="mt-4 mb-8 flex flex-col items-center gap-2">
                 <button
                   onClick={() => setEditDlg(p)}
                   className="px-4 py-2 rounded-xl border text-sm bg-white hover:bg-zinc-50
                w-[min(90%)]"
                 >
                   内容を変更する
+                </button>
+
+                <button
+                  onClick={async () => {
+                    if (!confirm('本当に削除しますか？')) return;
+                    try {
+                      await remove(p.id);
+                    } catch (e: any) {
+                      alert(`削除に失敗しました: ${e?.message ?? e}`);
+                    }
+                  }}
+                  className="px-4 py-2 rounded-xl border text-sm
+               text-red-600 border-red-300 bg-red-50 hover:bg-red-100
+               w-[min(90%)]"
+                >
+                  商品を削除する
                 </button>
               </div>
 

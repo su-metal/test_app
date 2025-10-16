@@ -1232,12 +1232,15 @@ function EditProductModal({
   // 画像は即時更新（既存の ProductImageSlot をこのモーダル内でも使える）
   if (!open) return null;
 
+  useModalScrollLock(open);
+
+
   return (
-    <div className="fixed inset-0 z-[70] grid place-items-center bg-black/40 p-4" role="dialog" aria-modal="true" onClick={onClose}>
+    <div className="fixed inset-0 z-[70] grid place-items-center bg-black/40 p-4 overscroll-contain" role="dialog" aria-modal="true" onClick={onClose}>
       <div className="w-full max-w-lg rounded-2xl bg-white shadow-xl border p-4
              max-h-[calc(100svh-2rem)] overflow-y-auto
              sm:max-h-[calc(100svh-4rem)]
-             pb-[env(safe-area-inset-bottom)]" onClick={(e) => e.stopPropagation()}>
+             pb-[calc(env(safe-area-inset-bottom)+1.5rem)]" onClick={(e) => e.stopPropagation()}>
         <div className="text-base font-semibold mb-2">内容を変更（{product.name}）</div>
         <div className="grid grid-cols-1 gap-2">
 
@@ -1989,6 +1992,14 @@ function ProductForm() {
           </div>
         </div>
 
+        {/* 店側受取額（サマリ行・右寄せ） */}
+        <div className="md:col-span-2 flex items-center justify-between pt-1">
+          <span className="text-xs text-zinc-500">手数料差引後</span>
+          <span className="text-xs font-medium text-zinc-800 tabular-nums">
+            店側受取額 {yen(take)}
+          </span>
+        </div>
+
         {/* 在庫 */}
         <div>
           <label className="block text-xs text-zinc-600 mb-1">在庫</label>
@@ -2116,18 +2127,10 @@ function ProductForm() {
         </div>
 
 
-        {/* 店側受取額（サマリ行・右寄せ） */}
-        <div className="md:col-span-2 flex items-center justify-between pt-1">
-          <span className="text-xs text-zinc-500">手数料差引後</span>
-          <span className="text-sm font-medium text-zinc-800 tabular-nums">
-            店側受取額 {yen(take)}
-          </span>
-        </div>
-
         {/* 追加ボタン（フル幅・親指タップしやすく） */}
         <div className="md:col-span-2">
           <button
-            className="w-full rounded-xl bg-zinc-900 text-white mb-8 py-3 text-sm font-medium shadow-sm hover:opacity-90 active:opacity-80 disabled:opacity-50 disabled:cursor-not-allowed"
+            className="w-full rounded-xl bg-zinc-900 text-white mt-6 mb-8 py-3 text-sm font-medium shadow-sm hover:opacity-90 active:opacity-80 disabled:opacity-50 disabled:cursor-not-allowed"
             disabled={
               ploading ||
               !name.trim() ||

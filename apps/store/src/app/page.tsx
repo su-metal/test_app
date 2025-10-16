@@ -357,20 +357,43 @@ function useProducts() {
   }, [supabase, load, cleanup, chanName]);
 
 
-  const add = useCallback(async (payload: { name: string; price: number; stock: number; pickup_slot_no?: number | null; publish_at?: string | null }) => {
-    if (!payload.name) { setPerr('商品名を入力してください'); return; }
-    if (!supabase) return;
-    setPloading(true); setPerr(null);
-    const { data, error } = await supabase
-      .from('products')
-      .insert({ ...payload, store_id: getStoreId(), pickup_slot_no: payload.pickup_slot_no ?? null })
-      .select('id,store_id,name,price,stock,updated_at,main_image_path,sub_image_path1,sub_image_path2,pickup_slot_no,publish_at')
-      .single();
-    if (error) setPerr(error.message || '商品の登録に失敗しました');
-    else if (data) setProducts(prev => [mapProduct(data as ProductsRow), ...prev]);
-    prodChan.post({ type: 'PRODUCT_ADDED', id: String((data as any).id), at: Date.now() });
-    setPloading(false);
-  }, [supabase]);
+  const add = useCallback(
+    async (payload: {
+      name: string;
+      price: number;
+      stock: number;
+      pickup_slot_no?: number | null;
+      publish_at?: string | null;
+    }): Promise<Product | null> => {
+      if (!payload.name) { setPerr('商品名を入力してください'); return null; }
+      if (!supabase) return null;
+
+      setPloading(true); setPerr(null);
+      const { data, error } = await supabase
+        .from('products')
+        .insert({ ...payload, store_id: getStoreId(), pickup_slot_no: payload.pickup_slot_no ?? null })
+        .select('id,store_id,name,price,stock,updated_at,main_image_path,sub_image_path1,sub_image_path2,pickup_slot_no,publish_at')
+        .single();
+
+      if (error) {
+        setPerr(error.message || '商品の登録に失敗しました');
+        setPloading(false);
+        return null;
+      }
+
+      if (data) {
+        const mapped = mapProduct(data as ProductsRow);
+        setProducts(prev => [mapped, ...prev]);
+        prodChan.post({ type: 'PRODUCT_ADDED', id: String((data as any).id), at: Date.now() });
+        setPloading(false);
+        return mapped; // ★ 作成した商品の情報を返す
+      }
+
+      setPloading(false);
+      return null;
+    },
+    [supabase]
+  );
 
   const remove = useCallback(async (id: string) => {
     if (!id) return; setProducts(prev => prev.filter(p => p.id !== id));
@@ -1119,6 +1142,16 @@ function ProductForm() {
   const [price, setPrice] = useState("");
   const [stock, setStock] = useState("");
   const [pickupSlotForNew, setPickupSlotForNew] = useState<number | null>(null); // null=未指定
+  // ▼ メイン画像（必須）
+  const [mainImageFile, setMainImageFile] = useState<File | null>(null);
+  // ▼ サブ画像（任意：2枚まで）
+  const [subImageFile1, setSubImageFile1] = useState<File | null>(null);
+  const [subImageFile2, setSubImageFile2] = useState<File | null>(null);
+  const subImageInputRef1 = useRef<HTMLInputElement | null>(null);
+  const subImageInputRef2 = useRef<HTMLInputElement | null>(null);
+
+  const mainImageInputRef = useRef<HTMLInputElement | null>(null);
+
   const take = storeTake(Number(price || 0));
   const { uploadProductImage, deleteProductImage } = useImageUpload();
   const [uploadingId, setUploadingId] = useState<string | null>(null);
@@ -1174,7 +1207,7 @@ function ProductForm() {
       <SectionTitle>商品</SectionTitle>
       <form
         className="grid grid-cols-1 md:grid-cols-2 gap-2 md:gap-3 items-start"
-        onSubmit={(e) => {
+        onSubmit={async (e) => {
           e.preventDefault();
 
           const nameOk = name.trim().length > 0;
@@ -1188,17 +1221,18 @@ function ProductForm() {
           if (!priceOk) { alert('価格は1以上の整数で入力してください'); return; }
           if (!stockOk) { alert('在庫は0以上の整数で入力してください'); return; }
           if (!pickupOk) { alert('受け取り時間を選択してください'); return; }
+          if (!mainImageFile) { alert('メイン画像を選択してください'); return; }
 
           // 予約 ISO を作成（予約モードのときだけ）
           let publishISO: string | null = null;
           if (publishMode === 'schedule') {
             if (!publishLocal) { alert('公開開始の日時を入力してください'); return; }
             const local = publishLocal; // 'YYYY-MM-DDTHH:mm'
-            const iso = new Date(local.replace(' ', 'T')).toISOString();
-            publishISO = iso;
+            publishISO = new Date(local.replace(' ', 'T')).toISOString();
           }
 
-          add({
+          // 1) まず商品レコードを作成
+          const created = await add({
             name: name.trim(),
             price: priceNum,
             stock: stockNum,
@@ -1206,11 +1240,48 @@ function ProductForm() {
             publish_at: publishISO,
           });
 
+          if (!created) return;
+
+          // 2) 直後にメイン画像を必須アップロード
+          try {
+            await uploadProductImage(created.id, mainImageFile, "main");
+            await reload();
+            setImgVer(v => v + 1);
+            alert('メイン画像を登録しました');
+            // ▼ サブ画像（任意）：失敗しても商品はロールバックしない（メインは既にOKのため）
+            try {
+              if (subImageFile1) {
+                await uploadProductImage(created.id, subImageFile1, "sub1");
+              }
+              if (subImageFile2) {
+                await uploadProductImage(created.id, subImageFile2, "sub2");
+              }
+            } catch (e) {
+              console.warn('[image] sub upload failed', e);
+              emitToast?.('error' as any, '一部のサブ画像のアップロードに失敗しました（後から登録/変更できます）');
+            }
+
+          } catch (err: any) {
+            // アップロード失敗時は商品をロールバック（必須要件を満たせないため）
+            try { await remove(created.id); } catch { }
+            alert(`メイン画像のアップロードに失敗しました: ${err?.message ?? err}`);
+            return;
+          }
+
+          // 3) クリア
           setName(""); setPrice(""); setStock("");
           setPickupSlotForNew(null);
           setPublishMode('now'); setPublishLocal("");
+          setMainImageFile(null);
+          setSubImageFile1(null);
+          setSubImageFile2(null);
+          if (subImageInputRef1.current) subImageInputRef1.current.value = "";
+          if (subImageInputRef2.current) subImageInputRef2.current.value = "";
+
+          if (mainImageInputRef.current) mainImageInputRef.current.value = "";
         }}
       >
+
         {/* 商品名（2カラムまたぎ） */}
         <div className="md:col-span-2">
           <label className="block text-xs text-zinc-600 mb-1">商品名</label>
@@ -1221,6 +1292,57 @@ function ProductForm() {
             onChange={e => setName(e.target.value)}
             required
           />
+        </div>
+
+        {/* メイン画像（必須） */}
+        <div className="md:col-span-2">
+          <label className="block text-xs text-zinc-600 mb-1">
+            メイン画像 <span className="text-red-600">*</span>
+          </label>
+          <input
+            ref={mainImageInputRef}
+            type="file"
+            accept="image/*"
+            capture="environment"
+            className="w-full rounded-md border border-zinc-300 px-3 py-2 text-sm bg-white"
+            onChange={(e) => {
+              const f = e.currentTarget.files?.[0] || null;
+              setMainImageFile(f || null);
+            }}
+            required
+          />
+          <p className="mt-1 text-[11px] text-zinc-500">
+            横長または正方形を推奨。最大5MB程度。
+          </p>
+        </div>
+
+        {/* サブ画像（任意） */}
+        <div className="md:col-span-2 grid grid-cols-1 md:grid-cols-2 gap-2">
+          {/* サブ画像1 */}
+          <div>
+            <label className="block text-xs text-zinc-600 mb-1">サブ画像 1（任意）</label>
+            <input
+              ref={subImageInputRef1}
+              type="file"
+              accept="image/*"
+              className="w-full rounded-md border border-zinc-300 px-3 py-2 text-sm bg-white"
+              onChange={(e) => setSubImageFile1(e.currentTarget.files?.[0] || null)}
+            />
+            <p className="mt-1 text-[11px] text-zinc-500">例：別角度/パッケージなど</p>
+          </div>
+
+          {/* サブ画像2 */}
+          <div>
+            <label className="block text-xs text-zinc-600 mb-1">サブ画像 2（任意）</label>
+            <input
+              ref={subImageInputRef2}
+              type="file"
+              accept="image/*"
+              className="w-full rounded-md border border-zinc-300 px-3 py-2 text-sm bg-white"
+              onChange={(e) => setSubImageFile2(e.currentTarget.files?.[0] || null)}
+            />
+            <p className="mt-1 text-[11px] text-zinc-500">必要に応じて</p>
+          </div>
         </div>
 
         {/* 価格 */}
@@ -1335,7 +1457,8 @@ function ProductForm() {
               !name.trim() ||
               !price.trim() ||
               !stock.trim() ||
-              pickupSlotForNew === null
+              pickupSlotForNew === null ||
+              !mainImageFile // ★ メイン画像必須
             }
           >
             追加

@@ -1,7 +1,7 @@
 // apps/user/src/components/PickupTimeSelector.tsx
 "use client";
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "../lib/supabase";
 
 type Preset = {
@@ -77,73 +77,103 @@ export default function PickupTimeSelector(props: {
         return () => clearInterval(id);
     }, []);
     // 取得 & スロット生成
-    useEffect(() => {
-        (async () => {
-            setLoading(true);
+    const refresh = useCallback(async () => {
+        setLoading(true);
 
-            // ★ 先に limitWindow を評価。妥当ならプリセットを参照せず、ここから直接スロット生成
-            const hasValidLimit =
-                !!limitWindow &&
-                Number.isFinite(limitWindow.start) &&
-                Number.isFinite(limitWindow.end) &&
-                limitWindow.end > limitWindow.start;
-            if (hasValidLimit) {
-                const start = Math.max(0, Math.floor(limitWindow!.start));
-                const end = Math.min(24 * 60, Math.floor(limitWindow!.end));
-                const step = stepOverride ?? 10; // プリセットが無くても 10分刻みにフォールバック
-                const out: PickupSlot[] = [];
-                for (let t = start; t + step <= end; t += step) {
-                    const s = minutesToHHmm(t);
-                    const e = minutesToHHmm(t + step);
-                    out.push({ label: `${s}–${e}`, start: s, end: e });
-                }
-                setPreset(null);     // ラベルは後段で表示名を用意（共通枠）
-                setAllSlots(out);
-                setLoading(false);
-                return;              // ← ここで完了。プリセット取得へは進まない
+        // 先に limitWindow を評価。妥当ならプリセットを参照せず、ここから直接スロット生成
+        const hasValidLimit =
+            !!limitWindow &&
+            Number.isFinite(limitWindow.start) &&
+            Number.isFinite(limitWindow.end) &&
+            limitWindow.end > limitWindow.start;
+        if (hasValidLimit) {
+            const start = Math.max(0, Math.floor(limitWindow!.start));
+            const end = Math.min(24 * 60, Math.floor(limitWindow!.end));
+            const step = stepOverride ?? 10; // プリセットが無くても 10分刻みにフォールバック
+            const out: PickupSlot[] = [];
+            for (let t = start; t + step <= end; t += step) {
+                const s = minutesToHHmm(t);
+                const e = minutesToHHmm(t + step);
+                out.push({ label: `${s}–${e}`, start: s, end: e });
             }
-
-            const { data: store } = await supabase
-                .from("stores")
-                .select("current_pickup_slot_no")
-                .eq("id", storeId)
-                .single();
-
-            if (!store?.current_pickup_slot_no) {
-                setPreset(null);
-                setAllSlots([]);
-                setLoading(false);
-                return;
-            }
-
-            const { data: presets } = await supabase
-                .from("store_pickup_presets")
-                .select("slot_no,name,start_time,end_time,slot_minutes")
-                .eq("store_id", storeId)
-                .eq("slot_no", store.current_pickup_slot_no)
-                .limit(1);
-
-            const p = (presets?.[0] as Preset) || null;
-            setPreset(p);
-
-            if (p) {
-                const start = hhmmToMinutes(p.start_time);
-                const end = hhmmToMinutes(p.end_time);
-                const step = stepOverride ?? p.slot_minutes;  // ← 上書き可能に
-                const out: PickupSlot[] = [];
-                for (let t = start; t + step <= end; t += step) {
-                    const s = minutesToHHmm(t);
-                    const e = minutesToHHmm(t + step);
-                    out.push({ label: `${s}–${e}`, start: s, end: e });
-                }
-                setAllSlots(out);
-            } else {
-                setAllSlots([]);
-            }
-
+            setPreset(null);
+            setAllSlots(out);
             setLoading(false);
-        })();
-    }, [storeId, stepOverride, limitWindow]);  // ← 依存に limitWindow を追加
+            return;
+        }
+
+        const { data: store } = await supabase
+            .from("stores")
+            .select("current_pickup_slot_no")
+            .eq("id", storeId)
+            .single();
+
+        if (!store?.current_pickup_slot_no) {
+            setPreset(null);
+            setAllSlots([]);
+            setLoading(false);
+            return;
+        }
+
+        const { data: presets } = await supabase
+            .from("store_pickup_presets")
+            .select("slot_no,name,start_time,end_time,slot_minutes")
+            .eq("store_id", storeId)
+            .eq("slot_no", store.current_pickup_slot_no)
+            .limit(1);
+
+        const p = (presets?.[0] as Preset) || null;
+        setPreset(p);
+
+        if (p) {
+            const start = hhmmToMinutes(p.start_time);
+            const end = hhmmToMinutes(p.end_time);
+            const step = stepOverride ?? p.slot_minutes;
+            const out: PickupSlot[] = [];
+            for (let t = start; t + step <= end; t += step) {
+                const s = minutesToHHmm(t);
+                const e = minutesToHHmm(t + step);
+                out.push({ label: `${s}–${e}`, start: s, end: e });
+            }
+            setAllSlots(out);
+        } else {
+            setAllSlots([]);
+        }
+
+        setLoading(false);
+    }, [storeId, stepOverride, limitWindow]);
+
+    useEffect(() => { refresh(); }, [refresh]);
+
+    // Realtime: プリセット/現在スロットの変更で即時反映
+    // TODO(req v2): 差分適用に最適化（現在はフル再取得）
+    useEffect(() => {
+        const ch1 = supabase
+            .channel(`rt-pickup-selector-presets:${storeId}`)
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'store_pickup_presets', filter: `store_id=eq.${storeId}` }, () => {
+                refresh();
+            })
+            .subscribe();
+
+        const ch2 = supabase
+            .channel(`rt-pickup-selector-store:${storeId}`)
+            .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'stores', filter: `id=eq.${storeId}` }, () => {
+                refresh();
+            })
+            .subscribe();
+
+        // フェールセーフの軽いポーリング（Realtime 不達時の整合性担保）
+        const t = setInterval(() => { if (document.visibilityState === 'visible') refresh(); }, 15000);
+        const onVis = () => { if (document.visibilityState === 'visible') refresh(); };
+        document.addEventListener('visibilitychange', onVis);
+
+        return () => {
+            try { supabase.removeChannel(ch1); } catch { }
+            try { supabase.removeChannel(ch2); } catch { }
+            clearInterval(t);
+            document.removeEventListener('visibilitychange', onVis);
+        };
+    }, [storeId, refresh]);
 
     // ==== グループの共通交差（分）で絞り込み（指定があるときだけ適用） ====
     const windowedSlots = useMemo(() => {

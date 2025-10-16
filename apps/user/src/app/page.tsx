@@ -457,16 +457,16 @@ type PresetSlot = { start: string; end: string; name: string; step: number };
 type StorePresetInfo = { current: number | null, slots: Record<number, PresetSlot> };
 
 
-function useStorePickupPresets(
-    supabase: SupabaseClient | null,
-    dbStores: any[],
-    dbProducts: any[]
-): {
-    presetMap: Record<string, StorePresetInfo>;
-    pickupLabelFor: (storeId: string, productSlotNo?: number | null) => string | null;
-} {
+    function useStorePickupPresets(
+        supabase: SupabaseClient | null,
+        dbStores: any[],
+        dbProducts: any[]
+    ): {
+        presetMap: Record<string, StorePresetInfo>;
+        pickupLabelFor: (storeId: string, productSlotNo?: number | null) => string | null;
+    } {
 
-    const [map, setMap] = useState<Record<string, StorePresetInfo>>({});
+        const [map, setMap] = useState<Record<string, StorePresetInfo>>({});
 
     // 取得対象の store_id を、stores / products の両方からユニークに集める
     const storeIds = useMemo(() => {
@@ -606,6 +606,61 @@ function useStorePickupPresets(
         };
     }, [supabase]);
     // ▲▲▲ ここまで追加 ▲▲▲
+
+        // ▼▼▼ フェールセーフのポーリング（Realtime 不達時の整合性担保）▼▼▼
+        useEffect(() => {
+            if (!supabase) return;
+            if (!Array.isArray(storeIds) || storeIds.length === 0) return;
+
+            const reload = async () => {
+                try {
+                    // 現在スロット番号
+                    const curQ = await supabase
+                        .from('stores')
+                        .select('id,current_pickup_slot_no')
+                        .in('id', storeIds as any);
+                    if (curQ.error) return;
+
+                    const currentById = new Map<string, number | null>();
+                    for (const s of curQ.data || []) currentById.set(String((s as any).id), (s as any).current_pickup_slot_no ?? null);
+
+                    // プリセット
+                    const preQ = await supabase
+                        .from('store_pickup_presets')
+                        .select('store_id,slot_no,name,start_time,end_time,slot_minutes')
+                        .in('store_id', storeIds as any);
+                    if (preQ.error) return;
+
+                    const next: Record<string, StorePresetInfo> = {};
+                    for (const sid of storeIds) next[sid] = { current: currentById.get(sid) ?? null, slots: {} };
+                    for (const row of (preQ.data || []) as any[]) {
+                        const sid = String(row.store_id);
+                        if (!next[sid]) next[sid] = { current: currentById.get(sid) ?? null, slots: {} };
+                        next[sid].slots[Number(row.slot_no)] = {
+                            name: (row.name || '').trim() || `プリセット${row.slot_no}`,
+                            start: String(row.start_time).slice(0, 5),
+                            end: String(row.end_time).slice(0, 5),
+                            step: Number(row.slot_minutes || 10),
+                        };
+                    }
+                    setMap(prev => (JSON.stringify(prev) === JSON.stringify(next) ? prev : next));
+                } catch { /* noop */ }
+            };
+
+            // 初回は軽く遅延
+            const t0 = setTimeout(reload, 1500);
+            // 周期 15秒
+            const t = setInterval(reload, 15000);
+            const onVis = () => { if (document.visibilityState === 'visible') reload(); };
+            document.addEventListener('visibilitychange', onVis);
+
+            return () => {
+                clearTimeout(t0);
+                clearInterval(t);
+                document.removeEventListener('visibilitychange', onVis);
+            };
+        }, [supabase, JSON.stringify(storeIds)]);
+        // ▲▲▲ ポーリング追加（TODO(req v2): 差分適用へ最適化） ▲▲▲
 
 
     // 商品が未指定 → 店舗の current → 1→2→3 の順で最初に存在するスロットを採用

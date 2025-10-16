@@ -1616,33 +1616,38 @@ function ProductForm() {
 
 
         {/* 公開タイミング（今すぐ / 予約して公開） */}
-        <div>
+        <div className="md:col-span-2">
           <label className="block text-xs text-zinc-600 mb-1">公開</label>
-          <div className="grid grid-cols-2 rounded-lg border border-zinc-300 overflow-hidden">
-            <label className="flex items-center justify-center gap-2 py-2 text-sm cursor-pointer">
-              <input
-                type="radio"
-                name="pub"
-                checked={publishMode === 'now'}
-                onChange={() => setPublishMode('now')}
-              />
-              今すぐ公開
-            </label>
-            <label className="flex items-center justify-center gap-2 py-2 text-sm cursor-pointer border-l border-zinc-300">
-              <input
-                type="radio"
-                name="pub"
-                checked={publishMode === 'schedule'}
-                onChange={() => setPublishMode('schedule')}
-              />
-              予約して公開
-            </label>
+
+          {/* ▼ PCでもSPと同じ見た目：2分割トグル風 */}
+          <div className="w-full rounded-lg border border-zinc-300 overflow-hidden bg-white">
+            <div className="grid grid-cols-2 divide-x divide-zinc-300">
+              <label className="flex items-center justify-center gap-2 py-2 md:py-2.5 text-sm cursor-pointer">
+                <input
+                  type="radio"
+                  name="pub"
+                  checked={publishMode === 'now'}
+                  onChange={() => setPublishMode('now')}
+                />
+                <span>今すぐ公開</span>
+              </label>
+              <label className="flex items-center justify-center gap-2 py-2 md:py-2.5 text-sm cursor-pointer">
+                <input
+                  type="radio"
+                  name="pub"
+                  checked={publishMode === 'schedule'}
+                  onChange={() => setPublishMode('schedule')}
+                />
+                <span>予約して公開</span>
+              </label>
+            </div>
           </div>
+
           {publishMode === 'schedule' && (
             <div className="mt-2">
               <input
                 type="datetime-local"
-                className="w-full rounded-md border border-zinc-300 px-3 py-2 text-sm"
+                className="w-full rounded-md border border-zinc-300 px-3 py-2 text-sm bg-white"
                 value={publishLocal}
                 onChange={(e) => setPublishLocal(e.target.value)}
                 step={60}
@@ -1651,6 +1656,7 @@ function ProductForm() {
             </div>
           )}
         </div>
+
 
         {/* 店側受取額（サマリ行・右寄せ） */}
         <div className="md:col-span-2 flex items-center justify-between pt-1">

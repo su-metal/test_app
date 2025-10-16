@@ -1506,6 +1506,56 @@ export default function UserPilotApp() {
         return outer;
     }, [shopsWithDb]);
 
+    // カート整合: products の変更/削除を反映（価格/名称/在庫/受取枠など）
+    // - UPDATE: 該当商品の item を最新に置換。数量は在庫でクランプ
+    // - DELETE/非公開: カートから除去
+    useEffect(() => {
+        setCart(prev => {
+            if (!prev || prev.length === 0) return prev;
+
+            let changed = false;
+            let removed = 0;
+            let clamped = 0;
+
+            const next: CartLine[] = [];
+            for (const l of prev) {
+                const map = itemsById.get(l.shopId);
+                const latest = map?.get(l.item.id);
+                if (!latest) {
+                    // 商品が削除 or 非公開になった
+                    removed++;
+                    changed = true;
+                    continue;
+                }
+                const newQty = Math.max(0, Math.min(latest.stock, l.qty));
+                if (newQty !== l.qty) { clamped++; }
+
+                // item の差分がある場合は置換
+                const sameItem = (
+                    l.item.id === latest.id &&
+                    l.item.name === latest.name &&
+                    l.item.price === latest.price &&
+                    l.item.stock === latest.stock &&
+                    l.item.pickup === latest.pickup &&
+                    l.item.main_image_path === latest.main_image_path &&
+                    l.item.sub_image_path1 === latest.sub_image_path1 &&
+                    l.item.sub_image_path2 === latest.sub_image_path2 &&
+                    l.item.publish_at === latest.publish_at
+                );
+
+                if (!sameItem || newQty !== l.qty) changed = true;
+                next.push({ shopId: l.shopId, item: latest, qty: newQty });
+            }
+
+            if (changed) {
+                if (removed > 0) emitToast('info', `商品が削除（または非公開）されたため、${removed}件をカートから除外しました`);
+                if (clamped > 0) emitToast('info', `在庫変更により、${clamped}件の数量を調整しました`);
+                return next;
+            }
+            return prev;
+        });
+    }, [itemsById, setCart]);
+
 
     // 予約数量（カート数量）
     const reservedMap = useMemo(() => {

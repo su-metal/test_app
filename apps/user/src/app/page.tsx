@@ -457,16 +457,16 @@ type PresetSlot = { start: string; end: string; name: string; step: number };
 type StorePresetInfo = { current: number | null, slots: Record<number, PresetSlot> };
 
 
-    function useStorePickupPresets(
-        supabase: SupabaseClient | null,
-        dbStores: any[],
-        dbProducts: any[]
-    ): {
-        presetMap: Record<string, StorePresetInfo>;
-        pickupLabelFor: (storeId: string, productSlotNo?: number | null) => string | null;
-    } {
+function useStorePickupPresets(
+    supabase: SupabaseClient | null,
+    dbStores: any[],
+    dbProducts: any[]
+): {
+    presetMap: Record<string, StorePresetInfo>;
+    pickupLabelFor: (storeId: string, productSlotNo?: number | null) => string | null;
+} {
 
-        const [map, setMap] = useState<Record<string, StorePresetInfo>>({});
+    const [map, setMap] = useState<Record<string, StorePresetInfo>>({});
 
     // 取得対象の store_id を、stores / products の両方からユニークに集める
     const storeIds = useMemo(() => {
@@ -607,60 +607,60 @@ type StorePresetInfo = { current: number | null, slots: Record<number, PresetSlo
     }, [supabase]);
     // ▲▲▲ ここまで追加 ▲▲▲
 
-        // ▼▼▼ フェールセーフのポーリング（Realtime 不達時の整合性担保）▼▼▼
-        useEffect(() => {
-            if (!supabase) return;
-            if (!Array.isArray(storeIds) || storeIds.length === 0) return;
+    // ▼▼▼ フェールセーフのポーリング（Realtime 不達時の整合性担保）▼▼▼
+    useEffect(() => {
+        if (!supabase) return;
+        if (!Array.isArray(storeIds) || storeIds.length === 0) return;
 
-            const reload = async () => {
-                try {
-                    // 現在スロット番号
-                    const curQ = await supabase
-                        .from('stores')
-                        .select('id,current_pickup_slot_no')
-                        .in('id', storeIds as any);
-                    if (curQ.error) return;
+        const reload = async () => {
+            try {
+                // 現在スロット番号
+                const curQ = await supabase
+                    .from('stores')
+                    .select('id,current_pickup_slot_no')
+                    .in('id', storeIds as any);
+                if (curQ.error) return;
 
-                    const currentById = new Map<string, number | null>();
-                    for (const s of curQ.data || []) currentById.set(String((s as any).id), (s as any).current_pickup_slot_no ?? null);
+                const currentById = new Map<string, number | null>();
+                for (const s of curQ.data || []) currentById.set(String((s as any).id), (s as any).current_pickup_slot_no ?? null);
 
-                    // プリセット
-                    const preQ = await supabase
-                        .from('store_pickup_presets')
-                        .select('store_id,slot_no,name,start_time,end_time,slot_minutes')
-                        .in('store_id', storeIds as any);
-                    if (preQ.error) return;
+                // プリセット
+                const preQ = await supabase
+                    .from('store_pickup_presets')
+                    .select('store_id,slot_no,name,start_time,end_time,slot_minutes')
+                    .in('store_id', storeIds as any);
+                if (preQ.error) return;
 
-                    const next: Record<string, StorePresetInfo> = {};
-                    for (const sid of storeIds) next[sid] = { current: currentById.get(sid) ?? null, slots: {} };
-                    for (const row of (preQ.data || []) as any[]) {
-                        const sid = String(row.store_id);
-                        if (!next[sid]) next[sid] = { current: currentById.get(sid) ?? null, slots: {} };
-                        next[sid].slots[Number(row.slot_no)] = {
-                            name: (row.name || '').trim() || `プリセット${row.slot_no}`,
-                            start: String(row.start_time).slice(0, 5),
-                            end: String(row.end_time).slice(0, 5),
-                            step: Number(row.slot_minutes || 10),
-                        };
-                    }
-                    setMap(prev => (JSON.stringify(prev) === JSON.stringify(next) ? prev : next));
-                } catch { /* noop */ }
-            };
+                const next: Record<string, StorePresetInfo> = {};
+                for (const sid of storeIds) next[sid] = { current: currentById.get(sid) ?? null, slots: {} };
+                for (const row of (preQ.data || []) as any[]) {
+                    const sid = String(row.store_id);
+                    if (!next[sid]) next[sid] = { current: currentById.get(sid) ?? null, slots: {} };
+                    next[sid].slots[Number(row.slot_no)] = {
+                        name: (row.name || '').trim() || `プリセット${row.slot_no}`,
+                        start: String(row.start_time).slice(0, 5),
+                        end: String(row.end_time).slice(0, 5),
+                        step: Number(row.slot_minutes || 10),
+                    };
+                }
+                setMap(prev => (JSON.stringify(prev) === JSON.stringify(next) ? prev : next));
+            } catch { /* noop */ }
+        };
 
-            // 初回は軽く遅延
-            const t0 = setTimeout(reload, 1500);
-            // 周期 15秒
-            const t = setInterval(reload, 15000);
-            const onVis = () => { if (document.visibilityState === 'visible') reload(); };
-            document.addEventListener('visibilitychange', onVis);
+        // 初回は軽く遅延
+        const t0 = setTimeout(reload, 1500);
+        // 周期 15秒
+        const t = setInterval(reload, 15000);
+        const onVis = () => { if (document.visibilityState === 'visible') reload(); };
+        document.addEventListener('visibilitychange', onVis);
 
-            return () => {
-                clearTimeout(t0);
-                clearInterval(t);
-                document.removeEventListener('visibilitychange', onVis);
-            };
-        }, [supabase, JSON.stringify(storeIds)]);
-        // ▲▲▲ ポーリング追加（TODO(req v2): 差分適用へ最適化） ▲▲▲
+        return () => {
+            clearTimeout(t0);
+            clearInterval(t);
+            document.removeEventListener('visibilitychange', onVis);
+        };
+    }, [supabase, JSON.stringify(storeIds)]);
+    // ▲▲▲ ポーリング追加（TODO(req v2): 差分適用へ最適化） ▲▲▲
 
 
     // 商品が未指定 → 店舗の current → 1→2→3 の順で最初に存在するスロットを採用
@@ -956,6 +956,7 @@ export default function UserPilotApp() {
         hours?: string | null;    // ★ 追加
         holiday?: string | null;  // ★ 追加
         category?: string | null; // ★ 追加
+        note?: string | null;
     };
 
     const [dbProducts, setDbProducts] = useState<DbProduct[]>([]);
@@ -1119,9 +1120,7 @@ export default function UserPilotApp() {
         (async () => {
             const q = supabase
                 .from("products")
-                .select("id,store_id,name,price,stock,updated_at,main_image_path,sub_image_path1,sub_image_path2,pickup_slot_no,publish_at") // ← 末尾に追加
-
-
+                .select("id,store_id,name,price,stock,updated_at,main_image_path,sub_image_path1,sub_image_path2,pickup_slot_no,publish_at,note")
             // 必要なら在庫>0や公開フラグで絞ってOK（例）
             // .gt("stock", 0).eq("is_published", true)
 
@@ -1193,7 +1192,7 @@ export default function UserPilotApp() {
             try {
                 const { data, error } = await supabase
                     .from("products")
-                    .select("id,store_id,name,price,stock,updated_at,main_image_path,sub_image_path1,sub_image_path2,pickup_slot_no,publish_at");
+                    .select("id,store_id,name,price,stock,updated_at,main_image_path,sub_image_path1,sub_image_path2,pickup_slot_no,publish_at,note");
                 if (disposed) return;
                 if (error) {
                     // 取得失敗は静かにスキップ（次周期で再試行）
@@ -1275,7 +1274,7 @@ export default function UserPilotApp() {
                 price: Math.max(0, Number(p.price ?? 0) || 0),
                 stock,
                 pickup: pick,                  // ← ここがDB由来になる
-                note: "",
+                note: String(p?.note ?? "").slice(0, 300),
                 photo: "🛍️",
                 main_image_path: primary,
                 sub_image_path1: p?.sub_image_path1 ?? null,
@@ -1542,7 +1541,7 @@ export default function UserPilotApp() {
                 price: Math.max(0, Number(p.price ?? 0) || 0),
                 stock,
                 pickup: pick,     // ← DBのプリセット由来へ
-                note: "",
+                note: String(p?.note ?? "").slice(0, 300),
                 photo: "🛍️",
                 publish_at: p?.publish_at ?? null,
             };
@@ -1621,8 +1620,10 @@ export default function UserPilotApp() {
                     l.item.main_image_path === latest.main_image_path &&
                     l.item.sub_image_path1 === latest.sub_image_path1 &&
                     l.item.sub_image_path2 === latest.sub_image_path2 &&
-                    l.item.publish_at === latest.publish_at
+                    l.item.publish_at === latest.publish_at &&
+                    l.item.note === latest.note
                 );
+
 
                 if (!sameItem || newQty !== l.qty) changed = true;
                 next.push({ shopId: l.shopId, item: latest, qty: newQty });
@@ -3027,8 +3028,11 @@ export default function UserPilotApp() {
                                         </span>
                                     </div>
                                     <div className="text-sm text-zinc-700 bg-zinc-50 rounded-xl p-3">
-                                        {detail.item.note ? detail.item.note : 'お店のおすすめ商品です。数量限定のため、お早めにお求めください。'}
+                                        {detail?.item?.note && detail.item.note.trim().length > 0
+                                            ? detail.item.note
+                                            : 'お店のおすすめ商品です。数量限定のため、お早めにお求めください。'}
                                     </div>
+
                                     <div className="pt-1">
                                         <button
                                             type="button"

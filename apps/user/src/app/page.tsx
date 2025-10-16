@@ -441,6 +441,10 @@ interface Shop {
     address?: string;
     cover_image_path?: string | null;
     tel?: string;
+    url?: string;
+    hours?: string;    // ★ ：営業時間
+    holiday?: string;  // ★ ：定休日
+    category?: string; // ★ ：カテゴリー
 }
 interface CartLine { shopId: string; item: Item; qty: number }
 interface Order { id: string; userEmail: string; shopId: string; amount: number; status: "paid" | "redeemed" | "refunded"; code6: string; createdAt: number; lines: CartLine[] }
@@ -894,6 +898,9 @@ export default function UserPilotApp() {
         current_pickup_slot_no?: number | null;
         tel?: string | null;          // ★ 追加
         url?: string | null;          // ★ 追加
+        hours?: string | null;    // ★ 追加
+        holiday?: string | null;  // ★ 追加
+        category?: string | null; // ★ 追加
     };
 
     const [dbProducts, setDbProducts] = useState<DbProduct[]>([]);
@@ -1172,7 +1179,7 @@ export default function UserPilotApp() {
             // 置き換え
             const { data, error } = await supabase
                 .from("stores")
-                .select("id, name, created_at, lat, lng, address, cover_image_path, current_pickup_slot_no, tel, url") // ★ tel,url 追加
+                .select("id, name, created_at, lat, lng, address, cover_image_path, current_pickup_slot_no, tel, url, hours, holiday, category") // ★ 追加
                 .order("created_at", { ascending: true })
                 .limit(200);
             if (error) {
@@ -1240,6 +1247,9 @@ export default function UserPilotApp() {
             cover_image_path: st.cover_image_path ?? null,
             tel: (st.tel ?? undefined) as string | undefined,     // ★ 追加
             url: (st.url ?? undefined) as string | undefined,     // ★ 追加
+            hours: (st.hours ?? undefined) as string | undefined,       // ★ 追加
+            holiday: (st.holiday ?? undefined) as string | undefined,   // ★ 追加
+            category: (st.category ?? undefined) as string | undefined, // ★ 追加
         }));
 
 

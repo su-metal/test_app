@@ -61,6 +61,7 @@ type ProductsRow = {
   sub_image_path1: string | null;
   sub_image_path2: string | null;
   pickup_slot_no?: number | null;
+  publish_at?: string | null;
 };
 
 type Product = {
@@ -72,6 +73,7 @@ type Product = {
   sub_image_path1: string | null;
   sub_image_path2: string | null;
   pickup_slot_no?: number | null;
+  publish_at?: string | null;
 };
 
 // ===== Util =====
@@ -130,6 +132,7 @@ function mapProduct(r: ProductsRow): Product {
     sub_image_path1: r.sub_image_path1 ?? null,
     sub_image_path2: r.sub_image_path2 ?? null,
     pickup_slot_no: (r as any).pickup_slot_no ?? null,
+    publish_at: (r as any).publish_at ?? null,
   };
 }
 
@@ -287,32 +290,85 @@ function usePickupPresets() {
 function useProducts() {
   const supabase = useSupabase();
   const [products, setProducts] = useState<Product[]>([]);
+  const channelRef = useRef<RealtimeChannel | null>(null);
+  const chanName = `products-realtime-${getStoreId()}`;
+  const prodChan = useBroadcast('product-sync');
   const [perr, setPerr] = useState<string | null>(null);
   const [ploading, setPloading] = useState(false);
 
   const load = useCallback(async () => {
     if (!supabase) return; setPloading(true); setPerr(null);
     const { data, error } = await supabase
-      .from('products').select('id,store_id,name,price,stock,updated_at,main_image_path,sub_image_path1,sub_image_path2,pickup_slot_no')
+      .from('products')
+      .select('id,store_id,name,price,stock,updated_at,main_image_path,sub_image_path1,sub_image_path2,pickup_slot_no,publish_at')
       .eq('store_id', getStoreId())
       .order('updated_at', { ascending: false });
     if (error) setPerr(error.message || '商品の取得に失敗しました');
     else setProducts(((data ?? []) as ProductsRow[]).map(mapProduct));
     setPloading(false);
   }, [supabase]);
-  useEffect(() => { load(); }, [load]);
 
-  const add = useCallback(async (payload: { name: string; price: number; stock: number; pickup_slot_no?: number | null }) => {
+
+  const cleanup = useCallback(() => {
+    try { channelRef.current?.unsubscribe?.(); } catch { }
+    try { const sbAny = supabase as any; if (sbAny && channelRef.current) sbAny.removeChannel(channelRef.current); } catch { }
+    channelRef.current = null;
+  }, [supabase]);
+
+
+  useEffect(() => {
+    (async () => {
+      await load();               // まずは通常取得
+      if (!supabase) return;
+      // 既存チャンネルを外してから張り直す
+      cleanup();
+
+      const sid = getStoreId();
+      const ch = (supabase as any)
+        .channel(chanName)
+        .on('postgres_changes',
+          { event: 'INSERT', schema: 'public', table: 'products', filter: `store_id=eq.${sid}` },
+          (p: any) => { if (p?.new) setProducts(prev => [mapProduct(p.new as ProductsRow), ...prev]); }
+        )
+        .on('postgres_changes',
+          { event: 'UPDATE', schema: 'public', table: 'products', filter: `store_id=eq.${sid}` },
+          (p: any) => {
+            if (p?.new) {
+              const row = mapProduct(p.new as ProductsRow);
+              setProducts(prev => prev.map(it => it.id === row.id ? row : it));
+            }
+          }
+        )
+        // DELETE は REPLICA IDENTITY 設定によって store_id が old に無いことがあるため filter を外す
+        .on('postgres_changes',
+          { event: 'DELETE', schema: 'public', table: 'products' },
+          (p: any) => {
+            const id = String((p?.old as any)?.id || '');
+            if (!id) return;
+            setProducts(prev => prev.filter(it => it.id !== id));
+          }
+        )
+        .subscribe() as RealtimeChannel;
+
+      channelRef.current = ch;
+    })();
+
+    return () => { cleanup(); };
+  }, [supabase, load, cleanup, chanName]);
+
+
+  const add = useCallback(async (payload: { name: string; price: number; stock: number; pickup_slot_no?: number | null; publish_at?: string | null }) => {
     if (!payload.name) { setPerr('商品名を入力してください'); return; }
     if (!supabase) return;
     setPloading(true); setPerr(null);
     const { data, error } = await supabase
       .from('products')
       .insert({ ...payload, store_id: getStoreId(), pickup_slot_no: payload.pickup_slot_no ?? null })
-      .select('id,store_id,name,price,stock,updated_at,main_image_path,sub_image_path1,sub_image_path2,pickup_slot_no')
+      .select('id,store_id,name,price,stock,updated_at,main_image_path,sub_image_path1,sub_image_path2,pickup_slot_no,publish_at')
       .single();
     if (error) setPerr(error.message || '商品の登録に失敗しました');
     else if (data) setProducts(prev => [mapProduct(data as ProductsRow), ...prev]);
+    prodChan.post({ type: 'PRODUCT_ADDED', id: String((data as any).id), at: Date.now() });
     setPloading(false);
   }, [supabase]);
 
@@ -343,6 +399,7 @@ function useProducts() {
     }
     if (data) setProducts(prev => prev.map(p => p.id === id ? mapProduct(data as ProductsRow) : p));
   }, [supabase, load]);
+
   const updatePickupSlot = useCallback(async (id: string, slot: number | null) => {
     // 楽観更新
     setProducts(prev => prev.map(p => p.id === id ? { ...p, pickup_slot_no: slot } : p));
@@ -352,7 +409,7 @@ function useProducts() {
       .update({ pickup_slot_no: slot })
       .eq('id', id)
       .eq('store_id', getStoreId())
-      .select('id,store_id,name,price,stock,updated_at,main_image_path,sub_image_path1,sub_image_path2,pickup_slot_no')
+      .select('id,store_id,name,price,stock,updated_at,main_image_path,sub_image_path1,sub_image_path2,pickup_slot_no,publish_at')
       .single();
     if (error) {
       // 失敗時はリロードで整合
@@ -361,7 +418,58 @@ function useProducts() {
       setProducts(prev => prev.map(p => p.id === id ? mapProduct(data as ProductsRow) : p));
     }
   }, [supabase, load]);
-  return { products, perr, ploading, add, remove, updateStock, updatePickupSlot, reload: load } as const;
+
+
+  const updatePublishAt = useCallback(async (id: string, isoOrNull: string | null) => {
+    // 楽観更新
+    setProducts(prev => prev.map(p => p.id === id ? { ...p, publish_at: isoOrNull } : p));
+    if (!supabase) return;
+    const { data, error } = await supabase
+      .from('products')
+      .update({ publish_at: isoOrNull })
+      .eq('id', id)
+      .eq('store_id', getStoreId())
+      .select('id,store_id,name,price,stock,updated_at,main_image_path,sub_image_path1,sub_image_path2,pickup_slot_no,publish_at')
+      .single();
+    if (error) {
+      await load(); // 差し戻し
+    } else if (data) {
+      setProducts(prev => prev.map(p => p.id === id ? mapProduct(data as ProductsRow) : p));
+    }
+  }, [supabase, load]);
+
+  // ── 予約公開の到来を検知して自動反映 ─────────────────────────────
+  useEffect(() => {
+    // 未来の publish_at を集計
+    const now = Date.now();
+    const future = products
+      .map(p => p.publish_at ? Date.parse(p.publish_at) : NaN)
+      .filter(ts => Number.isFinite(ts) && ts > now)
+      .sort((a, b) => a - b);
+
+    if (future.length === 0) return; // 次の予約がなければ何もしない
+
+    const nextTs = future[0];
+    const delay = Math.max(0, nextTs - now) + 500; // 500ms マージン
+    const id = window.setTimeout(() => {
+      // 軽く再同期（どちらでも可）
+      // 1) サーバーと再同期したい場合
+      load();
+      // 2) 再フェッチ不要でローカル再評価だけで良い場合は下を使う
+      // setProducts(prev => [...prev]); // 再レンダー誘発
+    }, delay);
+
+    return () => { window.clearTimeout(id); };
+  }, [products, load]);
+
+
+  return {
+    products, perr, ploading,
+    add, remove, updateStock, updatePickupSlot,
+    updatePublishAt,            // ← これを追加
+    reload: load
+  } as const;
+
 }
 
 // ===== Orders =====
@@ -1002,6 +1110,7 @@ function useImageUpload() {
 function ProductForm() {
   useEnsureAuth(); // ★ 追加：匿名ログインで authenticated を確保
   const { products, perr, ploading, add, remove, updateStock, updatePickupSlot, reload } = useProducts();
+
   // ★ 画像のキャッシュ破り用バージョン
   const [imgVer, setImgVer] = useState(0);
   const [adjust, setAdjust] = useState<null | { id: string; name: string; stock: number }>(null);
@@ -1013,6 +1122,11 @@ function ProductForm() {
   const take = storeTake(Number(price || 0));
   const { uploadProductImage, deleteProductImage } = useImageUpload();
   const [uploadingId, setUploadingId] = useState<string | null>(null);
+
+  // 登録フォームに「公開タイミング」を追加
+  const [publishMode, setPublishMode] = useState<'now' | 'schedule'>('now');
+  const [publishLocal, setPublishLocal] = useState<string>(''); // 'YYYY-MM-DDTHH:mm' （ローカル）
+
   // ▼▼ ギャラリー（モーダル）用 state
   const [gallery, setGallery] = useState<null | {
     id: string;
@@ -1075,17 +1189,27 @@ function ProductForm() {
           if (!stockOk) { alert('在庫は0以上の整数で入力してください'); return; }
           if (!pickupOk) { alert('受け取り時間を選択してください'); return; }
 
+          // 予約 ISO を作成（予約モードのときだけ）
+          let publishISO: string | null = null;
+          if (publishMode === 'schedule') {
+            if (!publishLocal) { alert('公開開始の日時を入力してください'); return; }
+            // ローカル → UTC ISO（timestamptz に合わせる）
+            const local = publishLocal; // 'YYYY-MM-DDTHH:mm'
+            const iso = new Date(local.replace(' ', 'T')).toISOString();
+            publishISO = iso;
+          }
+
           add({
             name: name.trim(),
             price: priceNum,
             stock: stockNum,
             pickup_slot_no: pickupSlotForNew,
+            publish_at: publishISO,         // ★追加
           });
 
-          setName("");
-          setPrice("");
-          setStock("");
+          setName(""); setPrice(""); setStock("");
           setPickupSlotForNew(null);
+          setPublishMode('now'); setPublishLocal("");
         }}
       >
 
@@ -1135,8 +1259,40 @@ function ProductForm() {
           <option value="1">{presets[1]?.name}（{presets[1]?.start}〜{presets[1]?.end}）</option>
           <option value="2">{presets[2]?.name}（{presets[2]?.start}〜{presets[2]?.end}）</option>
           <option value="3">{presets[3]?.name}（{presets[3]?.start}〜{presets[3]?.end}）</option>
-
         </select>
+
+        {/* ▼ 公開タイミング（新規登録時のみ設定可能）— select の外に置く */}
+        <div className="flex items-center gap-2 text-sm ml-2">
+          <label className="inline-flex items-center gap-1">
+            <input
+              type="radio"
+              name="pub"
+              checked={publishMode === 'now'}
+              onChange={() => setPublishMode('now')}
+            />
+            今すぐ公開
+          </label>
+          <label className="inline-flex items-center gap-1">
+            <input
+              type="radio"
+              name="pub"
+              checked={publishMode === 'schedule'}
+              onChange={() => setPublishMode('schedule')}
+            />
+            予約して公開
+          </label>
+          {publishMode === 'schedule' && (
+            <input
+              type="datetime-local"
+              className="rounded-xl border px-3 py-2"
+              value={publishLocal}
+              onChange={(e) => setPublishLocal(e.target.value)}
+              step={60}
+              aria-label="公開開始（ローカル）"
+            />
+          )}
+        </div>
+
         <input className="rounded-xl border px-3 py-2 text-sm bg-zinc-50" value={`店側受取額 ${yen(take)}`} readOnly aria-label="店側受取額" />
         <button
           className="rounded-xl bg-zinc-900 text-white px-3 py-2 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
@@ -1179,6 +1335,28 @@ function ProductForm() {
                         のこり {p.stock} 個
                       </span>
                     </div>
+
+                    {/* 予約公開バッジ（表示のみ：既存商品の編集は不可） */}
+                    {p.publish_at ? (() => {
+                      const now = Date.now();
+                      const ts = Date.parse(p.publish_at!);
+                      const scheduled = isFinite(ts) && ts > now;
+                      return (
+                        <div className="mt-1 flex items-center gap-2">
+                          <span
+                            className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] border
+          ${scheduled ? 'bg-blue-50 text-blue-700 border-blue-200' : 'bg-zinc-100 text-zinc-600 border-zinc-200'}`}
+                          >
+                            {scheduled ? '予約公開' : '公開済（予約）'}
+                          </span>
+                          <span className="text-[11px] text-zinc-500" suppressHydrationWarning>
+                            {scheduled ? new Date(p.publish_at!).toLocaleString('ja-JP') : ''}
+                          </span>
+                        </div>
+                      );
+                    })() : null}
+
+
                     {/* ▼ その商品の未反映内容がある場合だけ、前→後（±差）をカード上でも表示 */}
                     {/* ▼ この商品の未反映差分（強調チップ） */}
                     {pending[p.id] ? (() => {

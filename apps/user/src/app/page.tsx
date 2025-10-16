@@ -1,11 +1,13 @@
 ﻿"use client";
 import React, { useEffect, useMemo, useRef, useState, startTransition, useCallback } from "react";
-import { createClient } from '@supabase/supabase-js';
+import { createClient, type RealtimeChannel } from "@supabase/supabase-js";
 import type { SupabaseClient } from '@supabase/supabase-js';
 import 'leaflet/dist/leaflet.css';
 import dynamic from "next/dynamic";
 // 追加：受取時間の表示コンポーネント
 import PickupTimeSelector, { type PickupSlot } from "@/components/PickupTimeSelector";
+
+
 
 // page.tsx より抜粋（MapViewの使用部分）
 const MapView = dynamic(() => import("@/components/MapView"), { ssr: false });
@@ -139,6 +141,15 @@ const nowMinutesJST = () => {
     const mm = Number(parts.find(p => p.type === "minute")?.value || "0");
     return hh * 60 + mm;
 };
+
+// 予約投稿の公開判定（JST基準で「現在時刻 >= publish_at」なら公開）
+function isPublishedNow(publish_at?: string | null): boolean {
+    if (!publish_at) return true; // 未設定は常に表示
+    const now = new Date();       // 実行環境のTZでOK（postedはISO想定）
+    const pub = new Date(publish_at);
+    return now.getTime() >= pub.getTime();
+}
+
 
 const LEAD_CUTOFF_MIN = 20; // 受け取り開始の何分前まで不可にするか（UI全体の既定）
 
@@ -422,6 +433,7 @@ interface Item {
     main_image_path?: string | null;
     sub_image_path1?: string | null;
     sub_image_path2?: string | null;
+    publish_at?: string | null;
 }
 
 interface Shop { id: string; name: string; lat: number; lng: number; zoomOnPin: number; closed: boolean; items: Item[], address?: string; cover_image_path?: string | null; }
@@ -435,11 +447,16 @@ type ShopWithDistance = Shop & { distance: number };
 type PresetSlot = { start: string; end: string; name: string; step: number };
 type StorePresetInfo = { current: number | null, slots: Record<number, PresetSlot> };
 
+
 function useStorePickupPresets(
     supabase: SupabaseClient | null,
     dbStores: any[],
     dbProducts: any[]
-) {
+): {
+    presetMap: Record<string, StorePresetInfo>;
+    pickupLabelFor: (storeId: string, productSlotNo?: number | null) => string | null;
+} {
+
     const [map, setMap] = useState<Record<string, StorePresetInfo>>({});
 
     // 取得対象の store_id を、stores / products の両方からユニークに集める
@@ -501,12 +518,85 @@ function useStorePickupPresets(
                     presets: next,
                 };
             }
-
-
             setMap(next);
         })();
+
     }, [supabase, JSON.stringify(storeIds), JSON.stringify(dbStores)]);
 
+    // ▼▼▼ ここから追加：プリセット＆現在スロットの Realtime 購読 ▼▼▼
+    useEffect(() => {
+        if (!supabase) return;
+
+        // 1) store_pickup_presets（追加/更新/削除）
+        const ch1 = (supabase as any)
+            .channel('rt-store-pickup-presets')
+            .on('postgres_changes',
+                { event: '*', schema: 'public', table: 'store_pickup_presets' },
+                (payload: any) => {
+                    const row = (payload.new ?? payload.old ?? {}) as any;
+                    const sid = String(row.store_id ?? '');
+                    const no = Number(row.slot_no ?? 0);
+
+                    setMap(prev => {
+                        const next = { ...prev };
+                        // ストアキーがなければ初期化
+                        if (!next[sid]) next[sid] = { current: null, slots: {} };
+
+
+                        // INSERT/UPDATE
+                        if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
+                            next[sid] = {
+                                ...next[sid],
+                                slots: {
+                                    ...next[sid].slots,
+                                    [no]: {
+                                        name: (row.name || '').trim() || `プリセット${no}`,
+                                        start: String(row.start_time).slice(0, 5),
+                                        end: String(row.end_time).slice(0, 5),
+                                        step: Number(row.slot_minutes || 10),
+                                    }
+                                }
+                            };
+                        }
+
+                        // DELETE
+                        if (payload.eventType === 'DELETE') {
+                            const slots = { ...next[sid].slots };
+                            delete slots[no];
+                            next[sid] = { ...next[sid], slots };
+                        }
+                        return next;
+                    });
+                }
+            )
+            .subscribe();
+
+        // 2) stores.current_pickup_slot_no（現在のスロット番号の変更）
+        const ch2 = (supabase as any)
+            .channel('rt-stores-current-slot')
+            .on('postgres_changes',
+                { event: 'UPDATE', schema: 'public', table: 'stores' },
+                (payload: any) => {
+                    const row = payload.new as any;
+                    const sid = String(row.id ?? row.store_id ?? '');
+                    const current = row.current_pickup_slot_no ?? null;
+
+                    setMap(prev => {
+                        const next = { ...prev };
+                        if (!next[sid]) next[sid] = { current: null, slots: {} };
+                        next[sid] = { ...next[sid], current };
+                        return next;
+                    });
+                }
+            )
+            .subscribe();
+
+        return () => {
+            try { (supabase as any).removeChannel(ch1); } catch { }
+            try { (supabase as any).removeChannel(ch2); } catch { }
+        };
+    }, [supabase]);
+    // ▲▲▲ ここまで追加 ▲▲▲
 
 
     // 商品が未指定 → 店舗の current → 1→2→3 の順で最初に存在するスロットを採用
@@ -527,9 +617,7 @@ function useStorePickupPresets(
         return null;
     }, [map]);
 
-
-
-    return { presetMap: map, pickupLabelFor } as const;
+    return { presetMap: map, pickupLabelFor };
 }
 
 
@@ -693,6 +781,39 @@ export default function UserPilotApp() {
         }
         prevTabRef.current = tab;
     }, [tab, setCart]);
+
+    // 販売時間切れのカート行を間引く（60秒ごと + 即時1回）
+    useEffect(() => {
+        const prune = () => {
+            setCart(cs => {
+                const kept = cs.filter(l => !isPickupExpired(l.item.pickup));
+                if (kept.length !== cs.length) {
+                    emitToast("info", "販売時間を過ぎた商品をカートから削除しました");
+                }
+                return kept;
+            });
+        };
+        prune(); // 初回即時
+        const id = window.setInterval(prune, 60_000);
+        return () => window.clearInterval(id);
+    }, [setCart]);
+
+
+    // カート画面を開いたタイミングでも即時掃除
+    useEffect(() => {
+        if (tab !== "cart") return;
+        setCart(cs => {
+            const kept = cs.filter(l => !isPickupExpired(l.item.pickup));
+            if (kept.length !== cs.length) {
+                emitToast("info", "販売時間を過ぎた商品をカートから削除しました");
+            }
+            return kept;
+        });
+    }, [tab, setCart]);
+
+
+
+
     const [focusedShop, setFocusedShop] = useState<string | undefined>(undefined);
     const [detail, setDetail] = useState<{ shopId: string; item: Item } | null>(null);
     const [allergyOpen, setAllergyOpen] = useState(false);
@@ -760,10 +881,47 @@ export default function UserPilotApp() {
 
 
     const supabase = useSupabase();
-    type DbProduct = { id: string; store_id?: string; name: string; price?: number; stock?: number; image_url?: string; updated_at?: string, pickup_slot_no?: number | null };
+    type DbProduct = { id: string; store_id?: string; name: string; price?: number; stock?: number; image_url?: string; updated_at?: string, pickup_slot_no?: number | null; publish_at?: string | null; };
     type DbStore = { id: string; name: string; created_at?: string; lat?: number; lng?: number; address?: string; cover_image_path?: string | null, current_pickup_slot_no?: number | null };
 
     const [dbProducts, setDbProducts] = useState<DbProduct[]>([]);
+    // 予約公開の到来で“即時”に再評価するためのトリガ
+    const pubTimerRef = useRef<number | null>(null);
+    const [pubWake, setPubWake] = useState(0);
+
+    // publish_at（未来）→ 到来した瞬間に軽く再レンダーして一覧へ反映
+    useEffect(() => {
+        // 既存のタイマがあれば解除
+        if (pubTimerRef.current) {
+            window.clearTimeout(pubTimerRef.current);
+            pubTimerRef.current = null;
+        }
+
+        // 未来の publish_at を抽出して最も近いものだけを待つ
+        const now = Date.now();
+        const future = (dbProducts || [])
+            .map(p => p?.publish_at ? Date.parse(p.publish_at) : NaN)
+            .filter(ts => Number.isFinite(ts) && ts > now)
+            .sort((a, b) => a - b);
+
+        if (future.length === 0) return; // 次が無ければ何もしない
+
+        const delay = Math.max(0, future[0] - now) + 300; // 300ms マージン
+        pubTimerRef.current = window.setTimeout(() => {
+            // 軽い再レンダー（shopsWithDb の useMemo を再評価させる）
+            setPubWake(Date.now());
+        }, delay);
+
+        // クリーンアップ
+        return () => {
+            if (pubTimerRef.current) {
+                window.clearTimeout(pubTimerRef.current);
+                pubTimerRef.current = null;
+            }
+        };
+    }, [dbProducts]);
+
+
     const [dbStores, setDbStores] = useState<DbStore[]>([]);
     const { presetMap, pickupLabelFor } = useStorePickupPresets(supabase, dbStores as any[], dbProducts as any[]);
     // ★ Console から直接呼べるように公開
@@ -886,7 +1044,9 @@ export default function UserPilotApp() {
         if (!supabase) return;
         (async () => {
             const q = supabase
-                .from("products").select("id,store_id,name,price,stock,updated_at,main_image_path,sub_image_path1,sub_image_path2,pickup_slot_no")
+                .from("products")
+                .select("id,store_id,name,price,stock,updated_at,main_image_path,sub_image_path1,sub_image_path2,pickup_slot_no,publish_at") // ← 末尾に追加
+
 
             // 必要なら在庫>0や公開フラグで絞ってOK（例）
             // .gt("stock", 0).eq("is_published", true)
@@ -1003,6 +1163,7 @@ export default function UserPilotApp() {
                 main_image_path: primary,
                 sub_image_path1: p?.sub_image_path1 ?? null,
                 sub_image_path2: p?.sub_image_path2 ?? null,
+                publish_at: p?.publish_at ?? null,
             };
         };
 
@@ -1016,13 +1177,17 @@ export default function UserPilotApp() {
             lng: typeof st.lng === "number" ? st.lng : fallback.lng,
             zoomOnPin: 16,
             closed: false,
-            items: (byStore.get(String(st.id)) || []).map(mapToItem),
+            items: (byStore.get(String(st.id)) || [])
+                // 予約投稿の公開済みのみ通す
+                .filter((raw: any) => isPublishedNow(raw?.publish_at))
+                .map(mapToItem),
             address: typeof st.address === "string" ? st.address : undefined,
             cover_image_path: st.cover_image_path ?? null,
         }));
 
         setShops(prev => (JSON.stringify(prev) === JSON.stringify(built) ? prev : built));
-    }, [dbStores, dbProducts, presetMap, setShops]);
+    }, [dbStores, dbProducts, presetMap, setShops, pubWake]);
+
 
     // トースト購読
     const [toast, setToast] = useState<ToastPayload | null>(null);
@@ -1256,6 +1421,7 @@ export default function UserPilotApp() {
                 pickup: pick,     // ← DBのプリセット由来へ
                 note: "",
                 photo: "🛍️",
+                publish_at: p?.publish_at ?? null,
             };
         };
 
@@ -1264,11 +1430,15 @@ export default function UserPilotApp() {
         const targetIndex = idx >= 0 ? idx : 0;
 
         return shops.map((s, i) =>
-            i === targetIndex ? { ...s, items: dbProducts.map(mapToItem) } : s
+            i === targetIndex ? {
+                ...s, items: dbProducts
+                    .filter((p: any) => isPublishedNow(p?.publish_at))
+                    .map(mapToItem),
+            } : s
         );
 
         // プリセットが来たら再計算
-    }, [shops, dbProducts, storeId, dbStores, presetMap]);
+    }, [shops, dbProducts, storeId, dbStores, presetMap, pubWake]);
 
 
     const shopsSorted = useMemo<ShopWithDistance[]>(
@@ -1935,14 +2105,16 @@ export default function UserPilotApp() {
                                         return { hours, holiday, payments, payment, category };
                                     })();
 
+                                    // Product 型に publish_at?: string | null を追加したうえで…
+
                                     const visibleItems = s.items.filter(it => {
                                         const r = getReserved(s.id, it.id);
                                         const remain = Math.max(0, it.stock - r);
                                         const expired = isPickupExpired(it.pickup);
-                                        // 受取期限を過ぎたものは出さないが、売り切れ（remain<=0）でも「Sold out」表示のため残す
-                                        return !expired && it.stock >= 0;
+                                        // ★ 公開前（publish_at が未来）は一覧に出さない
+                                        const notYet = it.publish_at ? (Date.parse(it.publish_at) > Date.now()) : false;
+                                        return !expired && !notYet && it.stock >= 0;
                                     });
-
 
                                     const hasAny = visibleItems.length > 0;
                                     const remainingTotal = visibleItems.reduce(
@@ -2208,18 +2380,64 @@ export default function UserPilotApp() {
                                         {/* 受け取り予定時間（必須）: グループキーで保持 */}
                                         <div className="px-4">
                                             <div className="border-t mt-2 pt-3">
-                                                <PickupTimeSelector
-                                                    storeId={sid}
-                                                    value={pickupByGroup[gkey] ?? null}
-                                                    onSelect={(slot) => setPickupByGroup(prev => ({ ...prev, [gkey]: slot }))}
-                                                    limitWindow={cartGroups[gkey]?.window ?? undefined}
-                                                    stepOverride={(presetMap[sid]?.slots?.[presetMap[sid]?.current ?? 1]?.step) ?? 10}
-                                                />
+                                                {(() => {
+                                                    // 既存ウィンドウを取得（グループ内商品の共通交差）
+                                                    const baseWin = cartGroups[gkey]?.window ?? null;
+
+                                                    // 「今 + LEAD_CUTOFF_MIN（20分）」を計算
+                                                    const nowMin = nowMinutesJST();
+                                                    const minStart = nowMin + LEAD_CUTOFF_MIN;
+
+                                                    // baseWin があるときだけ start を切り上げる
+                                                    let adjustedWin: { start: number; end: number } | null = null;
+                                                    if (baseWin) {
+                                                        const start = Math.max(baseWin.start, minStart);
+                                                        const end = baseWin.end;
+                                                        adjustedWin = (start < end) ? { start, end } : null;
+                                                    }
+                                                    // 枠が全滅したかどうか（baseWin があるケースのみ判定する）
+                                                    const noSlot = (baseWin != null) && (adjustedWin == null);
+
+                                                    return (
+                                                        <>
+                                                            <PickupTimeSelector
+                                                                storeId={sid}
+                                                                value={pickupByGroup[gkey] ?? null}
+                                                                onSelect={(slot) => {
+                                                                    // 保険：外部入力や直打ち対策で 20分前チェックは継続
+                                                                    const startMinSel = Number(slot.start.slice(0, 2)) * 60 + Number(slot.start.slice(3, 5));
+                                                                    const nowMinSel = nowMinutesJST();
+                                                                    if (startMinSel < nowMinSel + LEAD_CUTOFF_MIN) {
+                                                                        emitToast("error", `直近枠は選べません（受け取り${LEAD_CUTOFF_MIN}分前まで）`);
+                                                                        return;
+                                                                    }
+                                                                    setPickupByGroup(prev => ({ ...prev, [gkey]: slot }));
+                                                                }}
+                                                                // ★ ポイント：baseWin がある時だけ渡す。無い時は undefined（セレクタに任せる）
+                                                                limitWindow={adjustedWin ?? undefined}
+                                                                stepOverride={(() => {
+                                                                    // ★ ここで一度だけ参照して TS の推論崩壊を防ぐ
+                                                                    const info = (presetMap as Record<string, StorePresetInfo | undefined>)[sid];
+                                                                    const cur = (info?.current ?? 1) as number;
+                                                                    return info?.slots?.[cur]?.step ?? 10;
+                                                                })()}
+                                                            />
+                                                            {/* baseWin が存在していて、切り上げ後に枠が消えた場合だけ補足を出す */}
+                                                            {noSlot && (
+                                                                <p className="mt-2 text-xs text-zinc-500">
+                                                                    直近枠は選択不可のため、現在は選べる時間帯がありません。時間をおいてお試しください。
+                                                                </p>
+                                                            )}
+                                                        </>
+                                                    );
+                                                })()}
+
                                                 {!pickupByGroup[gkey] && (
                                                     <p className="mt-2 text-xs text-red-500">受け取り予定時間を選択してください。</p>
                                                 )}
                                             </div>
                                         </div>
+
 
                                         <div className="px-4 pt-3">
                                             <div className="flex items-center justify-between text-sm">

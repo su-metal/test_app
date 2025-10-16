@@ -1548,7 +1548,7 @@ type StagedProps = {
   file: File | null;              // 現在のFile
   onChange: (f: File | null) => void;
   actions?: { secondary: 'delete' | 'change' }; // ★ 追加（モーダル用：メインは'change'、サブは'delete'）
-
+  readonly?: boolean; // 出品一覧のサムネを閲覧専用にする
 };
 type ExistingProps = {
   mode: "existing";               // 登録済み商品の即時更新
@@ -1559,7 +1559,7 @@ type ExistingProps = {
   imgVer?: number;                // キャッシュ破り
   onReload: () => Promise<void>;  // 親のreload（DB再読込）
   actions?: { secondary: 'delete' | 'change' }; // ★ 追加（モーダル用：メインは'change'、サブは'delete'）
-
+  readonly?: boolean;
 };
 
 function ProductImageSlot(props: StagedProps | ExistingProps) {
@@ -1593,6 +1593,8 @@ function ProductImageSlot(props: StagedProps | ExistingProps) {
     return () => { URL.revokeObjectURL(url); };
   }, [props]);
 
+  const isReadonly = (props as any).readonly === true;
+
   // サムネの中身
   const renderThumb = () => {
     const label = props.label;
@@ -1616,9 +1618,6 @@ function ProductImageSlot(props: StagedProps | ExistingProps) {
       );
     }
 
-
-
-
     return (
       <>
         {imgEl}
@@ -1627,9 +1626,12 @@ function ProductImageSlot(props: StagedProps | ExistingProps) {
           {label}{(props as StagedProps).required ? " *" : ""}
         </span>
         {/* 右下バッジ */}
-        <span className="absolute bottom-1 right-1 px-1.5 py-[2px] text-[11px] rounded-md bg-white/95 border border-zinc-300 text-zinc-700">
-          {addOrChange}
-        </span>
+        {/* 右下バッジ：閲覧専用では出さない */}
+        {!isReadonly && (
+          <span className="absolute bottom-1 right-1 px-1.5 py-[2px] text-[11px] rounded-md bg-white/95 border border-zinc-300 text-zinc-700">
+            {addOrChange}
+          </span>
+        )}
         {loading && (
           <div className="absolute inset-0 grid place-items-center text-xs bg-white/70">更新中…</div>
         )}
@@ -1701,25 +1703,34 @@ function ProductImageSlot(props: StagedProps | ExistingProps) {
 
   return (
     <Card>
-      {/* サムネ：タップでギャラリー起動 */}
-      <ThumbButton onClick={() => pickerRef.current?.click()}>
-        {renderThumb()}
-      </ThumbButton>
+      {/* サムネ：閲覧専用ならクリック不可の <div>、通常は従来どおりボタン */}
+      {isReadonly ? (
+        <div className="relative w-full aspect-square rounded-[12px] overflow-hidden bg-zinc-100 border border-zinc-300 flex items-center justify-center">
+          {renderThumb()}
+        </div>
+      ) : (
+        <ThumbButton onClick={() => pickerRef.current?.click()}>
+          {renderThumb()}
+        </ThumbButton>
+      )}
+
 
       {/* 隠し input（ギャラリー） */}
-      <input
-        ref={pickerRef}
-        type="file"
-        accept="image/*"
-        className="hidden"
-        onChange={onPick}
-      />
+      {!isReadonly && (
+        <input
+          ref={pickerRef}
+          type="file"
+          accept="image/*"
+          className="hidden"
+          onChange={onPick}
+        />
+      )}
       {/* // ★ モーダル用のアクション上書き（任意）
       //   - actions.secondary: 'delete' | 'change'
       //     'change' は「変更」ボタンとしてファイル選択を開く */}
 
       {/* 縦積みボタン（新規登録フォーム or モーダル上書き時に表示） */}
-      {(props.mode === "staged" || actions) && (
+      {(props.mode === "staged" || actions) && !isReadonly && (
         <div className="mt-2 flex flex-col gap-1">
           {/* カメラ */}
           <button
@@ -1755,7 +1766,7 @@ function ProductImageSlot(props: StagedProps | ExistingProps) {
       )}
 
       {/* 内蔵のカメラモーダル（既存のを流用） */}
-      {openCam && (
+      {openCam && !isReadonly && (
         <CameraCaptureModal
           open={true}
           title={`${props.label}画像を撮影`}
@@ -1877,7 +1888,7 @@ function ProductForm() {
 
   return (
     <div className="rounded-2xl border bg-white p-4 space-y-3">
-      <SectionTitle>商品</SectionTitle>
+      <SectionTitle>商品登録</SectionTitle>
       <form
         className="grid grid-cols-1 md:grid-cols-2 gap-2 md:gap-3 items-start"
         onSubmit={async (e) => {
@@ -2164,6 +2175,10 @@ function ProductForm() {
 
 
       {perr ? <div className="text-sm text-red-600">{perr}</div> : null}
+
+      {/* ▼ ここで見出しを追加（商品が1件以上のとき） */}
+      {products.length > 0 && <SectionTitle>出品中の商品</SectionTitle>}
+
       <div className="grid grid-cols-1 gap-3">
         {products.map((p) => {
           return (
@@ -2329,6 +2344,7 @@ function ProductForm() {
                     path={p.main_image_path}
                     imgVer={imgVer}
                     onReload={reload}
+                    readonly
                   />
                   <ProductImageSlot
                     mode="existing"
@@ -2338,6 +2354,7 @@ function ProductForm() {
                     path={p.sub_image_path1}
                     imgVer={imgVer}
                     onReload={reload}
+                    readonly
                   />
                   <ProductImageSlot
                     mode="existing"
@@ -2347,19 +2364,22 @@ function ProductForm() {
                     path={p.sub_image_path2}
                     imgVer={imgVer}
                     onReload={reload}
+                    readonly
                   />
                 </div>
               </div>
 
               {/* 一括編集（モーダル） */}
-              <div>
+              <div className="mt-4 mb-8 flex justify-center">
                 <button
                   onClick={() => setEditDlg(p)}
-                  className="w-full mt-4 mb-8 px-3 py-2 rounded-xl border text-sm bg-white hover:bg-zinc-50"
+                  className="px-4 py-2 rounded-xl border text-sm bg-white hover:bg-zinc-50
+               w-[min(90%)]"
                 >
                   内容を変更する
                 </button>
               </div>
+
             </div>
           );
         })}

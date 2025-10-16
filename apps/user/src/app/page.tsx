@@ -436,7 +436,12 @@ interface Item {
     publish_at?: string | null;
 }
 
-interface Shop { id: string; name: string; lat: number; lng: number; zoomOnPin: number; closed: boolean; items: Item[], address?: string; cover_image_path?: string | null; }
+interface Shop {
+    id: string; name: string; lat: number; lng: number; zoomOnPin: number; closed: boolean; items: Item[],
+    address?: string;
+    cover_image_path?: string | null;
+    tel?: string;
+}
 interface CartLine { shopId: string; item: Item; qty: number }
 interface Order { id: string; userEmail: string; shopId: string; amount: number; status: "paid" | "redeemed" | "refunded"; code6: string; createdAt: number; lines: CartLine[] }
 
@@ -882,7 +887,14 @@ export default function UserPilotApp() {
 
     const supabase = useSupabase();
     type DbProduct = { id: string; store_id?: string; name: string; price?: number; stock?: number; image_url?: string; updated_at?: string, pickup_slot_no?: number | null; publish_at?: string | null; };
-    type DbStore = { id: string; name: string; created_at?: string; lat?: number; lng?: number; address?: string; cover_image_path?: string | null, current_pickup_slot_no?: number | null };
+    type DbStore = {
+        id: string; name: string; created_at?: string;
+        lat?: number; lng?: number; address?: string;
+        cover_image_path?: string | null;
+        current_pickup_slot_no?: number | null;
+        tel?: string | null;          // ★ 追加
+        url?: string | null;          // ★ 追加
+    };
 
     const [dbProducts, setDbProducts] = useState<DbProduct[]>([]);
     // 予約公開の到来で“即時”に再評価するためのトリガ
@@ -1157,9 +1169,10 @@ export default function UserPilotApp() {
     useEffect(() => {
         if (!supabase) return;
         (async () => {
+            // 置き換え
             const { data, error } = await supabase
                 .from("stores")
-                .select("id, name, created_at, lat, lng, address, cover_image_path, current_pickup_slot_no")
+                .select("id, name, created_at, lat, lng, address, cover_image_path, current_pickup_slot_no, tel, url") // ★ tel,url 追加
                 .order("created_at", { ascending: true })
                 .limit(200);
             if (error) {
@@ -1212,6 +1225,7 @@ export default function UserPilotApp() {
 
 
         const fallback = { lat: 35.171, lng: 136.881 }; // 名古屋駅など任意
+        // 置き換え（該当ブロック内に追記）
         const built: Shop[] = dbStores.map((st) => ({
             id: String(st.id),
             name: String(st.name ?? "店舗"),
@@ -1220,12 +1234,14 @@ export default function UserPilotApp() {
             zoomOnPin: 16,
             closed: false,
             items: (byStore.get(String(st.id)) || [])
-                // 予約投稿の公開済みのみ通す
                 .filter((raw: any) => isPublishedNow(raw?.publish_at))
                 .map(mapToItem),
             address: typeof st.address === "string" ? st.address : undefined,
             cover_image_path: st.cover_image_path ?? null,
+            tel: (st.tel ?? undefined) as string | undefined,     // ★ 追加
+            url: (st.url ?? undefined) as string | undefined,     // ★ 追加
         }));
+
 
         setShops(prev => (JSON.stringify(prev) === JSON.stringify(built) ? prev : built));
     }, [dbStores, dbProducts, presetMap, setShops, pubWake]);
@@ -2344,15 +2360,6 @@ export default function UserPilotApp() {
                                                                 <span className="font-medium">{m.holiday ?? "—"}</span>
                                                             </span>
 
-                                                            {/* 決済方法（必要なら復帰） */}
-                                                            {/* <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1">
-                <span>💳</span>
-                <span>決済</span>
-                <span className="font-medium">
-                  {m.payments?.join(" / ") ?? (m.payment ?? "—")}
-                </span>
-              </span> */}
-
                                                             {/* カテゴリ */}
                                                             <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1">
                                                                 <span>🏷️</span>
@@ -2365,17 +2372,42 @@ export default function UserPilotApp() {
                                                                 <span className="font-medium">{s.distance.toFixed(2)} km</span>
                                                             </span>
 
-                                                            {/* 最安・在庫（必要なら復帰） */}
-                                                            {/* <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1">
-                <span>💰</span>
-                <span>最安</span>
-                <span className="font-semibold">{hasAny ? currency(minPrice) : "—"}</span>
-              </span>
-              <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1">
-                <span>📦</span>
-                <span>在庫</span>
-                <span className="tabular-nums font-semibold">{remainingTotal}</span>
-              </span> */}
+                                                            {/* ★ 追加：TEL */}
+                                                            <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1">
+                                                                <span>📞</span>
+                                                                {s.tel ? (
+                                                                    <a href={`tel:${s.tel.replace(/\s+/g, '')}`} className="font-medium underline decoration-1 underline-offset-2">
+                                                                        {s.tel}
+                                                                    </a>
+                                                                ) : (
+                                                                    <span className="font-medium">—</span>
+                                                                )}
+                                                            </span>
+
+                                                            {/* ★ 追加：URL */}
+                                                            <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1">
+                                                                <span>🔗</span>
+                                                                {s.url ? (
+                                                                    <a
+                                                                        href={s.url}
+                                                                        target="_blank"
+                                                                        rel="noopener noreferrer"
+                                                                        className="font-medium underline decoration-1 underline-offset-2"
+                                                                        title={s.url}
+                                                                    >
+                                                                        {(() => {
+                                                                            try {
+                                                                                const u = new URL(s.url);
+                                                                                return u.host.replace(/^www\./, '');
+                                                                            } catch {
+                                                                                return s.url.replace(/^https?:\/\//, '').replace(/\/$/, '');
+                                                                            }
+                                                                        })()}
+                                                                    </a>
+                                                                ) : (
+                                                                    <span className="font-medium">—</span>
+                                                                )}
+                                                            </span>
                                                         </div>
 
                                                         {/* 住所/ミニマップ（スクショ風） */}

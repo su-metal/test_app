@@ -5,6 +5,10 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 // 追加：受取時間の表示コンポーネント
 import PickupTimeSelector, { type PickupSlot } from "@/components/PickupTimeSelector";
 
+// ▼▼ Stripe Checkout 用）▼▼
+import { loadStripe } from "@stripe/stripe-js";
+const stripePromise = loadStripe(process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY!);
+
 
 // ===== debug switch =====
 const DEBUG = (process.env.NEXT_PUBLIC_DEBUG === '1');
@@ -630,9 +634,6 @@ async function getOrderLite(idsCsv: string) {
 }
 
 
-
-
-
 // ---- 型 ----
 interface Item {
     id: string;
@@ -1011,6 +1012,21 @@ const IconExternal = ({ className = "" }: { className?: string }) => (
     </svg>
 );
 
+// コンパス（距離表示用）
+const IconCompass = ({ className = "" }: { className?: string }) => (
+    <svg viewBox="0 0 24 24" aria-hidden="true" className={className}>
+        <path
+            d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 1.6a8.4 8.4 0 1 1 0 16.8 8.4 8.4 0 0 1 0-16.8z"
+            fill="currentColor"
+            opacity=".9"
+        />
+        <path
+            d="M9.2 14.8l2.6-6.6 6.6-2.6-2.6 6.6-6.6 2.6z"
+            fill="currentColor"
+        />
+        <circle cx="12" cy="12" r="1.2" fill="#fff" />
+    </svg>
+);
 
 
 export default function UserPilotApp() {
@@ -1952,6 +1968,23 @@ export default function UserPilotApp() {
         return '距離算定中';
     }, [myPos, routeKmByStore]);
 
+    // 所要時間（徒歩/車）ラベル：ルート距離が出るまで「距離算定中」
+    const travelTimeLabelFor = useCallback((s: ShopForSort | Shop): { icon: string; text: string } => {
+        const target = bestLatLngForDistance(s as Shop);
+        if (!myPos || !target) return { icon: "🚶", text: "—" };
+        const rk = routeKmByStore[s.id as string]; // km（OSRM）
+        if (rk == null) return { icon: "🚶", text: "距離算定中" };
+
+        // 徒歩（4km/h）= 1kmあたり15分
+        const walkMin = Math.max(1, Math.ceil(rk * 15));
+        if (walkMin <= 15) return { icon: "🚶", text: `徒歩${walkMin}分` };
+
+        // 車（35km/h）= 1kmあたり約1.714分
+        const carMin = Math.max(1, Math.ceil((rk * 60) / 35));
+        return { icon: "🚘", text: `所要${carMin}分` };
+    }, [myPos, routeKmByStore]);
+
+
     // myPos と候補店舗に基づき、OSRM で徒歩ルート距離を取得（並列・キャッシュ即時反映）
     useEffect(() => {
         if (!myPos) return;
@@ -2327,6 +2360,38 @@ export default function UserPilotApp() {
     const [openTicketIdOrder, setOpenTicketIdOrder] = useState<string | null>(null);
 
     const toOrder = (sid: string) => { setOrderTarget(sid); setTab("order"); };
+
+    // ▼▼ Stripe Checkout に遷移するだけの薄いハンドラ ▼▼
+    const gotoStripeCheckout = useCallback(async () => {
+        try {
+            // API へ POST（先にお渡しした /api/create-checkout-session を利用）
+            const res = await fetch("/api/create-checkout-session", { method: "POST" });
+            const data = await res.json().catch(() => ({}));
+
+            // ① sessionId が返ってきたら redirectToCheckout を優先
+            try {
+                const stripe = await stripePromise;
+                if (stripe && data?.id) {
+                    const { error } = await stripe.redirectToCheckout({ sessionId: data.id });
+                    if (error) throw error;
+                    return;
+                }
+            } catch (e) {
+                // redirectToCheckout で失敗したら URL へのフォールバックを試す
+            }
+
+            // ② URL が返ってきたらロケーション遷移（サーバー生成URLの直リンク）
+            if (data?.url) {
+                window.location.href = data.url;
+                return;
+            }
+
+            // どちらも無ければエラー
+            emitToast("error", "Stripe Checkout の開始に失敗しました");
+        } catch (e: any) {
+            emitToast("error", `Stripe 開始エラー: ${e?.message ?? e}`);
+        }
+    }, []);
 
     const confirmPay = useCallback(async () => {
         if (!orderTarget || isPayingRef.current || isPaying) return;
@@ -2902,9 +2967,24 @@ export default function UserPilotApp() {
                                                     <div className="absolute left-3 top-3 px-2 py-1 rounded bg-black/60 text-white text-sm">
                                                         {s.name}
                                                     </div>
-                                                    <div className="absolute right-3 top-3 px-2 py-1 rounded-full bg-white/90 border text-[11px]">
-                                                        {distanceLabelFor(s)}
-                                                    </div>
+                                                    {(() => {
+                                                        const tt = travelTimeLabelFor(s);
+                                                        return (
+                                                            <span
+                                                                className="absolute right-3 bottom-3 inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1 text-[11px]"
+                                                                aria-label={`所要時間: ${tt.text}`}
+                                                            >
+                                                                {/* 絵文字アイコンを正方形ボックスで中央寄せ */}
+                                                                <span className="inline-grid w-4 h-4 place-items-center leading-none text-[16px]">
+                                                                    {tt.icon}
+                                                                </span>
+                                                                {/* テキストも行高を1にして上下を詰める */}
+                                                                <span className="font-medium leading-[1]">{tt.text}</span>
+                                                            </span>
+
+                                                        );
+                                                    })()}
+
                                                 </div>
 
                                                 {hasAny ? (
@@ -3019,7 +3099,7 @@ export default function UserPilotApp() {
 
                                                             {/* 距離 */}
                                                             <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1">
-                                                                <span>🚶</span>
+                                                                <span>🧭</span>
                                                                 <span className="font-medium">{distanceLabelFor(s)}</span>
                                                             </span>
 
@@ -3469,6 +3549,16 @@ export default function UserPilotApp() {
                                                 }
                                             >
                                                 支払いを確定する（テスト）
+                                            </button>
+                                            {/* ▼▼ Stripe Checkout デモ遷移ボタン ▼▼ */}
+                                            <button
+                                                type="button"
+                                                className="w-full px-3 py-2 rounded border bg-[#635BFF] text-white font-semibold cursor-pointer disabled:opacity-40"
+                                                onClick={gotoStripeCheckout}
+                                                disabled={(cartGroups[orderTarget]?.lines.length ?? 0) === 0}
+                                                title="Stripeのホスト決済ページへ移動（テストモード）"
+                                            >
+                                                Stripe Checkoutで支払う（デモ）
                                             </button>
                                         </div>
                                     </div>

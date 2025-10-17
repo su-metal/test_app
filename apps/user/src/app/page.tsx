@@ -1635,6 +1635,53 @@ export default function UserPilotApp() {
 
         );
     }, []);
+
+    // ▼ 初回マウント時に権限状態を確認し、許可済み or 未決定なら「一度だけ」現在地取得を試行
+    useEffect(() => {
+        if (typeof window === 'undefined') return; // SSR対策
+        if (!('geolocation' in navigator)) {
+            setLocState('error');
+            setLocError('この端末は位置情報に対応していません');
+            return;
+        }
+
+        // 多重起動を避ける（すでにOK or 取得中なら何もしない）
+        const tryOnce = () => {
+            if (locState === 'ok' || locState === 'getting' || myPos) return;
+            requestLocation(); // ここで初回だけ getCurrentPosition を発火（"prompt" なら許可ダイアログが出る）
+        };
+
+        // Permissions API が使えるなら状態を見て分岐
+        const navAny = navigator as any;
+        if (navAny.permissions?.query) {
+            navAny.permissions
+                .query({ name: 'geolocation' as PermissionName })
+                .then((status: PermissionStatus) => {
+                    if (status.state === 'granted' || status.state === 'prompt') {
+                        tryOnce();
+                    } else if (status.state === 'denied') {
+                        // 既に拒否されている場合は自動取得は行わず、UIに案内だけ出す
+                        setLocState('error');
+                        setLocError('位置情報へのアクセスがブロックされています。ブラウザの設定から許可してください。');
+                    }
+                    // 設定変更に追従（タブを開いたまま許可→即取得）
+                    status.onchange = () => {
+                        if (status.state === 'granted') tryOnce();
+                    };
+                })
+                .catch(() => {
+                    // Permissions API 非対応やエラー時はフォールバック：一度だけ実行
+                    tryOnce();
+                });
+        } else {
+            // Permissions API 非対応（Safariなど）→ フォールバック
+            tryOnce();
+        }
+        // 依存に requestLocation / locState / myPos を入れておけば、
+        // 権限変更→granted時などにも一度だけ再試行されます
+    }, [requestLocation, locState, myPos]);
+
+
     const storeId = process.env.NEXT_PUBLIC_STORE_ID;
 
     // 店舗側で orders.status が更新されたらローカルの注文を同期（未引換→履歴へ）
@@ -1856,11 +1903,45 @@ export default function UserPilotApp() {
         // プリセットが来たら再計算
     }, [shops, dbProducts, storeId, dbStores, presetMap, pubWake]);
 
+    // 店舗ごとの「距離計算用座標」を一度だけ抽出してメモ化
+    const coordsByStore = useMemo(() => {
+        const m = new Map<string, { lat: number; lng: number }>();
+        for (const s of shopsWithDb) {
+            const ll = bestLatLngForDistance(s);
+            if (ll) m.set(s.id, ll);
+        }
+        return m;
+    }, [shopsWithDb]);
 
     type ShopForSort = Shop & { distance: number; minPrice: number };
 
     // ルート距離のキャッシュ（store.id -> km）
     const [routeKmByStore, setRouteKmByStore] = useState<Record<string, number>>({});
+
+    // ルート距離のキャッシュ（localStorage 永続）
+    const distanceCacheRef = useRef<Record<string, number>>({});
+
+    // 初期ロード：localStorage から復元
+    useEffect(() => {
+        try {
+            distanceCacheRef.current = JSON.parse(localStorage.getItem('route_dist_cache_v1') || '{}');
+        } catch {/* noop */ }
+    }, []);
+
+    // 変更が入るたびに永続化
+    useEffect(() => {
+        try {
+            localStorage.setItem('route_dist_cache_v1', JSON.stringify(distanceCacheRef.current));
+        } catch {/* noop */ }
+    }, [routeKmByStore]);
+
+    // 2点を対称キーに（往復同値）。位置は約100mでスナップしてキーを安定化
+    const keyForPair = (a: { lat: number; lng: number }, b: { lat: number; lng: number }) => {
+        const r = (x: number) => x.toFixed(3); // 3桁=約100m
+        const ka = `${r(a.lat)},${r(a.lng)}`;
+        const kb = `${r(b.lat)},${r(b.lng)}`;
+        return ka < kb ? `${ka}|${kb}|walk` : `${kb}|${ka}|walk`;
+    };
 
     // 表示用の距離文言
     const distanceLabelFor = useCallback((s: ShopForSort | Shop): string => {
@@ -1871,36 +1952,79 @@ export default function UserPilotApp() {
         return '距離算定中';
     }, [myPos, routeKmByStore]);
 
-    // myPos と候補店舗に基づき、OSRM で徒歩ルート距離を取得（段階的に）
+    // myPos と候補店舗に基づき、OSRM で徒歩ルート距離を取得（並列・キャッシュ即時反映）
     useEffect(() => {
         if (!myPos) return;
+
+        // 1) 距離対象を作成（座標がある店舗だけ）
         const targets = shopsWithDb
-            .map((s) => ({ s, target: bestLatLngForDistance(s) }))
+            .map((s) => ({ s, target: coordsByStore.get(s.id) || bestLatLngForDistance(s) }))
             .filter((x): x is { s: Shop; target: { lat: number; lng: number } } => !!x.target);
+
         if (targets.length === 0) return;
 
-        // 未取得の店舗に限定し、過度な同時リクエストを避けるため最大15件に制限
+        // 2) まずはキャッシュから即時で埋められる分を反映
+        const toFillFromCache: Array<[string, number]> = [];
+        for (const { s, target } of targets) {
+            if (routeKmByStore[s.id] != null) continue;
+            const k = keyForPair(myPos, target);
+            const cached = distanceCacheRef.current[k];
+            if (typeof cached === 'number' && Number.isFinite(cached)) {
+                toFillFromCache.push([s.id, cached]);
+            }
+        }
+        if (toFillFromCache.length > 0) {
+            setRouteKmByStore(prev => ({ ...prev, ...Object.fromEntries(toFillFromCache) }));
+        }
+
+        // 3) まだ欠けているものだけ取得（上限: 20件／回）
         const pending = targets
-            .filter(({ s }) => routeKmByStore[s.id] == null)
-            .slice(0, 15);
+            .filter(({ s }) => routeKmByStore[s.id] == null && !toFillFromCache.find(([id]) => id === s.id))
+            .slice(0, 20);
+
         if (pending.length === 0) return;
 
+        // 4) 並列取得（同時最大 8）
+        const ac = new AbortController();
         let cancelled = false;
         (async () => {
-            const entries: Array<[string, number]> = [];
-            for (const { s, target } of pending) {
-                const km = await routeDistanceKm(myPos, target, 'walking');
-                if (km != null && !cancelled) entries.push([s.id, km]);
+            const MAX_PAR = 8;
+
+            // 小さめバッチに分割
+            const batches: Array<typeof pending> = [];
+            for (let i = 0; i < pending.length; i += MAX_PAR) {
+                batches.push(pending.slice(i, i + MAX_PAR));
             }
-            if (!cancelled && entries.length > 0) {
-                setRouteKmByStore((prev) => ({ ...prev, ...Object.fromEntries(entries) }));
+
+            const allEntries: Array<[string, number]> = [];
+            for (const batch of batches) {
+                if (cancelled) break;
+                const results = await Promise.all(batch.map(async ({ s, target }) => {
+                    const km = await routeDistanceKm(myPos, target, 'walking'); // 既存の関数を利用
+                    return { id: s.id, target, km };
+                }));
+
+                for (const r of results) {
+                    if (!cancelled && typeof r.km === 'number') {
+                        allEntries.push([r.id, r.km]);
+                        // キャッシュ保存
+                        const k = keyForPair(myPos, r.target);
+                        distanceCacheRef.current[k] = r.km;
+                    }
+                }
+            }
+
+            if (!cancelled && allEntries.length > 0) {
+                setRouteKmByStore(prev => ({ ...prev, ...Object.fromEntries(allEntries) }));
             }
         })();
 
         return () => {
             cancelled = true;
+            ac.abort();
         };
-    }, [myPos, shopsWithDb, routeKmByStore]);
+    }, [myPos, shopsWithDb, coordsByStore, routeKmByStore, setRouteKmByStore]);
+
 
     const shopsSorted = useMemo<ShopForSort[]>(() => {
         const withKeys = shopsWithDb.map((s) => {
@@ -2629,7 +2753,7 @@ export default function UserPilotApp() {
                     {tab === "home" && (
                         <section className="mt-4 space-y-4">
                             <div className="flex items-center justify-between">
-                                <h2 className="text-base font-semibold">近くのお店</h2>
+                                {/* <h2 className="text-base font-semibold">近くのお店</h2> */}
 
                                 {/* 並び替えトグル */}
                                 <div role="group" aria-label="並び替え" className="inline-flex rounded-xl border overflow-hidden">
@@ -2656,13 +2780,14 @@ export default function UserPilotApp() {
 
 
                             {/* 現在地取得と表示 */}
-                            <div className="rounded-xl border bg-white p-3">
+                            {/* <div className="rounded-xl border bg-white p-3">
                                 <div className="flex items-center gap-2">
                                     <button
                                         type="button"
                                         onClick={requestLocation}
                                         className="px-3 py-1.5 rounded border cursor-pointer"
                                         aria-busy={locState === 'getting'}
+                                        aria-live="polite"
                                     >
                                         {locState === 'getting' ? '現在地を取得中…' : '現在地を取得'}
                                     </button>
@@ -2672,8 +2797,9 @@ export default function UserPilotApp() {
                                         </div>
                                     )}
                                     {!myPos && locState === 'error' && (
-                                        <div className="text-sm text-red-600">位置情報の取得に失敗しました</div>
+                                        <div className="text-sm text-red-600">{locError ?? '位置情報の取得に失敗しました'}</div>
                                     )}
+
                                 </div>
 
                                 {myPos && (
@@ -2690,7 +2816,7 @@ export default function UserPilotApp() {
                                         />
                                     </div>
                                 )}
-                            </div>
+                            </div> */}
 
 
 

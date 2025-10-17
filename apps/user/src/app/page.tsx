@@ -235,6 +235,27 @@ function haversineKm(a: { lat: number; lng: number }, b: { lat: number; lng: num
     return R * c;
 }
 
+// --- ルート距離（km, OSRM）---
+// TODO(req v2): 交通手段（徒歩/自転車/車）の選択を UI 設定化する
+async function routeDistanceKm(
+    origin: { lat: number; lng: number },
+    dest: { lat: number; lng: number },
+    mode: 'walking' | 'driving' = 'walking'
+): Promise<number | null> {
+    try {
+        const profile = mode === 'walking' ? 'foot' : 'driving';
+        const url = `https://router.project-osrm.org/route/v1/${profile}/${origin.lng},${origin.lat};${dest.lng},${dest.lat}?overview=false&alternatives=false&steps=false`;
+        const res = await fetch(url, { cache: 'no-store' });
+        if (!res.ok) return null;
+        const json = await res.json();
+        const meters: unknown = json?.routes?.[0]?.distance;
+        if (typeof meters === 'number' && Number.isFinite(meters)) return meters / 1000;
+        return null;
+    } catch {
+        return null;
+    }
+}
+
 // Embed API（Place ID用）を使う場合だけ .env にキーを置く（無ければ未使用）
 const EMBED_KEY = process.env.NEXT_PUBLIC_GOOGLE_MAPS_EMBED_KEY;
 
@@ -1838,10 +1859,55 @@ export default function UserPilotApp() {
 
     type ShopForSort = Shop & { distance: number; minPrice: number };
 
+    // ルート距離のキャッシュ（store.id -> km）
+    const [routeKmByStore, setRouteKmByStore] = useState<Record<string, number>>({});
+
+    // 表示用の距離文言
+    const distanceLabelFor = useCallback((s: ShopForSort | Shop): string => {
+        const target = bestLatLngForDistance(s as Shop);
+        if (!myPos || !target) return '—';
+        const rk = routeKmByStore[s.id as string];
+        if (rk != null) return `${rk.toFixed(2)} km`;
+        return '距離算定中';
+    }, [myPos, routeKmByStore]);
+
+    // myPos と候補店舗に基づき、OSRM で徒歩ルート距離を取得（段階的に）
+    useEffect(() => {
+        if (!myPos) return;
+        const targets = shopsWithDb
+            .map((s) => ({ s, target: bestLatLngForDistance(s) }))
+            .filter((x): x is { s: Shop; target: { lat: number; lng: number } } => !!x.target);
+        if (targets.length === 0) return;
+
+        // 未取得の店舗に限定し、過度な同時リクエストを避けるため最大15件に制限
+        const pending = targets
+            .filter(({ s }) => routeKmByStore[s.id] == null)
+            .slice(0, 15);
+        if (pending.length === 0) return;
+
+        let cancelled = false;
+        (async () => {
+            const entries: Array<[string, number]> = [];
+            for (const { s, target } of pending) {
+                const km = await routeDistanceKm(myPos, target, 'walking');
+                if (km != null && !cancelled) entries.push([s.id, km]);
+            }
+            if (!cancelled && entries.length > 0) {
+                setRouteKmByStore((prev) => ({ ...prev, ...Object.fromEntries(entries) }));
+            }
+        })();
+
+        return () => {
+            cancelled = true;
+        };
+    }, [myPos, shopsWithDb, routeKmByStore]);
+
     const shopsSorted = useMemo<ShopForSort[]>(() => {
         const withKeys = shopsWithDb.map((s) => {
             const target = bestLatLngForDistance(s);
-            const d = (myPos && target) ? haversineKm(myPos, target) : Number.POSITIVE_INFINITY;
+            const d = (myPos && target)
+                ? (routeKmByStore[s.id] ?? haversineKm(myPos, target))
+                : Number.POSITIVE_INFINITY;
             const p = shopMinPrice(s);
             return { ...s, distance: d, minPrice: p };
         });
@@ -1857,7 +1923,7 @@ export default function UserPilotApp() {
                 (a.distance - b.distance) || (a.minPrice - b.minPrice)
             );
         }
-    }, [shopsWithDb, myPos, sortMode]);
+    }, [shopsWithDb, myPos, sortMode, routeKmByStore]);
 
 
 
@@ -2711,7 +2777,7 @@ export default function UserPilotApp() {
                                                         {s.name}
                                                     </div>
                                                     <div className="absolute right-3 top-3 px-2 py-1 rounded-full bg-white/90 border text-[11px]">
-                                                        {s.distance.toFixed(2)} km
+                                                        {distanceLabelFor(s)}
                                                     </div>
                                                 </div>
 
@@ -2828,7 +2894,7 @@ export default function UserPilotApp() {
                                                             {/* 距離 */}
                                                             <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1">
                                                                 <span>🚶</span>
-                                                                <span className="font-medium">{s.distance.toFixed(2)} km</span>
+                                                                <span className="font-medium">{distanceLabelFor(s)}</span>
                                                             </span>
 
                                                             {/* カテゴリ */}

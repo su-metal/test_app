@@ -2571,7 +2571,7 @@ export default function UserPilotApp() {
                                                 aria-disabled={g.lines.length === 0}
                                                 title="このグループのカートを空にする"
                                             >
-                                                このカートを空にする
+                                                カートを空にする
                                             </button>
                                         </div>
 

@@ -2,15 +2,9 @@
 import React, { useEffect, useMemo, useRef, useState, startTransition, useCallback } from "react";
 import { createClient, type RealtimeChannel } from "@supabase/supabase-js";
 import type { SupabaseClient } from '@supabase/supabase-js';
-import 'leaflet/dist/leaflet.css';
-import dynamic from "next/dynamic";
 // 追加：受取時間の表示コンポーネント
 import PickupTimeSelector, { type PickupSlot } from "@/components/PickupTimeSelector";
 
-
-
-// page.tsx より抜粋（MapViewの使用部分）
-const MapView = dynamic(() => import("@/components/MapView"), { ssr: false });
 
 // ===== debug switch =====
 const DEBUG = (process.env.NEXT_PUBLIC_DEBUG === '1');
@@ -95,6 +89,93 @@ if (DEBUG && typeof window !== "undefined") {
  */
 
 // ---- ユーティリティ ----
+
+// --- 埋め込み可能な Google Maps の src だけを許可 ---
+const isAllowedGoogleEmbedSrc = (src: string) => {
+    try {
+        const u = new URL(src);
+        const hostOk = ["www.google.com", "google.com"].includes(u.hostname);
+        const pathOk = u.pathname.startsWith("/maps/embed")
+            || (u.pathname === "/maps" && u.searchParams.get("output") === "embed");
+        return hostOk && pathOk;
+    } catch {
+        return false;
+    }
+};
+
+// --- 共有URL（google.com/maps/… など）から lat,lng を取れる場合は抽出 ---
+const extractLatLngFromGoogleUrl = (url?: string): { lat: number; lng: number } | null => {
+    if (!url) return null;
+    try {
+        const u = new URL(url);
+
+        // 1) ".../@35.12345,139.12345,16z"
+        const at = u.href.match(/@(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/);
+        if (at) return { lat: Number(at[1]), lng: Number(at[2]) };
+
+        // 2) "?q=35.12345,139.12345" or "?ll=35.12345,139.12345"
+        const q = u.searchParams.get("q");
+        const ll = u.searchParams.get("ll");
+        const pick = q || ll;
+        if (pick) {
+            const [lat, lng] = pick.split(/[, ]+/).map(Number);
+            if (Number.isFinite(lat) && Number.isFinite(lng)) return { lat, lng };
+        }
+    } catch { }
+    return null;
+};
+
+// Embed API（Place ID用）を使う場合だけ .env にキーを置く（無ければ未使用）
+const EMBED_KEY = process.env.NEXT_PUBLIC_GOOGLE_MAPS_EMBED_KEY;
+
+// --- 最適ソースから <iframe src> を構築（優先: gmap_embed_src → place_id → URL座標 → lat/lng → 住所）---
+const buildMapEmbedSrc = (s: {
+    name: string;
+    address?: string | null;
+    place_id?: string | null;
+    gmap_embed_src?: string | null;
+    gmap_url?: string | null;
+    lat?: number | null;
+    lng?: number | null;
+    zoomOnPin?: number | null;
+}) => {
+    const z = Number(s.zoomOnPin ?? 18);
+
+    // A) DBの埋め込みsrc（/maps/embed?pb=…）があれば最優先（キー不要）
+    if (s.gmap_embed_src && isAllowedGoogleEmbedSrc(s.gmap_embed_src)) {
+        return s.gmap_embed_src;
+    }
+
+    // B) Place ID（Embed API + key があるときのみ）
+    if (EMBED_KEY && s.place_id) {
+        return `https://www.google.com/maps/embed/v1/place?key=${EMBED_KEY}&q=place_id:${encodeURIComponent(s.place_id)}`;
+    }
+
+    // C) 共有URLから座標を抽出できたら使う（キー不要）
+    const ll = extractLatLngFromGoogleUrl(s.gmap_url ?? undefined);
+    if (ll) return `https://www.google.com/maps?q=${ll.lat},${ll.lng}&z=${z}&output=embed`;
+
+    // D) DBのlat/lngがあれば使う（キー不要）
+    if (typeof s.lat === "number" && typeof s.lng === "number") {
+        return `https://www.google.com/maps?q=${s.lat},${s.lng}&z=${z}&output=embed`;
+    }
+
+    // E) 最後は住所検索（多少ズレる可能性）
+    if (s.address && s.address.trim()) {
+        const q = encodeURIComponent(`${s.name} ${s.address}`);
+        return `https://www.google.com/maps?q=${q}&output=embed`;
+    }
+
+    // 既存の buildMapEmbedSrc の Place ID 部分だけ、zoom を足す
+    if (EMBED_KEY && s.place_id) {
+        const z = Number(s.zoomOnPin ?? 18);
+        return `https://www.google.com/maps/embed/v1/place?key=${EMBED_KEY}&q=place_id:${encodeURIComponent(s.place_id)}&zoom=${z}`;
+    }
+
+
+    return "https://www.google.com/maps?output=embed";
+};
+
 function useSupabase() {
     return useMemo(getSupabaseSingleton, []);
 }
@@ -445,6 +526,9 @@ interface Shop {
     hours?: string;    // ★ ：営業時間
     holiday?: string;  // ★ ：定休日
     category?: string; // ★ ：カテゴリー
+    gmap_embed_src?: string | null;
+    gmap_url?: string | null;
+    place_id?: string | null;
 }
 interface CartLine { shopId: string; item: Item; qty: number }
 interface Order { id: string; userEmail: string; shopId: string; amount: number; status: "paid" | "redeemed" | "refunded"; code6: string; createdAt: number; lines: CartLine[] }
@@ -957,6 +1041,9 @@ export default function UserPilotApp() {
         holiday?: string | null;  // ★ 追加
         category?: string | null; // ★ 追加
         note?: string | null;
+        gmap_embed_src?: string | null;   // ★ 追加
+        gmap_url?: string | null;         // ★ 追加（任意）
+        place_id?: string | null;         // ★ 追加（任意）
     };
 
     const [dbProducts, setDbProducts] = useState<DbProduct[]>([]);
@@ -1106,13 +1193,18 @@ export default function UserPilotApp() {
         return () => clearInterval(id);
     }, []);
 
-    // Googleマップの遷移先URLを生成（lat/lng優先、なければ住所）
+    // Googleマップの遷移先URLを生成（住所優先。住所が無い場合のみ lat/lng）
     const googleMapsUrlForShop = (s: Shop) => {
-        const hasLL = typeof s.lat === "number" && typeof s.lng === "number";
-        if (hasLL) return `https://www.google.com/maps/search/?api=1&query=${s.lat},${s.lng}`;
+        // 共有URLがあれば最優先（長い google.com/maps のURL推奨）
+        if (s.gmap_url) return s.gmap_url;
+
         if (s.address) return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(s.address)}`;
+        if (typeof s.lat === "number" && typeof s.lng === "number") {
+            return `https://www.google.com/maps/search/?api=1&query=${s.lat},${s.lng}`;
+        }
         return "https://www.google.com/maps";
     };
+
 
     // DBから products を読む（全店舗分を取得し、後段で store_id ごとにグルーピング）
     useEffect(() => {
@@ -1233,7 +1325,7 @@ export default function UserPilotApp() {
             // 置き換え
             const { data, error } = await supabase
                 .from("stores")
-                .select("id, name, created_at, lat, lng, address, cover_image_path, current_pickup_slot_no, tel, url, hours, holiday, category") // ★ 追加
+                .select("id, name, created_at, lat, lng, address, cover_image_path, current_pickup_slot_no, tel, url, hours, holiday, category, gmap_embed_src, gmap_url, place_id") // ★ 追加
                 .order("created_at", { ascending: true })
                 .limit(200);
             if (error) {
@@ -1304,6 +1396,9 @@ export default function UserPilotApp() {
             hours: (st.hours ?? undefined) as string | undefined,       // ★ 追加
             holiday: (st.holiday ?? undefined) as string | undefined,   // ★ 追加
             category: (st.category ?? undefined) as string | undefined, // ★ 追加
+            gmap_embed_src: st.gmap_embed_src ?? null,
+            gmap_url: st.gmap_url ?? null,
+            place_id: st.place_id ?? null,
         }));
 
 
@@ -2497,7 +2592,31 @@ export default function UserPilotApp() {
 
                                                             <div className="relative mt-2">
                                                                 <div className="relative mt-2">
-                                                                    <MapView lat={s.lat} lng={s.lng} name={s.name} />
+                                                                    {/* 住所/ミニマップ（埋め込み） */}
+                                                                    <div className="relative mt-2 rounded-xl overflow-hidden border
+                touch-pan-y touch-pinch-zoom overscroll-contain">
+                                                                        <iframe
+                                                                            key={s.id}
+                                                                            className="w-full h-60 md:h-80" // ← 高さを少し増やすと +- UI が確実に見えます
+                                                                            src={buildMapEmbedSrc({
+                                                                                name: s.name,
+                                                                                address: s.address,
+                                                                                place_id: s.place_id ?? null,
+                                                                                gmap_embed_src: s.gmap_embed_src ?? null,
+                                                                                gmap_url: s.gmap_url ?? null,
+                                                                                lat: s.lat,
+                                                                                lng: s.lng,
+                                                                                zoomOnPin: s.zoomOnPin,
+                                                                            })}
+                                                                            loading="lazy"
+                                                                            referrerPolicy="no-referrer-when-downgrade"
+                                                                            allowFullScreen
+                                                                            title={`${s.name} の地図`}
+                                                                            // 念のため（親のどこかで pointer-events: none が掛かっていた場合の保険）
+                                                                            style={{ pointerEvents: 'auto' }}
+                                                                        />
+                                                                    </div>
+
                                                                 </div>
 
                                                                 {/* <div className="absolute right-2 top-2 px-2 py-1 rounded bg-white/90 border text-[11px]">

@@ -1016,6 +1016,23 @@ export default function UserPilotApp() {
 
     const [userEmail] = useLocalStorageState<string>(K.user, "");
     const [tab, setTab] = useState<"home" | "cart" | "order" | "account">("home");
+
+    // 並び替えモード（ローカル保存）
+    const [sortMode, setSortMode] = useLocalStorageState<'distance' | 'price'>('home_sort_mode', 'distance');
+
+    // 店舗の「並び替え用 最安値」を算出（販売可能な商品に限定）
+    const shopMinPrice = (s: Shop): number => {
+        const now = Date.now();
+        const eligibles = (s.items || []).filter((it) => {
+            const notExpired = !isPickupExpired(it.pickup);
+            const notFuture = it.publish_at ? (Date.parse(it.publish_at) <= now) : true;
+            const hasStock = (it.stock ?? 0) > 0;
+            return notExpired && notFuture && hasStock;
+        });
+        if (eligibles.length === 0) return Number.POSITIVE_INFINITY;
+        return Math.min(...eligibles.map((it) => Number(it.price || 0)));
+    };
+
     // タブの直前値を覚えておく
     const prevTabRef = useRef<typeof tab>(tab);
 
@@ -1819,16 +1836,29 @@ export default function UserPilotApp() {
     }, [shops, dbProducts, storeId, dbStores, presetMap, pubWake]);
 
 
-    const shopsSorted = useMemo<ShopWithDistance[]>(
-        () => shopsWithDb.map((s, i) => {
+    type ShopForSort = Shop & { distance: number; minPrice: number };
+
+    const shopsSorted = useMemo<ShopForSort[]>(() => {
+        const withKeys = shopsWithDb.map((s) => {
             const target = bestLatLngForDistance(s);
-            const d = (myPos && target)
-                ? haversineKm(myPos, target)     // ← 埋め込み/共有URLから抽出した座標で計算
-                : Number.NaN;                    // 取れない時は “—” 表示にさせたいなら NaN に
-            return { ...s, distance: d };
-        }),
-        [shopsWithDb, myPos]
-    );
+            const d = (myPos && target) ? haversineKm(myPos, target) : Number.POSITIVE_INFINITY;
+            const p = shopMinPrice(s);
+            return { ...s, distance: d, minPrice: p };
+        });
+
+        if (sortMode === 'price') {
+            // 価格の安い順 → 同値は距離の近い順
+            return withKeys.sort((a, b) =>
+                (a.minPrice - b.minPrice) || (a.distance - b.distance)
+            );
+        } else {
+            // 距離の近い順 → 同値は価格の安い順
+            return withKeys.sort((a, b) =>
+                (a.distance - b.distance) || (a.minPrice - b.minPrice)
+            );
+        }
+    }, [shopsWithDb, myPos, sortMode]);
+
 
 
 
@@ -2532,7 +2562,32 @@ export default function UserPilotApp() {
                 <main className="max-w-[448px] mx-auto px-4 pb-28">
                     {tab === "home" && (
                         <section className="mt-4 space-y-4">
-                            <h2 className="text-base font-semibold">近くのお店</h2>
+                            <div className="flex items-center justify-between">
+                                <h2 className="text-base font-semibold">近くのお店</h2>
+
+                                {/* 並び替えトグル */}
+                                <div role="group" aria-label="並び替え" className="inline-flex rounded-xl border overflow-hidden">
+                                    <button
+                                        type="button"
+                                        onClick={() => setSortMode('distance')}
+                                        aria-pressed={sortMode === 'distance'}
+                                        className={`px-3 py-1.5 text-sm ${sortMode === 'distance' ? 'bg-zinc-900 text-white' : 'bg-white text-zinc-700'}`}
+                                        title="距離の近い順"
+                                    >
+                                        距離順
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => setSortMode('price')}
+                                        aria-pressed={sortMode === 'price'}
+                                        className={`px-3 py-1.5 text-sm border-l ${sortMode === 'price' ? 'bg-zinc-900 text-white' : 'bg-white text-zinc-700'}`}
+                                        title="価格の安い順（最安値）"
+                                    >
+                                        価格順
+                                    </button>
+                                </div>
+                            </div>
+
 
                             {/* 現在地取得と表示 */}
                             <div className="rounded-xl border bg-white p-3">

@@ -2143,7 +2143,7 @@ export default function UserPilotApp() {
         const reserved = getReserved(sid, it.id);
         const remain = Math.max(0, it.stock - reserved);
         return (
-            <div className="inline-flex items-center rounded-full px-2 py-1 text-sm select-none">
+            <div className="inline-flex items-center rounded-full px-0 py-1 text-sm select-none">
                 <button
                     type="button"
                     className="w-7 h-7 text-[10px] leading-none rounded-full border cursor-pointer disabled:opacity-40 flex items-center justify-center"
@@ -2151,7 +2151,7 @@ export default function UserPilotApp() {
                     onClick={() => changeQty(sid, it, -1)}
                     aria-label="数量を減らす"
                 >−</button>
-                <span className="mx-3 min-w-[1.5rem] text-center tabular-nums">{reserved}</span>
+                <span className="mx-1 min-w-[1.5rem] text-center tabular-nums">{reserved}</span>
                 <button
                     type="button"
                     className="w-7 h-7 text-[10px] leading-none rounded-full border cursor-pointer disabled:opacity-40 flex items-center justify-center"
@@ -2264,7 +2264,7 @@ export default function UserPilotApp() {
                                 ありがとうございました！またのご利用をお待ちしています。
                             </div>
                         ) : (
-                            <div className="mt-0.5 text-xs text-zinc-500 flex items-center gap-1 w-full">
+                            <div className="mt-2 text-xs text-zinc-500 flex items-center gap-1 w-full">
                                 <span>⏰</span>
                                 <span className="truncate">受取 {it.pickup}</span>
                             </div>
@@ -2521,18 +2521,6 @@ export default function UserPilotApp() {
                                                                 <span className="font-medium">{m.holiday ?? "—"}</span>
                                                             </span>
 
-                                                            {/* カテゴリ */}
-                                                            <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1">
-                                                                <span>🏷️</span>
-                                                                <span className="font-medium">{m.category ?? "—"}</span>
-                                                            </span>
-
-                                                            {/* 距離 */}
-                                                            <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1">
-                                                                <span>🚶</span>
-                                                                <span className="font-medium">{s.distance.toFixed(2)} km</span>
-                                                            </span>
-
                                                             {/* ★ 追加：TEL */}
                                                             <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1">
                                                                 <span>📞</span>
@@ -2568,6 +2556,18 @@ export default function UserPilotApp() {
                                                                 ) : (
                                                                     <span className="font-medium">—</span>
                                                                 )}
+                                                            </span>
+
+                                                            {/* 距離 */}
+                                                            <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1">
+                                                                <span>🚶</span>
+                                                                <span className="font-medium">{s.distance.toFixed(2)} km</span>
+                                                            </span>
+
+                                                            {/* カテゴリ */}
+                                                            <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1">
+                                                                <span>🏷️</span>
+                                                                <span className="font-medium">{m.category ?? "—"}</span>
                                                             </span>
                                                         </div>
 

@@ -103,29 +103,89 @@ const isAllowedGoogleEmbedSrc = (src: string) => {
     }
 };
 
-// --- 埋め込みURL（/maps/embed?pb=...）の pb から lat,lng を抽出 ---
+// --- 埋め込みURL（/maps/embed?pb=... または ?q=...&output=embed）から lat,lng を抽出 ---
 const extractLatLngFromGoogleEmbedSrc = (src?: string): { lat: number; lng: number } | null => {
     if (!src) return null;
     try {
         const u = new URL(src);
         if (!isAllowedGoogleEmbedSrc(src)) return null;
+
+        // A) /maps/embed?pb=...（代表2パターン）
         const rawPb = u.searchParams.get("pb");
-        if (!rawPb) return null;
-        const pb = decodeURIComponent(rawPb);
+        if (rawPb) {
+            const pb = decodeURIComponent(rawPb);
 
-        // 代表パターン1: ...!3d<lat>!4d<lng>...
-        const m34 = pb.match(/!3d(-?\d+(?:\.\d+)?)!4d(-?\d+(?:\.\d+)?)/);
-        if (m34) return { lat: Number(m34[1]), lng: Number(m34[2]) };
+            // ...!3d<lat>!4d<lng>...
+            const m34 = pb.match(/!3d(-?\d+(?:\.\d+)?)!4d(-?\d+(?:\.\d+)?)/);
+            if (m34) return { lat: Number(m34[1]), lng: Number(m34[2]) };
 
-        // 代表パターン2: ...!2d<lng>!3d<lat>...
-        const m23 = pb.match(/!2d(-?\d+(?:\.\d+)?)!3d(-?\d+(?:\.\d+)?)/);
-        if (m23) return { lat: Number(m23[2]), lng: Number(m23[1]) };
+            // ...!2d<lng>!3d<lat>...
+            const m23 = pb.match(/!2d(-?\d+(?:\.\d+)?)!3d(-?\d+(?:\.\d+)?)/);
+            if (m23) return { lat: Number(m23[2]), lng: Number(m23[1]) };
+        }
+
+        // B) /maps?output=embed&q=lat,lng など
+        const q = u.searchParams.get("q");
+        if (q) {
+            const m = q.trim().match(/^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/);
+            if (m) return { lat: Number(m[1]), lng: Number(m[2]) };
+        }
 
         return null;
     } catch {
         return null;
     }
 };
+
+// 埋め込み src を「新タブでピン付きで開ける通常URL」へ変換
+function mapsUrlFromEmbedForNewTab(src?: string | null, label?: string | null): string | null {
+    const ll = extractLatLngFromGoogleEmbedSrc(src || undefined);
+    if (!ll) return null;
+    const base = `https://www.google.com/maps/search/?api=1&query=${ll.lat},${ll.lng}`;
+    // 任意: 店名をラベルとして付与（見た目の補助）
+    if (label && label.trim()) {
+        return `${base}&query_place=${encodeURIComponent(label.trim())}`;
+    }
+    return base;
+}
+
+
+// 開発用にコンソールから叩けるように公開（本番は環境変数で無効）
+if (process.env.NEXT_PUBLIC_DEBUG === '1') {
+    (globalThis as any).dbgExtractFromEmbed = extractLatLngFromGoogleEmbedSrc;
+}
+
+
+// 埋め込み src（/maps/embed?...）→ フルGoogleマップの「ピンあり」URLへ変換
+function viewLargerMapUrlFromEmbed(src?: string | null): string | null {
+    if (!src) return null;
+    try {
+        // まず、埋め込みの座標を確実に抽出
+        const ll = extractLatLngFromGoogleEmbedSrc(src || undefined);
+        if (ll && Number.isFinite(ll.lat) && Number.isFinite(ll.lng)) {
+            // ← これが最も確実に“ピンが立つ”
+            return `https://www.google.com/maps/search/?api=1&query=${ll.lat},${ll.lng}`;
+        }
+
+        // どうしても座標が取れない超例外時のみ、従来の /maps?pb=... にフォールバック
+        const u = new URL(src);
+        const isGoogle = ["www.google.com", "google.com"].includes(u.hostname);
+
+        if (isGoogle && u.pathname.startsWith("/maps/embed")) {
+            u.pathname = "/maps";
+            return u.toString(); // ※このパスはピンが出ないことがある（最後の保険）
+        }
+        if (isGoogle && u.pathname === "/maps" && u.searchParams.get("output") === "embed") {
+            u.searchParams.delete("output");
+            return u.toString();
+        }
+        return null;
+    } catch {
+        return null;
+    }
+}
+
+
 
 // --- 距離計算に使う最良座標（DBの lat/lng は使わない） ---
 function bestLatLngForDistance(s: { gmap_embed_src?: string | null; gmap_url?: string | null }): { lat: number; lng: number } | null {
@@ -1243,17 +1303,41 @@ export default function UserPilotApp() {
         return () => clearInterval(id);
     }, []);
 
-    // Googleマップの遷移先URLを生成（住所優先。住所が無い場合のみ lat/lng）
+    // Googleマップの遷移先URL（place_id 最優先 → 既存のフォールバック）
     const googleMapsUrlForShop = (s: Shop) => {
-        // 共有URLがあれば最優先（長い google.com/maps のURL推奨）
+        // 0) place_id があれば最優先（名前を query に同梱して確実に“ピン選択”を起動）
+        const pid = s.place_id && String(s.place_id).trim();
+        if (pid) {
+            const label = (s.name || "").trim() || "場所";
+            // A: 推奨（公式ドキュメント系の安定パターン）
+            return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(label)}&query_place_id=${encodeURIComponent(pid)}`;
+            // B: もし上でピンが出ない端末がある場合は、こちらに切り替えてもOK
+            // return `https://www.google.com/maps/place/?q=place_id:${encodeURIComponent(pid)}`;
+        }
+
+        // 1) 埋め込み src → ピン付きURL
+        const fromEmbedUrl = mapsUrlFromEmbedForNewTab(s.gmap_embed_src ?? null, s.name as any);
+        if (fromEmbedUrl) return fromEmbedUrl;
+
+        // 2) 共有URLから座標
+        const fromShare = extractLatLngFromGoogleUrl(s.gmap_url ?? undefined);
+        if (fromShare) {
+            return `https://www.google.com/maps/search/?api=1&query=${fromShare.lat},${fromShare.lng}`;
+        }
+
+        // 3) 共有URLそのまま
         if (s.gmap_url) return s.gmap_url;
 
+        // 4) 住所
         if (s.address) return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(s.address)}`;
+
+        // 5) DBのlat/lng
         if (typeof s.lat === "number" && typeof s.lng === "number") {
             return `https://www.google.com/maps/search/?api=1&query=${s.lat},${s.lng}`;
         }
         return "https://www.google.com/maps";
     };
+
 
 
     // DBから products を読む（全店舗分を取得し、後段で store_id ごとにグルーピング）
@@ -2487,8 +2571,15 @@ export default function UserPilotApp() {
                                 )}
                             </div>
 
+
+
                             <div className="grid grid-cols-1 gap-3">
                                 {shopsSorted.map((s, idx) => {
+                                    // ★ デバッグ：埋め込み src → 座標 抽出値 と MAP リンク最終URLを確認
+                                    if (process.env.NEXT_PUBLIC_DEBUG === '1') {
+                                        console.log('[MAP debug]', s.name, extractLatLngFromGoogleEmbedSrc(s.gmap_embed_src ?? undefined), '→ link:', googleMapsUrlForShop(s));
+                                    }
+
                                     // 表示用メタ情報を正規化（s.meta が無くても動く）
                                     const m = (() => {
                                         const anyS = s as any;

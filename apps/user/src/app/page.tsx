@@ -2,6 +2,7 @@
 import React, { useEffect, useMemo, useRef, useState, startTransition, useCallback } from "react";
 import { createClient, type RealtimeChannel } from "@supabase/supabase-js";
 import type { SupabaseClient } from '@supabase/supabase-js';
+import MapView from "@/components/MapView";
 // 追加：受取時間の表示コンポーネント
 import PickupTimeSelector, { type PickupSlot } from "@/components/PickupTimeSelector";
 
@@ -883,6 +884,44 @@ const IconExternal = ({ className = "" }: { className?: string }) => (
 
 
 export default function UserPilotApp() {
+    // 現在地（ユーザー端末の位置）
+    const [myPos, setMyPos] = useState<{ lat: number; lng: number } | null>(null);
+    const [geoMsg, setGeoMsg] = useState<string | null>(null);
+
+    // 起動時に保存済みの位置を復元
+    useEffect(() => {
+        try {
+            const raw = localStorage.getItem("user:geo");
+            if (raw) {
+                const v = JSON.parse(raw);
+                if (v && typeof v.lat === "number" && typeof v.lng === "number") {
+                    setMyPos({ lat: v.lat, lng: v.lng });
+                }
+            }
+        } catch { /* noop */ }
+    }, []);
+
+    const requestMyLocation = useCallback(() => {
+        if (typeof navigator === "undefined" || !navigator.geolocation) {
+            setGeoMsg("この端末では位置情報を取得できません");
+            return;
+        }
+        setGeoMsg("現在地を取得中…");
+        navigator.geolocation.getCurrentPosition(
+            (pos) => {
+                const lat = pos.coords.latitude;
+                const lng = pos.coords.longitude;
+                setMyPos({ lat, lng });
+                setGeoMsg("現在地を取得しました");
+                try { localStorage.setItem("user:geo", JSON.stringify({ lat, lng })); } catch { /* noop */ }
+            },
+            (err) => {
+                const reason = err.code === err.PERMISSION_DENIED ? "位置情報の許可が必要です" : "現在地の取得に失敗しました";
+                setGeoMsg(reason);
+            },
+            { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 }
+        );
+    }, []);
 
     // 永続化
     const [shops, setShops] = useLocalStorageState<Shop[]>(K.shops, seedShops);
@@ -1434,8 +1473,25 @@ export default function UserPilotApp() {
     const isPayingRef = useRef(false);
     const [isPaying, setIsPaying] = useState(false);
 
-    // 距離はダミー
-    const distKm = (i: number) => 0.4 + i * 0.3;
+    // 2点間の距離（km）: ハバースイン
+    const haversineKm = (aLat: number, aLng: number, bLat: number, bLng: number) => {
+        const toRad = (d: number) => (d * Math.PI) / 180;
+        const R = 6371; // km
+        const dLat = toRad(bLat - aLat);
+        const dLng = toRad(bLng - aLng);
+        const s1 = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(aLat)) * Math.cos(toRad(bLat)) * Math.sin(dLng / 2) ** 2;
+        const c = 2 * Math.atan2(Math.sqrt(s1), Math.sqrt(1 - s1));
+        return R * c;
+    };
+
+    // 距離（現在地がある場合は実距離、なければ従来のダミー）
+    const distKm = (i: number) => {
+        const s = shopsWithDb[i];
+        if (myPos && typeof s?.lat === "number" && typeof s?.lng === "number") {
+            return haversineKm(myPos.lat, myPos.lng, s.lat, s.lng);
+        }
+        return 0.4 + i * 0.3;
+    };
     const storeId = process.env.NEXT_PUBLIC_STORE_ID;
 
     // 店舗側で orders.status が更新されたらローカルの注文を同期（未引換→履歴へ）
@@ -2367,6 +2423,31 @@ export default function UserPilotApp() {
                             <h2 className="text-base font-semibold">近くのお店</h2>
 
                             <div className="grid grid-cols-1 gap-3">
+                                {/* 現在地取得と表示 */}
+                                <div className="mb-3 flex items-center justify-between">
+                                    <div className="text-sm">
+                                        {myPos ? (
+                                            <span>現在地: {myPos.lat.toFixed(5)}, {myPos.lng.toFixed(5)}</span>
+                                        ) : (
+                                            <span className="text-zinc-500">現在地が未取得です</span>
+                                        )}
+                                        {geoMsg && <span className="ml-2 text-xs text-zinc-500">({geoMsg})</span>}
+                                    </div>
+                                    <button
+                                        type="button"
+                                        onClick={requestMyLocation}
+                                        className="px-3 py-1.5 rounded border bg-white hover:bg-zinc-50 cursor-pointer text-sm"
+                                        aria-live="polite"
+                                    >
+                                        現在地を取得
+                                    </button>
+                                </div>
+                                {myPos && (
+                                    <div className="mb-4">
+                                        <MapView lat={myPos.lat} lng={myPos.lng} name="現在地" />
+                                    </div>
+                                )}
+
                                 {shopsSorted.map((s, idx) => {
                                     // 表示用メタ情報を正規化（s.meta が無くても動く）
                                     const m = (() => {

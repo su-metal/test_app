@@ -103,6 +103,43 @@ const isAllowedGoogleEmbedSrc = (src: string) => {
     }
 };
 
+// --- 埋め込みURL（/maps/embed?pb=...）の pb から lat,lng を抽出 ---
+const extractLatLngFromGoogleEmbedSrc = (src?: string): { lat: number; lng: number } | null => {
+    if (!src) return null;
+    try {
+        const u = new URL(src);
+        if (!isAllowedGoogleEmbedSrc(src)) return null;
+        const rawPb = u.searchParams.get("pb");
+        if (!rawPb) return null;
+        const pb = decodeURIComponent(rawPb);
+
+        // 代表パターン1: ...!3d<lat>!4d<lng>...
+        const m34 = pb.match(/!3d(-?\d+(?:\.\d+)?)!4d(-?\d+(?:\.\d+)?)/);
+        if (m34) return { lat: Number(m34[1]), lng: Number(m34[2]) };
+
+        // 代表パターン2: ...!2d<lng>!3d<lat>...
+        const m23 = pb.match(/!2d(-?\d+(?:\.\d+)?)!3d(-?\d+(?:\.\d+)?)/);
+        if (m23) return { lat: Number(m23[2]), lng: Number(m23[1]) };
+
+        return null;
+    } catch {
+        return null;
+    }
+};
+
+// --- 距離計算に使う最良座標（DBの lat/lng は使わない） ---
+function bestLatLngForDistance(s: { gmap_embed_src?: string | null; gmap_url?: string | null }): { lat: number; lng: number } | null {
+    const fromEmbed = extractLatLngFromGoogleEmbedSrc(s.gmap_embed_src ?? undefined);
+    if (fromEmbed && Number.isFinite(fromEmbed.lat) && Number.isFinite(fromEmbed.lng)) return fromEmbed;
+
+    const fromUrl = extractLatLngFromGoogleUrl(s.gmap_url ?? undefined);
+    if (fromUrl && Number.isFinite(fromUrl.lat) && Number.isFinite(fromUrl.lng)) return fromUrl;
+
+    return null; // どちらも取れない場合は距離表示しない
+}
+
+
+
 // --- 共有URL（google.com/maps/… など）から lat,lng を取れる場合は抽出 ---
 const extractLatLngFromGoogleUrl = (url?: string): { lat: number; lng: number } | null => {
     if (!url) return null;
@@ -124,6 +161,19 @@ const extractLatLngFromGoogleUrl = (url?: string): { lat: number; lng: number } 
     } catch { }
     return null;
 };
+
+// --- 2点間の距離（km, Haversine）---
+function haversineKm(a: { lat: number; lng: number }, b: { lat: number; lng: number }): number {
+    const R = 6371; // km
+    const toRad = (d: number) => (d * Math.PI) / 180;
+    const dLat = toRad(b.lat - a.lat);
+    const dLng = toRad(b.lng - a.lng);
+    const s1 = Math.sin(dLat / 2);
+    const s2 = Math.sin(dLng / 2);
+    const aa = s1 * s1 + Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * s2 * s2;
+    const c = 2 * Math.atan2(Math.sqrt(aa), Math.sqrt(1 - aa));
+    return R * c;
+}
 
 // Embed API（Place ID用）を使う場合だけ .env にキーを置く（無ければ未使用）
 const EMBED_KEY = process.env.NEXT_PUBLIC_GOOGLE_MAPS_EMBED_KEY;
@@ -1434,8 +1484,35 @@ export default function UserPilotApp() {
     const isPayingRef = useRef(false);
     const [isPaying, setIsPaying] = useState(false);
 
-    // 距離はダミー
-    const distKm = (i: number) => 0.4 + i * 0.3;
+    // 現在地（ユーザー端末）
+    const [myPos, setMyPos] = useState<{ lat: number; lng: number } | null>(null);
+    const [locState, setLocState] = useState<'idle' | 'getting' | 'ok' | 'error'>('idle');
+    const [locError, setLocError] = useState<string | null>(null);
+
+    const requestLocation = useCallback(() => {
+        if (typeof window === 'undefined') return;
+        if (!('geolocation' in navigator)) {
+            setLocState('error');
+            setLocError('この端末は位置情報に対応していません');
+            emitToast('error', '位置情報に対応していません');
+            return;
+        }
+        setLocState('getting');
+        setLocError(null);
+        navigator.geolocation.getCurrentPosition(
+            (pos) => {
+                setMyPos({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+                setLocState('ok');
+            },
+            (err) => {
+                setLocState('error');
+                setLocError(err?.message || '位置情報の取得に失敗しました');
+                emitToast('error', '位置情報の取得に失敗しました');
+            },
+            { enableHighAccuracy: true, maximumAge: 0, timeout: 20_000 }
+
+        );
+    }, []);
     const storeId = process.env.NEXT_PUBLIC_STORE_ID;
 
     // 店舗側で orders.status が更新されたらローカルの注文を同期（未引換→履歴へ）
@@ -1659,9 +1736,16 @@ export default function UserPilotApp() {
 
 
     const shopsSorted = useMemo<ShopWithDistance[]>(
-        () => shopsWithDb.map((s, i) => ({ ...s, distance: distKm(i) })),
-        [shopsWithDb]
+        () => shopsWithDb.map((s, i) => {
+            const target = bestLatLngForDistance(s);
+            const d = (myPos && target)
+                ? haversineKm(myPos, target)     // ← 埋め込み/共有URLから抽出した座標で計算
+                : Number.NaN;                    // 取れない時は “—” 表示にさせたいなら NaN に
+            return { ...s, distance: d };
+        }),
+        [shopsWithDb, myPos]
     );
+
 
 
     // 参照インデックス
@@ -2365,6 +2449,43 @@ export default function UserPilotApp() {
                     {tab === "home" && (
                         <section className="mt-4 space-y-4">
                             <h2 className="text-base font-semibold">近くのお店</h2>
+
+                            {/* 現在地取得と表示 */}
+                            <div className="rounded-xl border bg-white p-3">
+                                <div className="flex items-center gap-2">
+                                    <button
+                                        type="button"
+                                        onClick={requestLocation}
+                                        className="px-3 py-1.5 rounded border cursor-pointer"
+                                        aria-busy={locState === 'getting'}
+                                    >
+                                        {locState === 'getting' ? '現在地を取得中…' : '現在地を取得'}
+                                    </button>
+                                    {myPos && (
+                                        <div className="text-sm text-zinc-700">
+                                            現在地: 緯度 {myPos.lat.toFixed(5)}, 経度 {myPos.lng.toFixed(5)}
+                                        </div>
+                                    )}
+                                    {!myPos && locState === 'error' && (
+                                        <div className="text-sm text-red-600">位置情報の取得に失敗しました</div>
+                                    )}
+                                </div>
+
+                                {myPos && (
+                                    <div className="mt-2 rounded-lg overflow-hidden border">
+                                        <iframe
+                                            title="現在地の地図"
+                                            src={`https://www.google.com/maps?q=${encodeURIComponent(myPos.lat + ',' + myPos.lng)}&hl=ja&z=16&output=embed`}
+                                            width="100%"
+                                            height="160"
+                                            style={{ border: 0 }}
+                                            loading="lazy"
+                                            referrerPolicy="no-referrer-when-downgrade"
+                                            aria-label="Googleマップで現在地を表示"
+                                        />
+                                    </div>
+                                )}
+                            </div>
 
                             <div className="grid grid-cols-1 gap-3">
                                 {shopsSorted.map((s, idx) => {

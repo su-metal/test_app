@@ -4,6 +4,9 @@ import { createClient, type RealtimeChannel } from "@supabase/supabase-js";
 import type { SupabaseClient } from '@supabase/supabase-js';
 // 追加：受取時間の表示コンポーネント
 import PickupTimeSelector, { type PickupSlot } from "@/components/PickupTimeSelector";
+import { EmbeddedCheckoutProvider, EmbeddedCheckout, useStripe, useElements, PaymentElement } from "@stripe/react-stripe-js";
+
+
 
 // Stripe（ブラウザ用 SDK）
 import { loadStripe } from "@stripe/stripe-js";
@@ -531,6 +534,10 @@ function ToastBar({ toast, onClose }: { toast: ToastPayload | null; onClose: () 
     );
 }
 
+
+
+
+
 // クリップボード（クリック起点で呼ぶ。失敗時はフォールバック）
 async function safeCopy(text: string) {
     try {
@@ -584,6 +591,9 @@ function useLockBodyScroll(locked: boolean) {
 
 
 // ---- テストカード検証（簡易） ----
+
+
+
 function sanitizeCard(input: string) { return input.replace(/\s|-/g, ""); }
 function validateTestCard(cardRaw: string) {
     const card = sanitizeCard(cardRaw);
@@ -1017,8 +1027,128 @@ const IconExternal = ({ className = "" }: { className?: string }) => (
 );
 
 
+function BottomSheet({
+    open,
+    title,
+    onClose,
+    children,
+}: {
+    open: boolean;
+    title?: string;
+    onClose: () => void;
+    children: React.ReactNode;
+}) {
+    const startY = React.useRef(0);
+    const currentY = React.useRef(0);
+    const [dragY, setDragY] = React.useState(0);
+    const [dragging, setDragging] = React.useState(false);
+
+    const onBackdrop = React.useCallback(() => { onClose(); }, [onClose]);
+
+    // ▼ ドラッグ操作は“上部ハンドル領域だけ”で受ける
+    const onTouchStart = (e: React.TouchEvent) => {
+        const t = e.touches[0];
+        startY.current = t.clientY;
+        currentY.current = t.clientY;
+        setDragging(true);
+    };
+    const onTouchMove = (e: React.TouchEvent) => {
+        if (!dragging) return;
+        const t = e.touches[0];
+        currentY.current = t.clientY;
+        const dy = Math.max(0, currentY.current - startY.current);
+        setDragY(dy);
+        e.preventDefault(); // ← ハンドル内のみなので内部フォーム/iframeのスクロールは邪魔しない
+    };
+    const onTouchEnd = () => {
+        setDragging(false);
+        if (dragY > 120) { onClose(); setDragY(0); return; }
+        setDragY(0);
+    };
+
+    if (!open) return null;
+
+    return (
+        <div role="dialog" aria-modal="true" className="fixed inset-0 z-[3000]">
+            {/* 背景 */}
+            <div className="absolute inset-0 bg-black/40" onClick={onBackdrop} aria-hidden />
+            {/* シート位置 */}
+            <div className="absolute inset-x-0 bottom-0 flex justify-center pointer-events-none">
+                {/* シート本体 */}
+                <div
+                    className={`
+            pointer-events-auto w-full max-w-[520px]
+            rounded-t-2xl bg-white shadow-xl border-t
+            touch-pan-y overscroll-contain
+            max-h-[90vh] overflow-hidden
+            ${dragging ? "" : "transition-transform duration-300"}
+          `}
+                    style={{ transform: `translateY(${dragY}px)` }}
+                >
+                    {/* ハンドル＋ヘッダー（ここだけがドラッグ対象） */}
+                    <div
+                        className="py-2 grid place-items-center select-none"
+                        onTouchStart={onTouchStart}
+                        onTouchMove={onTouchMove}
+                        onTouchEnd={onTouchEnd}
+                    >
+                        <div aria-hidden className="h-1.5 w-12 rounded-full bg-zinc-300" />
+                    </div>
+                    <div
+                        className="px-4 pb-2 flex items-center justify-between select-none"
+                        onTouchStart={onTouchStart}
+                        onTouchMove={onTouchMove}
+                        onTouchEnd={onTouchEnd}
+                    >
+                        <div className="text-sm font-semibold">{title || ""}</div>
+                        <button
+                            type="button"
+                            aria-label="閉じる"
+                            className="w-8 h-8 rounded-full border bg-white hover:bg-zinc-50"
+                            onClick={onClose}
+                        >✕</button>
+                    </div>
+
+                    {/* コンテンツ：ここは自由にスクロールできる */}
+                    <div
+                        className="px-0 pb-3 overflow-auto"
+                        style={{ maxHeight: "calc(90vh - 64px)" }} // 64px ≒ ハンドル＋ヘッダー分
+                    >
+                        {children}
+                    </div>
+
+                    {/* iOSホームバー対策 */}
+                    <div className="h-4" />
+                </div>
+            </div>
+        </div>
+    );
+}
+
 
 export default function UserPilotApp() {
+
+    // 保存済みカードの一覧（必要に応じてAPI連携に差し替え可：いまはデモ用）
+    const savedCards = useMemo(
+        () => [
+            { id: "card_4242", brand: "Visa", last4: "4242" },
+            { id: "card_1881", brand: "Mastercard", last4: "1881" },
+        ],
+        []
+    );
+
+    // 「別のカードを使う」クリックで従来フォームを開くトグル
+    const [showCardFullForm, setShowCardFullForm] = useState(false);
+
+
+    const [checkoutClientSecret, setCheckoutClientSecret] = useState<string | null>(null);
+    const [isCheckoutOpen, setIsCheckoutOpen] = useState(false);
+
+    // コンポーネント“内”で再定義（①で削除したものの正しい版）
+    const updateCardLabel = useCallback((digits: string) => {
+        const v = validateTestCard(digits);
+        setSelectedPayLabel(v.ok ? ((v as any).brand || "クレジットカード") : null);
+    }, []);
 
     // 永続化
     const [shops, setShops] = useLocalStorageState<Shop[]>(K.shops, seedShops);
@@ -1042,6 +1172,16 @@ export default function UserPilotApp() {
 
     const [userEmail] = useLocalStorageState<string>(K.user, "");
     const [tab, setTab] = useState<"home" | "cart" | "order" | "account">("home");
+
+
+
+
+
+    // ▼「カートを見る」から目的店舗へスクロールするための待ち合わせ用
+    const [pendingScrollShopId, setPendingScrollShopId] = useState<string | null>(null);
+    // ▼ カート内の各「店舗先頭グループ」を指すアンカー（storeId -> 要素）
+    const cartStoreAnchorRefs = useRef<Record<string, HTMLDivElement | null>>({});
+
 
     // 並び替えモード（ローカル保存）
     const [sortMode, setSortMode] = useLocalStorageState<'distance' | 'price'>('home_sort_mode', 'distance');
@@ -1113,6 +1253,28 @@ export default function UserPilotApp() {
     }, [tab, setCart]);
 
 
+    // 「カートを見る」から遷移したら、目的店舗の先頭カートへスクロール（ヘッダー分を差し引いて位置補正）
+    useEffect(() => {
+        if (tab !== 'cart') return;
+        if (!pendingScrollShopId) return;
+
+        // レイアウト確定後にスクロール（2段階 rAF で描画完了を待つ）
+
+        const run = () => {
+            const el = cartStoreAnchorRefs.current[pendingScrollShopId!];
+            if (el) {
+                // ヘッダーの実高さ＋少し余白（8px）を差し引いてスクロール
+                const header = document.querySelector('header') as HTMLElement | null;
+                const headerH = header ? header.getBoundingClientRect().height : 0;
+                const GAP = 8; // ← ここを変えると表示位置の余白を微調整できます
+                const y = el.getBoundingClientRect().top + window.scrollY - headerH - GAP;
+                window.scrollTo({ top: Math.max(0, y), behavior: 'smooth' });
+            }
+            setPendingScrollShopId(null);
+        };
+        requestAnimationFrame(() => requestAnimationFrame(run));
+        return;
+    }, [tab, pendingScrollShopId]);
 
 
     const [focusedShop, setFocusedShop] = useState<string | undefined>(undefined);
@@ -1122,7 +1284,8 @@ export default function UserPilotApp() {
     const carouselWrapRef = useRef<HTMLDivElement | null>(null);
     const touchStateRef = useRef<{ sx: number; sy: number } | null>(null);
 
-    useLockBodyScroll(!!detail); // ← 追加：モーダル開閉に連動してスクロール停止
+    // 画面全体のスクロールを、詳細モーダル or 決済シートが開いている間はロック
+    useLockBodyScroll(!!detail || isCheckoutOpen);
     const detailImages = useMemo<string[]>(() => {
         if (!detail?.item) return [];
         return [
@@ -2309,8 +2472,15 @@ export default function UserPilotApp() {
 
     // 注文処理
     const [cardDigits, setCardDigits] = useState(""); // 数字のみ（最大16桁）
+    // ▼ 支払い選択フロー（ボトムシート制御）
+    const [isPayMethodOpen, setIsPayMethodOpen] = useState(false); // シート①：支払い方法の選択
+    const [isCardEntryOpen, setIsCardEntryOpen] = useState(false); // シート②：カード番号入力
+    const [selectedPayLabel, setSelectedPayLabel] = useState<string | null>(null); // 行に表示するラベル（例: "Visa(4242)"）
+    // 支払い方法のタブ切り替え用（ボタンの見た目制御に使用）
+    const [paymentMethod, setPaymentMethod] = useState<'card' | 'paypay' | null>(null);
+
+
     const [orderTarget, setOrderTarget] = useState<string | undefined>(undefined);
-    const [paymentMethod, setPaymentMethod] = useState<"card" | "paypay">("card"); // 支払方法（テスト）
     const unredeemedOrders = useMemo(() => orders.filter(o => o.status === 'paid'), [orders]);
     const redeemedOrders = useMemo(() => orders.filter(o => o.status === 'redeemed'), [orders]);
     // テストカードのブランド表示（失敗/未入力は TEST 扱い）
@@ -2351,60 +2521,57 @@ export default function UserPilotApp() {
     const toOrder = (sid: string) => { setOrderTarget(sid); setTab("order"); };
 
     // 受け取りグループ(gkey)をStripe Checkoutへ
+    // 注文画面へ → Stripe PaymentElement を開く
     const startStripeCheckout = useCallback(async (targetKey?: string) => {
         const key = targetKey ?? orderTarget;
         if (!key) return;
         const g = cartGroups[key];
-        if (!g || g.lines.length === 0) {
-            emitToast("error", "カートが空です");
-            return;
-        }
-        // カートで選択された受取時間（グループ単位）
+        if (!g || g.lines.length === 0) { emitToast("error", "カートが空です"); return; }
+
         const sel = pickupByGroup[key] ?? null;
         const pickupLabel = sel ? `${sel.start}〜${sel.end}` : "";
-        // セッションペイロード（サーバへ渡す簡易スナップショット）
+
         const linesPayload = g.lines.map(l => ({
             id: l.item.id,
             name: l.item.name,
-            price: Number(l.item.price) || 0, // 円
+            price: Number(l.item.price) || 0,
             qty: Number(l.qty) || 0,
         })).filter(x => x.qty > 0);
 
-        if (linesPayload.length === 0) {
-            emitToast("error", "数量が0の商品のみです");
-            return;
-        }
+        if (linesPayload.length === 0) { emitToast("error", "数量が0の商品です"); return; }
 
         try {
             setIsPaying(true);
-            const res = await fetch("/api/stripe/checkout", {
+            const res = await fetch("/api/stripe/create-checkout-session", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                     storeId: g.storeId,
                     userEmail,
                     lines: linesPayload,
-                    // Stripe 決済画面に表示するため、受取予定時間を渡す
                     pickup: pickupLabel,
+                    // 決済完了後の戻り先（Embedded Checkout 用）
+                    // TODO(req v2): 成功ページでの決済検証/注文整合の拡張
+                    returnUrl: `${location.origin}/checkout/success`,
                 }),
             });
-            const json = await res.json();
-            if (!res.ok || !json?.id) {
-                throw new Error(json?.error || "Checkout セッション作成に失敗");
-            }
-            const stripeJs = await stripePromise; // Stripe | null（自動推論でOK）
-            if (json.url) { window.location.href = json.url as string; return; }
-            if (!stripeJs) throw new Error("Stripe が初期化できませんでした");
-            // @ts-expect-error @stripe/stripe-js のメソッドです（サーバSDKの Stripe ではありません）
-            const { error } = await stripeJs.redirectToCheckout({ sessionId: String(json.id) });
-            if (error) throw error;
+
+            // 404/HTMLエラー対策：常に text を一度読む
+            const text = await res.text();
+            if (!res.ok) throw new Error(text || "create-checkout-session 失敗");
+            const json = JSON.parse(text);
+            const cs: string | undefined = json?.client_secret;
+            if (!cs) throw new Error("client_secret がありません");
+            setCheckoutClientSecret(cs);
+            setIsCheckoutOpen(true);
         } catch (e: any) {
             console.error(e);
-            emitToast("error", "Stripe への遷移に失敗しました");
+            emitToast("error", e?.message || "Stripe セッション作成に失敗しました");
+        } finally {
             setIsPaying(false);
         }
-        // 依存は orderTarget ではなく targetKey を優先的に使う
-    }, [orderTarget, cartGroups, userEmail, setIsPaying, pickupByGroup]);
+    }, [orderTarget, cartGroups, userEmail, pickupByGroup]);
+
 
 
     // --- 開発用：この店舗の注文をすべてリセット（削除） ---
@@ -2863,10 +3030,11 @@ export default function UserPilotApp() {
                                                 {/* カートボタン（スクショ風） */}
                                                 <div className="mt-3 grid grid-cols-[1fr_auto] gap-2 items-center">
                                                     <button
-                                                        type="button"
-                                                        className="w-full px-3 py-2 rounded-xl border cursor-pointer disabled:opacity-40 bg-white"
-                                                        disabled={(qtyByShop[s.id] || 0) === 0}
-                                                        onClick={() => setTab("cart")}
+                                                        onClick={() => {
+                                                            setTab("cart");
+                                                            // カート描画後にこの店舗の先頭セクションへスクロール
+                                                            setPendingScrollShopId(s.id);
+                                                        }}
                                                     >
                                                         カートを見る（{qtyByShop[s.id] || 0}）
                                                     </button>
@@ -3053,161 +3221,171 @@ export default function UserPilotApp() {
                                 >カートを全て空にする</button>
                             </div>
                             {Object.keys(cartGroups).length === 0 && <p className="text-sm text-zinc-500">カートは空です</p>}
-                            {Object.keys(cartGroups).map(gkey => {
-                                const g = cartGroups[gkey];
-                                const sid = g.storeId;
-                                const storeName = shopsById.get(sid)?.name || sid;
-                                const groupQty = qtyByGroup[gkey] || 0;
+                            {(() => {
+                                const seen = new Set<string>(); // 店舗ごとの「最初の一個」を判定
+                                return Object.keys(cartGroups).map(gkey => {
+                                    const g = cartGroups[gkey];
+                                    const sid = g.storeId;
+                                    const storeName = shopsById.get(sid)?.name || sid;
+                                    const groupQty = qtyByGroup[gkey] || 0;
+                                    const isFirstOfStore = !seen.has(sid);
+                                    if (isFirstOfStore) seen.add(sid);
 
-                                return (
-                                    <div key={gkey} className="rounded-2xl border bg-white">
-                                        <div className="p-4 border-b flex items-center justify-between">
-                                            <div className="text-sm font-semibold">
-                                                {storeName}
-                                                {/* 同一店舗で複数セクションが並ぶ可能性があるが、UIは既存のまま */}
+                                    return (
+                                        <div
+                                            key={gkey}
+                                            ref={el => { if (isFirstOfStore) cartStoreAnchorRefs.current[sid] = el; }}
+                                            className="rounded-2xl border bg-white"
+                                        >
+
+                                            <div className="p-4 border-b flex items-center justify-between">
+                                                <div className="text-sm font-semibold">
+                                                    {storeName}
+                                                    {/* 同一店舗で複数セクションが並ぶ可能性があるが、UIは既存のまま */}
+                                                </div>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                        if (g.lines.length === 0) {
+                                                            emitToast("info", "このカートは空です");
+                                                            return;
+                                                        }
+                                                        if (confirm("このグループのカートを空にしますか？")) {
+                                                            // このグループに含まれる行だけを削除
+                                                            const ids = new Set(g.lines.map(l => `${l.shopId}:${l.item.id}`));
+                                                            setCart(cs => cs.filter(l => !ids.has(`${l.shopId}:${l.item.id}`)));
+                                                            emitToast("success", "カートを空にしました");
+                                                        }
+                                                    }}
+                                                    disabled={g.lines.length === 0}
+                                                    className="text-[11px] px-2 py-1 rounded border cursor-pointer disabled:opacity-40"
+                                                    aria-disabled={g.lines.length === 0}
+                                                    title="このグループのカートを空にする"
+                                                >
+                                                    カートを空にする
+                                                </button>
                                             </div>
-                                            <button
-                                                type="button"
-                                                onClick={() => {
-                                                    if (g.lines.length === 0) {
-                                                        emitToast("info", "このカートは空です");
-                                                        return;
-                                                    }
-                                                    if (confirm("このグループのカートを空にしますか？")) {
-                                                        // このグループに含まれる行だけを削除
-                                                        const ids = new Set(g.lines.map(l => `${l.shopId}:${l.item.id}`));
-                                                        setCart(cs => cs.filter(l => !ids.has(`${l.shopId}:${l.item.id}`)));
-                                                        emitToast("success", "カートを空にしました");
-                                                    }
-                                                }}
-                                                disabled={g.lines.length === 0}
-                                                className="text-[11px] px-2 py-1 rounded border cursor-pointer disabled:opacity-40"
-                                                aria-disabled={g.lines.length === 0}
-                                                title="このグループのカートを空にする"
-                                            >
-                                                カートを空にする
-                                            </button>
-                                        </div>
 
-                                        <div className="p-4 divide-y divide-zinc-200">
-                                            {(g.lines ?? [])
-                                                .filter(l => l && l.item && typeof l.qty === "number")
-                                                .map((l, i) => {
-                                                    const rmKey = `${sid}:${l.item.id}`;
-                                                    return (
-                                                        <ProductLine
-                                                            key={`${l.item?.id ?? "unknown"}-${i}`}
-                                                            sid={sid}
-                                                            it={l.item}
-                                                            noChrome
-                                                            onRemove={() => {
-                                                                setCart(cs => cs.filter(x => `${x.shopId}:${x.item.id}` !== rmKey));
-                                                                emitToast("success", "商品をカートから削除しました");
-                                                            }}
-                                                        />
-                                                    );
-                                                })}
-                                        </div>
-
-
-                                        {/* 受け取り予定時間（必須）: グループキーで保持 */}
-                                        <div className="px-4">
-                                            <div className="border-t mt-2 pt-3">
-                                                {(() => {
-                                                    // 既存ウィンドウを取得（グループ内商品の共通交差）
-                                                    const baseWin = cartGroups[gkey]?.window ?? null;
-
-                                                    // 「今 + LEAD_CUTOFF_MIN（20分）」を計算
-                                                    const nowMin = nowMinutesJST();
-                                                    const minStart = nowMin + LEAD_CUTOFF_MIN;
-
-                                                    // ★ 追加：10分単位に切り上げる関数（分→分）
-                                                    const ceilTo10 = (m: number) => Math.ceil(m / 10) * 10;
-
-                                                    // baseWin があるときだけ start を切り上げる
-                                                    let adjustedWin: { start: number; end: number } | null = null;
-                                                    if (baseWin) {
-                                                        // 元の開始とリードタイムを比較し、さらに「10分単位」に切り上げ
-                                                        const rawStart = Math.max(baseWin.start, minStart);
-                                                        const start = ceilTo10(rawStart);       // ← ここで 00/10/20… 始まりを保証
-                                                        const end = baseWin.end;
-                                                        adjustedWin = (start < end) ? { start, end } : null;
-                                                    }
-                                                    // 枠が全滅したかどうか（baseWin があるケースのみ判定する）
-                                                    const noSlot = (baseWin != null) && (adjustedWin == null);
-
-                                                    return (
-                                                        <>
-                                                            <PickupTimeSelector
-                                                                storeId={sid}
-                                                                value={pickupByGroup[gkey] ?? null}
-                                                                onSelect={(slot) => {
-                                                                    // 保険：外部入力や直打ち対策で 20分前チェックは継続
-                                                                    const startMinSel = Number(slot.start.slice(0, 2)) * 60 + Number(slot.start.slice(3, 5));
-                                                                    const nowMinSel = nowMinutesJST();
-                                                                    if (startMinSel < nowMinSel + LEAD_CUTOFF_MIN) {
-                                                                        emitToast("error", `直近枠は選べません（受け取り${LEAD_CUTOFF_MIN}分前まで）`);
-                                                                        return;
-                                                                    }
-                                                                    setPickupByGroup(prev => ({ ...prev, [gkey]: slot }));
+                                            <div className="p-4 divide-y divide-zinc-200">
+                                                {(g.lines ?? [])
+                                                    .filter(l => l && l.item && typeof l.qty === "number")
+                                                    .map((l, i) => {
+                                                        const rmKey = `${sid}:${l.item.id}`;
+                                                        return (
+                                                            <ProductLine
+                                                                key={`${l.item?.id ?? "unknown"}-${i}`}
+                                                                sid={sid}
+                                                                it={l.item}
+                                                                noChrome
+                                                                onRemove={() => {
+                                                                    setCart(cs => cs.filter(x => `${x.shopId}:${x.item.id}` !== rmKey));
+                                                                    emitToast("success", "商品をカートから削除しました");
                                                                 }}
-                                                                // ★ ポイント：10分切り上げ済みの開始時刻を渡す
-                                                                limitWindow={adjustedWin ?? undefined}
-                                                                stepOverride={(() => {
-                                                                    const info = (presetMap as Record<string, StorePresetInfo | undefined>)[sid];
-                                                                    const cur = (info?.current ?? 1) as number;
-                                                                    return info?.slots?.[cur]?.step ?? 10;
-                                                                })()}
                                                             />
-                                                            {noSlot && (
-                                                                <p className="mt-2 text-xs text-zinc-500">
-                                                                    直近枠は選択不可のため、現在は選べる時間帯がありません。時間をおいてお試しください。
-                                                                </p>
-                                                            )}
-                                                        </>
-                                                    );
-                                                })()}
-
-                                                {!pickupByGroup[gkey] && (
-                                                    <p className="mt-2 text-xs text-red-500">受け取り予定時間を選択してください。</p>
-                                                )}
+                                                        );
+                                                    })}
                                             </div>
-                                        </div>
 
 
-                                        <div className="px-4 pt-3">
-                                            <div className="flex items-center justify-between text-sm">
-                                                <span className="font-medium">合計金額</span>
-                                                <span className="tabular-nums font-bold text-lg">{currency(groupTotal(gkey))}</span>
+                                            {/* 受け取り予定時間（必須）: グループキーで保持 */}
+                                            <div className="px-4">
+                                                <div className="border-t mt-2 pt-3">
+                                                    {(() => {
+                                                        // 既存ウィンドウを取得（グループ内商品の共通交差）
+                                                        const baseWin = cartGroups[gkey]?.window ?? null;
+
+                                                        // 「今 + LEAD_CUTOFF_MIN（20分）」を計算
+                                                        const nowMin = nowMinutesJST();
+                                                        const minStart = nowMin + LEAD_CUTOFF_MIN;
+
+                                                        // ★ 追加：10分単位に切り上げる関数（分→分）
+                                                        const ceilTo10 = (m: number) => Math.ceil(m / 10) * 10;
+
+                                                        // baseWin があるときだけ start を切り上げる
+                                                        let adjustedWin: { start: number; end: number } | null = null;
+                                                        if (baseWin) {
+                                                            // 元の開始とリードタイムを比較し、さらに「10分単位」に切り上げ
+                                                            const rawStart = Math.max(baseWin.start, minStart);
+                                                            const start = ceilTo10(rawStart);       // ← ここで 00/10/20… 始まりを保証
+                                                            const end = baseWin.end;
+                                                            adjustedWin = (start < end) ? { start, end } : null;
+                                                        }
+                                                        // 枠が全滅したかどうか（baseWin があるケースのみ判定する）
+                                                        const noSlot = (baseWin != null) && (adjustedWin == null);
+
+                                                        return (
+                                                            <>
+                                                                <PickupTimeSelector
+                                                                    storeId={sid}
+                                                                    value={pickupByGroup[gkey] ?? null}
+                                                                    onSelect={(slot) => {
+                                                                        // 保険：外部入力や直打ち対策で 20分前チェックは継続
+                                                                        const startMinSel = Number(slot.start.slice(0, 2)) * 60 + Number(slot.start.slice(3, 5));
+                                                                        const nowMinSel = nowMinutesJST();
+                                                                        if (startMinSel < nowMinSel + LEAD_CUTOFF_MIN) {
+                                                                            emitToast("error", `直近枠は選べません（受け取り${LEAD_CUTOFF_MIN}分前まで）`);
+                                                                            return;
+                                                                        }
+                                                                        setPickupByGroup(prev => ({ ...prev, [gkey]: slot }));
+                                                                    }}
+                                                                    // ★ ポイント：10分切り上げ済みの開始時刻を渡す
+                                                                    limitWindow={adjustedWin ?? undefined}
+                                                                    stepOverride={(() => {
+                                                                        const info = (presetMap as Record<string, StorePresetInfo | undefined>)[sid];
+                                                                        const cur = (info?.current ?? 1) as number;
+                                                                        return info?.slots?.[cur]?.step ?? 10;
+                                                                    })()}
+                                                                />
+                                                                {noSlot && (
+                                                                    <p className="mt-2 text-xs text-zinc-500">
+                                                                        直近枠は選択不可のため、現在は選べる時間帯がありません。時間をおいてお試しください。
+                                                                    </p>
+                                                                )}
+                                                            </>
+                                                        );
+                                                    })()}
+
+                                                    {!pickupByGroup[gkey] && (
+                                                        <p className="mt-2 text-xs text-red-500">受け取り予定時間を選択してください。</p>
+                                                    )}
+                                                </div>
                                             </div>
-                                        </div>
 
-                                        <div className="p-4 border-t mt-2">
-                                            <button
-                                                type="button"
-                                                onClick={() => {
-                                                    const sel = pickupByGroup[gkey];
-                                                    if (!sel) return;
-                                                    const startMin = Number(sel.start.slice(0, 2)) * 60 + Number(sel.start.slice(3, 5));
-                                                    const nowMin = nowMinutesJST();
-                                                    if (startMin < nowMin + LEAD_CUTOFF_MIN) {
-                                                        alert(`受け取り開始まで${Math.max(0, startMin - nowMin)}分です。直近枠は選べません（${LEAD_CUTOFF_MIN}分前まで）。`);
-                                                        return;
-                                                    }
-                                                    // ★ 注文ターゲットは "グループキー"
-                                                    startStripeCheckout(gkey);
-                                                }}
-                                                disabled={!pickupByGroup[gkey]}
-                                                className={`w-full px-3 py-2 rounded text-white cursor-pointer
+
+                                            <div className="px-4 pt-3">
+                                                <div className="flex items-center justify-between text-sm">
+                                                    <span className="font-medium">合計金額</span>
+                                                    <span className="tabular-nums font-bold text-lg">{currency(groupTotal(gkey))}</span>
+                                                </div>
+                                            </div>
+
+                                            <div className="p-4 border-t mt-2">
+                                                <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                        const sel = pickupByGroup[gkey];
+                                                        if (!sel) return;
+                                                        const startMin = Number(sel.start.slice(0, 2)) * 60 + Number(sel.start.slice(3, 5));
+                                                        const nowMin = nowMinutesJST();
+                                                        if (startMin < nowMin + LEAD_CUTOFF_MIN) {
+                                                            alert(`受け取り開始まで${Math.max(0, startMin - nowMin)}分です。直近枠は選べません（${LEAD_CUTOFF_MIN}分前まで）。`);
+                                                            return;
+                                                        }
+                                                        // ★ 注文ターゲットは "グループキー"
+                                                        startStripeCheckout(gkey);
+                                                    }}
+                                                    disabled={!pickupByGroup[gkey]}
+                                                    className={`w-full px-3 py-2 rounded text-white cursor-pointer
             ${!pickupByGroup[gkey] ? "bg-zinc-300 cursor-not-allowed" : "bg-zinc-900 hover:bg-zinc-800"}`}
-                                                aria-disabled={!pickupByGroup[gkey]}
-                                            >
-                                                注文画面へ
-                                            </button>
+                                                    aria-disabled={!pickupByGroup[gkey]}
+                                                >
+                                                    注文画面へ
+                                                </button>
+                                            </div>
                                         </div>
-                                    </div>
-                                );
-                            })}
+                                    );
+                                });
+                            })()}
 
                         </section>
                     )}
@@ -3323,20 +3501,42 @@ export default function UserPilotApp() {
                                             );
                                         })()}
 
-                                        <div className="p-4 space-y-2">
-                                            {(g.lines ?? [])
-                                                .filter(l => l && l.item && typeof l.qty === "number")
-                                                .map((l, i) => (
-                                                    <div key={`${l.item?.id ?? "unknown"}-${i}`} className="text-sm flex items-start justify-between">
-                                                        <div>
-                                                            <div className="font-medium">{l.item?.name ?? "商品"} × {l.qty}</div>
-                                                            <div className="text-xs text-zinc-500">受取 {l.item?.pickup ?? "—"} / 注意 {l.item?.note || "-"}</div>
-                                                        </div>
-                                                        <div className="tabular-nums">{currency((l.item?.price ?? 0) * l.qty)}</div>
-                                                    </div>
-                                                ))}
+                                        <div className="p-4 border-t space-y-3">
+                                            {/* 行：支払い方法（スクショ風） */}
+                                            <div className="grid grid-cols-[auto_1fr_auto] items-center gap-3">
+                                                <div className="text-sm font-medium">クレジット</div>
+                                                <div className="text-sm text-zinc-500 truncate">
+                                                    {selectedPayLabel ? selectedPayLabel : "選択されていません"}
+                                                </div>
+                                                <button
+                                                    type="button"
+                                                    className="text-[#6b0f0f] text-sm underline decoration-1 underline-offset-2"
+                                                    onClick={() => setIsPayMethodOpen(true)}
+                                                >
+                                                    {selectedPayLabel ? "変更する" : "選択する"}
+                                                </button>
+                                            </div>
 
+                                            <p className="text-xs text-zinc-500">
+                                                テスト: 4242 4242 4242 4242 は成功 / 4000 0000 0000 0002 は失敗として扱います。
+                                            </p>
+
+                                            {/* 支払ボタン：カード選択が済むまで無効 */}
+                                            <button
+                                                type="button"
+                                                onClick={() => startStripeCheckout()}
+                                                disabled={
+                                                    isPaying ||
+                                                    !selectedPayLabel ||
+                                                    ((cartGroups[orderTarget]?.lines.length ?? 0) === 0)
+                                                }
+                                                className={`w-full px-3 py-2 rounded border text-white
+      ${(!selectedPayLabel || isPaying) ? "bg-zinc-300 cursor-not-allowed" : "bg-zinc-900 hover:bg-zinc-800"}`}
+                                            >
+                                                Stripe で支払う（デモ）
+                                            </button>
                                         </div>
+
                                         <div className="p-4 border-t space-y-2">
                                             {/* 支払い方法 */}
                                             <div className="grid grid-cols-2 gap-2" role="group" aria-label="支払い方法">
@@ -3430,6 +3630,26 @@ export default function UserPilotApp() {
 
                 <ToastBar toast={toast} onClose={() => setToast(null)} />
 
+                {/* ▼▼ Stripe 決済用ボトムシート：client_secret が取れたら表示 ▼▼ */}
+                <BottomSheet
+                    open={isCheckoutOpen && !!checkoutClientSecret}
+                    title="お支払い（Stripe）"
+                    onClose={() => { setIsCheckoutOpen(false); setCheckoutClientSecret(null); }}
+                >
+                    {checkoutClientSecret && (
+                        <EmbeddedCheckoutProvider
+                            stripe={stripePromise}
+                            options={{ clientSecret: checkoutClientSecret }}
+                        >
+                            {/* EmbeddedCheckout 自体が注文詳細＋決済UIをすべて描画します */}
+                            <div className="px-0">
+                                <EmbeddedCheckout />
+                            </div>
+                        </EmbeddedCheckoutProvider>
+                    )}
+                </BottomSheet>
+
+                {/* ▲▲ ここまで ▲▲ */}
 
 
                 {/* 商品詳細モーダル */}
@@ -3562,9 +3782,15 @@ export default function UserPilotApp() {
                                             <QtyChip sid={detail.shopId} it={detail.item} />
                                         </div>
                                     </div>
-                                    <div className="grid grid-cols-2 gap-2 pt-1">
-                                        <button type="button" className="px-3 py-2 rounded-xl border" onClick={() => { setAllergyOpen(false); setDetail(null); }}>閉じる</button>
-                                        <button type="button" className="px-3 py-2 rounded-xl border bg-zinc-900 text-white" onClick={() => { addToCart(detail.shopId, detail.item); emitToast('success', 'カートに追加しました'); setDetail(null); }}>カートに追加</button>
+                                    {/* モーダルのフッター：閉じるのみ（「カートに追加」は削除） */}
+                                    <div className="pt-1">
+                                        <button
+                                            type="button"
+                                            className="w-full px-3 py-2 rounded-xl border"
+                                            onClick={() => { setAllergyOpen(false); setDetail(null); }}
+                                        >
+                                            閉じる
+                                        </button>
                                     </div>
                                 </div>
 
@@ -3597,9 +3823,180 @@ export default function UserPilotApp() {
                     </div>
                 )}
             </div >
+
+            {/* シート①：支払い方法の選択 */}
+            {
+                isPayMethodOpen && (
+                    <BottomSheet
+                        open
+                        title="支払い方法を選択"
+                        onClose={() => setIsPayMethodOpen(false)}
+                    >
+                        <div className="px-4 pb-4 space-y-2">
+                            <button
+                                type="button"
+                                className="w-full text-left px-3 py-3 rounded-xl border hover:bg-zinc-50"
+                                onClick={() => {
+                                    setPaymentMethod('card');
+                                    setIsPayMethodOpen(false);
+                                    setIsCardEntryOpen(true); // 次：カード入力へ
+                                }}
+                            >
+                                <div className="font-medium">クレジットカード</div>
+                                <div className="text-xs text-zinc-500">Visa / Mastercard（テスト番号可）</div>
+                            </button>
+                        </div>
+                    </BottomSheet>
+                )
+            }
+
+            {/* シート②：カード番号入力（テスト） */}
+            {
+                isCardEntryOpen && (
+                    <BottomSheet
+                        open
+                        title="カード情報の入力（テスト）"
+                        onClose={() => setIsCardEntryOpen(false)}
+                    >
+                        <div className="px-4 pb-4 space-y-3">
+                            {/* ① まずは使用するカードを選択（スクショの黄色枠イメージ） */}
+                            <div className="space-y-2">
+                                <div className="text-xs text-zinc-500">お支払いに使うカードを選択してください。</div>
+                                {savedCards.map((c) => (
+                                    <div key={c.id} className="flex items-center justify-between rounded-xl border p-3 bg-white">
+                                        <div className="min-w-0">
+                                            <div className="text-sm font-medium truncate">{c.brand} •••• {c.last4}</div>
+                                            <div className="text-[11px] text-zinc-500">保存済みカード</div>
+                                        </div>
+                                        <button
+                                            type="button"
+                                            className="px-3 py-1.5 rounded-lg border bg-zinc-900 text-white hover:bg-zinc-800"
+                                            onClick={() => {
+                                                setSelectedPayLabel(`${c.brand}(${c.last4})`);
+                                                setPaymentMethod('card');
+                                                setIsCardEntryOpen(false);       // このシートを閉じる
+                                                setIsPayMethodOpen(false);       // 前段の選択シートも閉じる
+                                                emitToast("success", "カードを選択しました");
+                                            }}
+                                        >
+                                            選択する
+                                        </button>
+                                    </div>
+                                ))}
+
+                                <button
+                                    type="button"
+                                    className="w-full text-center text-sm underline decoration-1 underline-offset-2 text-[#6b0f0f]"
+                                    onClick={() => setShowCardFullForm(v => !v)}
+                                >
+                                    {showCardFullForm ? "保存済みカードの一覧に戻る" : "別のカードを使う"}
+                                </button>
+                            </div>
+
+                            {/* ② 「別のカードを使う」を押したときだけ、従来の（テスト用）入力フォームを表示 */}
+                            {showCardFullForm && (
+                                <div className="space-y-2">
+                                    <div className="text-xs text-zinc-500">テスト番号：4242 4242 4242 4242 は成功 / 4000 0000 0000 0002 は失敗</div>
+
+                                    {(() => {
+                                        const d = cardDigits.replace(/\D/g, "").slice(0, 16);
+                                        const formatted = (d.match(/.{1,4}/g)?.join(" ") ?? d);
+                                        const len = d.length;
+                                        return (
+                                            <>
+                                                <input
+                                                    className="w-full px-3 py-2 rounded border font-mono tracking-widest"
+                                                    placeholder="4242 4242 4242 4242"
+                                                    value={formatted}
+                                                    onChange={(e) => {
+                                                        const nd = e.target.value.replace(/\D/g, "").slice(0, 16);
+                                                        setCardDigits(nd);
+                                                        updateCardLabel(nd); // ← 既存のブランド表示更新（Visa(4242) など）
+                                                    }}
+                                                    inputMode="numeric"
+                                                    maxLength={19}
+                                                    autoComplete="cc-number"
+                                                    aria-label="カード番号（テスト）"
+                                                />
+                                                <div className="flex items-center justify-between text-[11px] text-zinc-500">
+                                                    <span>{len}/16 桁</span>
+                                                    <span>4桁ごとにスペース</span>
+                                                </div>
+                                                <div className="h-1 bg-zinc-200 rounded">
+                                                    <div className="h-1 bg-zinc-900 rounded" style={{ width: `${(len / 16) * 100}%` }} />
+                                                </div>
+
+                                                <div className="grid grid-cols-2 gap-2 pt-1">
+                                                    <button
+                                                        type="button"
+                                                        className="px-3 py-2 rounded-xl border"
+                                                        onClick={() => setIsCardEntryOpen(false)}
+                                                    >
+                                                        閉じる
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        className="px-3 py-2 rounded-xl border bg-zinc-900 text-white hover:bg-zinc-800"
+                                                        onClick={() => {
+                                                            // 入力値からラベルを更新して採用（4242なら Visa(4242) など）
+                                                            const d4 = (cardDigits.match(/\d{4}$/)?.[0]) ?? "";
+                                                            if (d4) setSelectedPayLabel(`${payBrand.replace(/TEST/, 'クレジットカード')}(${d4})`);
+                                                            setPaymentMethod('card');
+                                                            setIsCardEntryOpen(false);
+                                                            setIsPayMethodOpen(false);
+                                                            emitToast("success", "カードを選択しました");
+                                                        }}
+                                                        disabled={cardDigits.replace(/\D/g, "").length < 12}
+                                                    >
+                                                        このカードを使う
+                                                    </button>
+                                                </div>
+                                            </>
+                                        );
+                                    })()}
+                                </div>
+                            )}
+                        </div>
+                    </BottomSheet>
+                )
+            }
+
+
         </MinimalErrorBoundary >
     );
 }
+
+function PayWithElementButton({ onSuccess, onError }: { onSuccess: () => void; onError: (msg: string) => void }) {
+    const stripe = useStripe();
+    const elements = useElements();
+    const [loading, setLoading] = useState(false);
+
+    return (
+        <button
+            type="button"
+            className={`w-full px-3 py-2 rounded-xl border text-white ${loading ? "bg-zinc-300" : "bg-zinc-900 hover:bg-zinc-800"}`}
+            disabled={!stripe || !elements || loading}
+            onClick={async () => {
+                if (!stripe || !elements) return;
+                try {
+                    setLoading(true);
+                    const { error } = await stripe.confirmPayment({ elements, redirect: "if_required" });
+                    if (error) throw new Error(error.message || "決済に失敗しました");
+                    onSuccess();
+                } catch (e: any) {
+                    onError(e?.message || "決済に失敗しました");
+                } finally {
+                    setLoading(false);
+                }
+            }}
+        >
+            このカードで支払う
+        </button>
+    );
+}
+
+
+
 
 function TinyQR({ seed }: { seed: string }) {
     const size = 21, dot = 6, pad = 4; let h = Array.from(seed).reduce((a, c) => ((a << 5) - a) + c.charCodeAt(0), 0) >>> 0; const bits: number[] = [];

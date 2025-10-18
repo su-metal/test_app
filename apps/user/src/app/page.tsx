@@ -4,7 +4,8 @@ import { createClient, type RealtimeChannel } from "@supabase/supabase-js";
 import type { SupabaseClient } from '@supabase/supabase-js';
 // 追加：受取時間の表示コンポーネント
 import PickupTimeSelector, { type PickupSlot } from "@/components/PickupTimeSelector";
-import { EmbeddedCheckoutProvider, EmbeddedCheckout } from "@stripe/react-stripe-js";
+import { EmbeddedCheckoutProvider, EmbeddedCheckout, useStripe, useElements, PaymentElement } from "@stripe/react-stripe-js";
+
 
 
 // Stripe（ブラウザ用 SDK）
@@ -532,6 +533,10 @@ function ToastBar({ toast, onClose }: { toast: ToastPayload | null; onClose: () 
         </div>
     );
 }
+
+
+
+
 
 // クリップボード（クリック起点で呼ぶ。失敗時はフォールバック）
 async function safeCopy(text: string) {
@@ -1123,7 +1128,7 @@ function BottomSheet({
 
 export default function UserPilotApp() {
 
-    const [embeddedClientSecret, setEmbeddedClientSecret] = useState<string | null>(null);
+    const [checkoutClientSecret, setCheckoutClientSecret] = useState<string | null>(null);
     const [isCheckoutOpen, setIsCheckoutOpen] = useState(false);
 
     // コンポーネント“内”で再定義（①で削除したものの正しい版）
@@ -1131,8 +1136,6 @@ export default function UserPilotApp() {
         const v = validateTestCard(digits);
         setSelectedPayLabel(v.ok ? ((v as any).brand || "クレジットカード") : null);
     }, []);
-
-
 
     // 永続化
     const [shops, setShops] = useLocalStorageState<Shop[]>(K.shops, seedShops);
@@ -2473,16 +2476,13 @@ export default function UserPilotApp() {
     const toOrder = (sid: string) => { setOrderTarget(sid); setTab("order"); };
 
     // 受け取りグループ(gkey)をStripe Checkoutへ
+    // 注文画面へ → Stripe PaymentElement を開く
     const startStripeCheckout = useCallback(async (targetKey?: string) => {
         const key = targetKey ?? orderTarget;
         if (!key) return;
         const g = cartGroups[key];
-        if (!g || g.lines.length === 0) {
-            emitToast("error", "カートが空です");
-            return;
-        }
+        if (!g || g.lines.length === 0) { emitToast("error", "カートが空です"); return; }
 
-        // カートで選択された受取時間（グループ単位）
         const sel = pickupByGroup[key] ?? null;
         const pickupLabel = sel ? `${sel.start}〜${sel.end}` : "";
 
@@ -2493,32 +2493,28 @@ export default function UserPilotApp() {
             qty: Number(l.qty) || 0,
         })).filter(x => x.qty > 0);
 
-        if (linesPayload.length === 0) {
-            emitToast("error", "数量が0の商品のみです");
-            return;
-        }
+        if (linesPayload.length === 0) { emitToast("error", "数量が0の商品です"); return; }
 
         try {
             setIsPaying(true);
-            const res = await fetch("/api/stripe/checkout", {
+            const res = await fetch("/api/stripe/create-checkout-session", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                     storeId: g.storeId,
                     userEmail,
                     lines: linesPayload,
-                    // 互換目的で両方送る（あなたのサーバ実装どちらでも拾えるように）
                     pickup: pickupLabel,
-                    pickupLabel,
                 }),
             });
-            const json = await res.json();
-            if (!res.ok) throw new Error(json?.error || "Checkout セッション作成に失敗");
 
-            // ← Embedded：URLへリダイレクトせず、client_secret を受け取って埋め込み表示
-            const cs = json?.client_secret;
-            if (!cs) throw new Error("client_secret が取得できませんでした");
-            setEmbeddedClientSecret(cs);
+            // 404/HTMLエラー対策：常に text を一度読む
+            const text = await res.text();
+            if (!res.ok) throw new Error(text || "create-checkout-session 失敗");
+            const json = JSON.parse(text);
+            const cs: string | undefined = json?.client_secret;
+            if (!cs) throw new Error("client_secret がありません");
+            setCheckoutClientSecret(cs);
             setIsCheckoutOpen(true);
         } catch (e: any) {
             console.error(e);
@@ -2526,7 +2522,7 @@ export default function UserPilotApp() {
         } finally {
             setIsPaying(false);
         }
-    }, [orderTarget, cartGroups, userEmail, pickupByGroup, setIsPaying]);
+    }, [orderTarget, cartGroups, userEmail, pickupByGroup]);
 
 
 
@@ -3575,6 +3571,26 @@ export default function UserPilotApp() {
 
                 <ToastBar toast={toast} onClose={() => setToast(null)} />
 
+                {/* ▼▼ Stripe 決済用ボトムシート：client_secret が取れたら表示 ▼▼ */}
+                <BottomSheet
+                    open={isCheckoutOpen && !!checkoutClientSecret}
+                    title="お支払い（Stripe）"
+                    onClose={() => { setIsCheckoutOpen(false); setCheckoutClientSecret(null); }}
+                >
+                    {checkoutClientSecret && (
+                        <EmbeddedCheckoutProvider
+                            stripe={stripePromise}
+                            options={{ clientSecret: checkoutClientSecret }}
+                        >
+                            {/* EmbeddedCheckout 自体が注文詳細＋決済UIをすべて描画します */}
+                            <div className="px-0">
+                                <EmbeddedCheckout />
+                            </div>
+                        </EmbeddedCheckoutProvider>
+                    )}
+                </BottomSheet>
+
+                {/* ▲▲ ここまで ▲▲ */}
 
 
                 {/* 商品詳細モーダル */}
@@ -3836,28 +3852,41 @@ export default function UserPilotApp() {
                 </BottomSheet>
             )}
 
-
-            {isCheckoutOpen && embeddedClientSecret && (
-                <BottomSheet
-                    open={true}
-                    title="お支払い"
-                    onClose={() => setIsCheckoutOpen(false)}
-                >
-                    <EmbeddedCheckoutProvider
-                        stripe={stripePromise}
-                        options={{ clientSecret: embeddedClientSecret }}
-                    >
-                        {/* Stripe 推奨の最小高さ。ボトムシート内にそのまま置く */}
-                        <div id="checkout" className="min-h-[560px]">
-                            <EmbeddedCheckout />
-                        </div>
-                    </EmbeddedCheckoutProvider>
-                </BottomSheet>
-            )}
-
         </MinimalErrorBoundary >
     );
 }
+
+function PayWithElementButton({ onSuccess, onError }: { onSuccess: () => void; onError: (msg: string) => void }) {
+    const stripe = useStripe();
+    const elements = useElements();
+    const [loading, setLoading] = useState(false);
+
+    return (
+        <button
+            type="button"
+            className={`w-full px-3 py-2 rounded-xl border text-white ${loading ? "bg-zinc-300" : "bg-zinc-900 hover:bg-zinc-800"}`}
+            disabled={!stripe || !elements || loading}
+            onClick={async () => {
+                if (!stripe || !elements) return;
+                try {
+                    setLoading(true);
+                    const { error } = await stripe.confirmPayment({ elements, redirect: "if_required" });
+                    if (error) throw new Error(error.message || "決済に失敗しました");
+                    onSuccess();
+                } catch (e: any) {
+                    onError(e?.message || "決済に失敗しました");
+                } finally {
+                    setLoading(false);
+                }
+            }}
+        >
+            このカードで支払う
+        </button>
+    );
+}
+
+
+
 
 function TinyQR({ seed }: { seed: string }) {
     const size = 21, dot = 6, pad = 4; let h = Array.from(seed).reduce((a, c) => ((a << 5) - a) + c.charCodeAt(0), 0) >>> 0; const bits: number[] = [];

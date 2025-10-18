@@ -2334,9 +2334,10 @@ export default function UserPilotApp() {
     const toOrder = (sid: string) => { setOrderTarget(sid); setTab("order"); };
 
     // 受け取りグループ(gkey)をStripe Checkoutへ
-    const startStripeCheckout = useCallback(async () => {
-        if (!orderTarget) return;
-        const g = cartGroups[orderTarget];
+    const startStripeCheckout = useCallback(async (targetKey?: string) => {
+        const key = targetKey ?? orderTarget;
+        if (!key) return;
+        const g = cartGroups[key];
         if (!g || g.lines.length === 0) {
             emitToast("error", "カートが空です");
             return;
@@ -2374,15 +2375,15 @@ export default function UserPilotApp() {
             if (!stripeJs) throw new Error("Stripe が初期化できませんでした");
             // @ts-expect-error @stripe/stripe-js のメソッドです（サーバSDKの Stripe ではありません）
             const { error } = await stripeJs.redirectToCheckout({ sessionId: String(json.id) });
-
             if (error) throw error;
-
         } catch (e: any) {
             console.error(e);
             emitToast("error", "Stripe への遷移に失敗しました");
             setIsPaying(false);
         }
+        // 依存は orderTarget ではなく targetKey を優先的に使う
     }, [orderTarget, cartGroups, userEmail, setIsPaying]);
+
 
     // --- 開発用：この店舗の注文をすべてリセット（削除） ---
     const devResetOrders = useCallback(async () => {
@@ -3159,7 +3160,7 @@ export default function UserPilotApp() {
                                                         return;
                                                     }
                                                     // ★ 注文ターゲットは "グループキー"
-                                                    toOrder(gkey);
+                                                    startStripeCheckout(gkey);
                                                 }}
                                                 disabled={!pickupByGroup[gkey]}
                                                 className={`w-full px-3 py-2 rounded text-white cursor-pointer
@@ -3360,7 +3361,7 @@ export default function UserPilotApp() {
                                             })()}
                                             <button
                                                 type="button"
-                                                onClick={startStripeCheckout}
+                                                onClick={() => startStripeCheckout()}
                                                 disabled={isPaying || ((cartGroups[orderTarget]?.lines.length ?? 0) === 0)}
                                                 className="w-full px-3 py-2 rounded border cursor-pointer disabled:opacity-40 bg-zinc-900 text-white"
                                             >

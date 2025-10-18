@@ -2116,7 +2116,15 @@ export default function UserPilotApp() {
         const target = bestLatLngForDistance(s as Shop);
         if (!myPos || !target) return { icon: "🚶", text: "—" };
         const rk = routeKmByStore[s.id as string]; // km（OSRM）
-        if (rk == null) return { icon: "🚶", text: "距離算定中" };
+        if (rk == null) {
+            // OSRM の結果が未取得/失敗の場合は概算（直線距離ベース）で即時表示
+            const approx = haversineKm(myPos, target);
+            if (!Number.isFinite(approx)) return { icon: "🚶", text: "—" };
+            const walkMin = Math.max(1, Math.ceil(approx * 15));
+            if (walkMin <= 15) return { icon: "🚶", text: `徒歩約${walkMin}分` };
+            const carMin = Math.max(1, Math.ceil((approx * 60) / 35));
+            return { icon: "🚗", text: `所要約${carMin}分` };
+        }
 
         // 徒歩（4km/h）= 1kmあたり15分
         const walkMin = Math.max(1, Math.ceil(rk * 15));
@@ -2134,7 +2142,9 @@ export default function UserPilotApp() {
         if (!myPos || !target) return '—';
         const rk = routeKmByStore[s.id as string];
         if (rk != null) return `${rk.toFixed(2)} km`;
-        return '距離算定中';
+        // ルート距離がまだ無い場合は直線距離の概算を表示（UX 向上）
+        const approx = haversineKm(myPos, target);
+        return Number.isFinite(approx) ? `約${approx.toFixed(2)} km` : '—';
     }, [myPos, routeKmByStore]);
 
     // myPos と候補店舗に基づき、OSRM で徒歩ルート距離を取得（並列・キャッシュ即時反映）
@@ -2161,6 +2171,7 @@ export default function UserPilotApp() {
         if (toFillFromCache.length > 0) {
             setRouteKmByStore(prev => ({ ...prev, ...Object.fromEntries(toFillFromCache) }));
         }
+
 
         // 3) まだ欠けているものだけ取得（上限: 20件／回）
         const pending = targets
@@ -3030,6 +3041,14 @@ export default function UserPilotApp() {
                                                 {/* カートボタン（スクショ風） */}
                                                 <div className="mt-3 grid grid-cols-[1fr_auto] gap-2 items-center">
                                                     <button
+                                                        className="
+     inline-flex items-center justify-center
+     px-3 py-2 rounded-xl border
+     bg-[var(--cart-btn-bg)] text-[var(--cart-btn-fg)] border-[var(--cart-btn-border)]
+     
+     disabled:opacity-40 disabled:cursor-not-allowed
+     transition-colors
+   "
                                                         onClick={() => {
                                                             setTab("cart");
                                                             // カート描画後にこの店舗の先頭セクションへスクロール

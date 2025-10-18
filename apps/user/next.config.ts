@@ -39,6 +39,8 @@ const buildCSP = () => {
       "wss://*.supabase.co",
       "https://maps.googleapis.com",
       "https://maps.gstatic.com",
+      // ルート距離取得（OSRM）。これが無いと fetch がブロックされ「距離算定中」のままになります。
+      "https://router.project-osrm.org",
     ].join(" "),
 
     // クリックジャッキング対策

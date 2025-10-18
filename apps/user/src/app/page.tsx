@@ -1128,6 +1128,19 @@ function BottomSheet({
 
 export default function UserPilotApp() {
 
+    // 保存済みカードの一覧（必要に応じてAPI連携に差し替え可：いまはデモ用）
+    const savedCards = useMemo(
+        () => [
+            { id: "card_4242", brand: "Visa", last4: "4242" },
+            { id: "card_1881", brand: "Mastercard", last4: "1881" },
+        ],
+        []
+    );
+
+    // 「別のカードを使う」クリックで従来フォームを開くトグル
+    const [showCardFullForm, setShowCardFullForm] = useState(false);
+
+
     const [checkoutClientSecret, setCheckoutClientSecret] = useState<string | null>(null);
     const [isCheckoutOpen, setIsCheckoutOpen] = useState(false);
 
@@ -2505,6 +2518,9 @@ export default function UserPilotApp() {
                     userEmail,
                     lines: linesPayload,
                     pickup: pickupLabel,
+                    // 決済完了後の戻り先（Embedded Checkout 用）
+                    // TODO(req v2): 成功ページでの決済検証/注文整合の拡張
+                    returnUrl: `${location.origin}/checkout/success`,
                 }),
             });
 
@@ -3790,67 +3806,108 @@ export default function UserPilotApp() {
                     title="カード情報の入力（テスト）"
                     onClose={() => setIsCardEntryOpen(false)}
                 >
-                    <div className="px-4 pb-4 space-y-2">
-                        {(() => {
-                            const d = cardDigits.replace(/\D/g, "").slice(0, 16);
-                            const formatted = (d.match(/.{1,4}/g)?.join(" ") ?? d);
-                            const len = d.length;
-                            const v = validateTestCard(d);
-                            const ok = !!v.ok;
-
-                            return (
-                                <>
-                                    <input
-                                        className="w-full px-3 py-2 rounded border font-mono tracking-widest"
-                                        placeholder="4242 4242 4242 4242"
-                                        value={formatted}
-                                        onChange={(e) => {
-                                            const nd = e.target.value.replace(/\D/g, "").slice(0, 16);
-                                            setCardDigits(nd);
-                                            updateCardLabel(nd);  // ← 行ラベルを即更新（Visa(4242) など）
+                    <div className="px-4 pb-4 space-y-3">
+                        {/* ① まずは使用するカードを選択（スクショの黄色枠イメージ） */}
+                        <div className="space-y-2">
+                            <div className="text-xs text-zinc-500">お支払いに使うカードを選択してください。</div>
+                            {savedCards.map((c) => (
+                                <div key={c.id} className="flex items-center justify-between rounded-xl border p-3 bg-white">
+                                    <div className="min-w-0">
+                                        <div className="text-sm font-medium truncate">{c.brand} •••• {c.last4}</div>
+                                        <div className="text-[11px] text-zinc-500">保存済みカード</div>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        className="px-3 py-1.5 rounded-lg border bg-zinc-900 text-white hover:bg-zinc-800"
+                                        onClick={() => {
+                                            setSelectedPayLabel(`${c.brand}(${c.last4})`);
+                                            setPaymentMethod('card');
+                                            setIsCardEntryOpen(false);       // このシートを閉じる
+                                            setIsPayMethodOpen(false);       // 前段の選択シートも閉じる
+                                            emitToast("success", "カードを選択しました");
                                         }}
-                                        inputMode="numeric"
-                                        maxLength={19}
-                                        autoComplete="cc-number"
-                                        aria-label="カード番号（テスト）"
-                                    />
-                                    <div className="flex items-center justify-between text-[11px] text-zinc-500">
-                                        <span>{len}/16 桁</span><span>4桁ごとにスペース</span>
-                                    </div>
-                                    <div className="h-1 bg-zinc-200 rounded">
-                                        <div className="h-1 bg-zinc-900 rounded" style={{ width: `${(len / 16) * 100}%` }} />
-                                    </div>
+                                    >
+                                        選択する
+                                    </button>
+                                </div>
+                            ))}
 
-                                    {!ok && len > 0 && (
-                                        <div className="text-xs text-red-600">{(v as any).msg}</div>
-                                    )}
+                            <button
+                                type="button"
+                                className="w-full text-center text-sm underline decoration-1 underline-offset-2 text-[#6b0f0f]"
+                                onClick={() => setShowCardFullForm(v => !v)}
+                            >
+                                {showCardFullForm ? "保存済みカードの一覧に戻る" : "別のカードを使う"}
+                            </button>
+                        </div>
 
-                                    <div className="pt-2 grid grid-cols-2 gap-2">
-                                        <button
-                                            type="button"
-                                            className="px-3 py-2 rounded-xl border"
-                                            onClick={() => setIsCardEntryOpen(false)}
-                                        >
-                                            キャンセル
-                                        </button>
-                                        <button
-                                            type="button"
-                                            className={`px-3 py-2 rounded-xl border text-white ${ok ? "bg-zinc-900" : "bg-zinc-300 cursor-not-allowed"}`}
-                                            disabled={!ok}
-                                            onClick={() => {
-                                                // ラベルは updateCardLabel ですでに更新済み
-                                                setIsCardEntryOpen(false);
-                                            }}
-                                        >
-                                            このカードを使う
-                                        </button>
-                                    </div>
-                                </>
-                            );
-                        })()}
+                        {/* ② 「別のカードを使う」を押したときだけ、従来の（テスト用）入力フォームを表示 */}
+                        {showCardFullForm && (
+                            <div className="space-y-2">
+                                <div className="text-xs text-zinc-500">テスト番号：4242 4242 4242 4242 は成功 / 4000 0000 0000 0002 は失敗</div>
+
+                                {(() => {
+                                    const d = cardDigits.replace(/\D/g, "").slice(0, 16);
+                                    const formatted = (d.match(/.{1,4}/g)?.join(" ") ?? d);
+                                    const len = d.length;
+                                    return (
+                                        <>
+                                            <input
+                                                className="w-full px-3 py-2 rounded border font-mono tracking-widest"
+                                                placeholder="4242 4242 4242 4242"
+                                                value={formatted}
+                                                onChange={(e) => {
+                                                    const nd = e.target.value.replace(/\D/g, "").slice(0, 16);
+                                                    setCardDigits(nd);
+                                                    updateCardLabel(nd); // ← 既存のブランド表示更新（Visa(4242) など）
+                                                }}
+                                                inputMode="numeric"
+                                                maxLength={19}
+                                                autoComplete="cc-number"
+                                                aria-label="カード番号（テスト）"
+                                            />
+                                            <div className="flex items-center justify-between text-[11px] text-zinc-500">
+                                                <span>{len}/16 桁</span>
+                                                <span>4桁ごとにスペース</span>
+                                            </div>
+                                            <div className="h-1 bg-zinc-200 rounded">
+                                                <div className="h-1 bg-zinc-900 rounded" style={{ width: `${(len / 16) * 100}%` }} />
+                                            </div>
+
+                                            <div className="grid grid-cols-2 gap-2 pt-1">
+                                                <button
+                                                    type="button"
+                                                    className="px-3 py-2 rounded-xl border"
+                                                    onClick={() => setIsCardEntryOpen(false)}
+                                                >
+                                                    閉じる
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    className="px-3 py-2 rounded-xl border bg-zinc-900 text-white hover:bg-zinc-800"
+                                                    onClick={() => {
+                                                        // 入力値からラベルを更新して採用（4242なら Visa(4242) など）
+                                                        const d4 = (cardDigits.match(/\d{4}$/)?.[0]) ?? "";
+                                                        if (d4) setSelectedPayLabel(`${payBrand.replace(/TEST/, 'クレジットカード')}(${d4})`);
+                                                        setPaymentMethod('card');
+                                                        setIsCardEntryOpen(false);
+                                                        setIsPayMethodOpen(false);
+                                                        emitToast("success", "カードを選択しました");
+                                                    }}
+                                                    disabled={cardDigits.replace(/\D/g, "").length < 12}
+                                                >
+                                                    このカードを使う
+                                                </button>
+                                            </div>
+                                        </>
+                                    );
+                                })()}
+                            </div>
+                        )}
                     </div>
                 </BottomSheet>
             )}
+
 
         </MinimalErrorBoundary >
     );

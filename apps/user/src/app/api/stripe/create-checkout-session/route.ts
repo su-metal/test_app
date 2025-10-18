@@ -1,74 +1,96 @@
 // apps/user/src/app/api/stripe/create-checkout-session/route.ts
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import Stripe from "stripe";
 
-const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY!;
-const STRIPE_API_VERSION =
-  (process.env.STRIPE_API_VERSION as Stripe.LatestApiVersion) ??
-  "2025-09-30.clover";
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
 
-const stripe = new Stripe(STRIPE_SECRET_KEY, {
-  apiVersion: STRIPE_API_VERSION,
-});
-
-export async function POST(req: Request) {
+/**
+ * フロントからの想定ボディ
+ * {
+ *   storeId?: string,
+ *   userEmail?: string,
+ *   lines: { id?: string; name: string; price: number; qty: number }[],
+ *   pickup?: string,
+ *   returnUrl: string
+ * }
+ */
+export async function POST(req: NextRequest) {
   try {
-    const { storeId, userEmail, lines, pickup } = (await req.json()) as {
-      storeId: string;
-      userEmail?: string;
-      pickup?: string;
-      lines: Array<{ id: string; name: string; price: number; qty: number }>;
-    };
+    const { storeId, userEmail, lines, pickup, returnUrl } = await req.json();
 
     if (!Array.isArray(lines) || lines.length === 0) {
-      return NextResponse.json({ error: "NO_LINES" }, { status: 400 });
+      return NextResponse.json(
+        { error: "line_items is empty" },
+        { status: 400 }
+      );
     }
 
-    // Embedded Checkout 用のセッション
-    // 価格は“最小単位(円)”で渡す: 100円→100
-    const line_items: Stripe.Checkout.SessionCreateParams.LineItem[] =
-      lines.map((l) => ({
-        quantity: l.qty,
+    const currency = "jpy";
+    const line_items: Stripe.Checkout.SessionCreateParams.LineItem[] = lines
+      .map((l: any) => ({
+        quantity: Number(l.qty) || 0,
         price_data: {
-          currency: "jpy",
+          currency,
+          unit_amount: Math.max(0, Number(l.price) || 0),
           product_data: {
-            name: l.name,
-            metadata: {
-              product_id: l.id,
-              store_id: storeId,
-              pickup: pickup ?? "",
-            },
+            name: l.name || "商品",
+            metadata: { product_id: String(l.id ?? "") },
           },
-          unit_amount: Math.max(0, Math.round(l.price)), // 既に円ならそのまま
         },
-      }));
+      }))
+      .filter((li) => (li.quantity as number) > 0);
 
-    // ※ 埋め込み型は ui_mode: 'embedded' と client_secret を返すのがポイント
-    const url = new URL(req.url);
-    const origin = `${url.protocol}//${url.host}`;
-    const return_url = `${origin}/?checkout_return={CHECKOUT_SESSION_ID}`;
+    // -------- 1) Customer をメールで取得 or 作成 --------
+    let customerId: string | undefined;
+    if (userEmail) {
+      const existing = await stripe.customers.list({
+        email: userEmail,
+        limit: 1,
+      });
+      if (existing.data.length > 0) {
+        customerId = existing.data[0].id;
+      } else {
+        const created = await stripe.customers.create({ email: userEmail });
+        customerId = created.id;
+      }
+    }
 
-    const session = await stripe.checkout.sessions.create({
-      mode: "payment",
+    // -------- 2) セッション作成 --------
+    const params: Stripe.Checkout.SessionCreateParams = {
       ui_mode: "embedded",
-      return_url,
-      customer_email: userEmail || undefined,
-      line_items,
-      // 注文識別に必要なら metadata に storeId や pickup を入れる
-      metadata: { store_id: storeId, pickup: pickup ?? "" },
-      // （任意）外部キー紐付けなどあればここに
-      // client_reference_id: ...
-    });
+      mode: "payment",
 
+      // ★ カード選択を出すキー3点
+      customer: customerId,
+      payment_intent_data: { setup_future_usage: "off_session" },
+
+      // ★ 型にある指定だけを使う
+      payment_method_types: ["card"],
+
+      line_items,
+      return_url: `${returnUrl}?session_id={CHECKOUT_SESSION_ID}`,
+
+      // fulfill 側の要件: store_id, items_json, pickup_label, email
+      metadata: {
+        store_id: String(storeId ?? ""),
+        items_json: JSON.stringify(lines ?? []),
+        pickup_label: String(pickup ?? ""),
+        email: String(userEmail ?? ""),
+        // 互換: 既存コードが参照する場合に備え保持
+        pickup: String(pickup ?? ""),
+      },
+    };
+
+    const session = await stripe.checkout.sessions.create(params);
     return NextResponse.json(
       { client_secret: session.client_secret },
       { status: 200 }
     );
-  } catch (e: any) {
-    console.error("[create-checkout-session] error:", e?.message || e);
+  } catch (err: any) {
+    console.error("[create-checkout-session] error:", err?.message || err);
     return NextResponse.json(
-      { error: "SERVER_ERROR", message: e?.message ?? String(e) },
-      { status: 500 }
+      { error: err?.message ?? "unknown" },
+      { status: 400 }
     );
   }
 }

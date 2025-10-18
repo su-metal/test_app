@@ -3,9 +3,7 @@ import { NextResponse } from "next/server";
 
 export const runtime = "nodejs"; // Edge禁止（stripeはNodeランタイムが楽）
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
-  apiVersion: "2024-06-20",
-});
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
 
 export async function POST(req: Request) {
   try {

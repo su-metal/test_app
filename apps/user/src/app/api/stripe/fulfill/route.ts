@@ -30,6 +30,7 @@ export async function GET(req: Request) {
 
     const store_id = session.metadata?.store_id as string | undefined;
     const items_json = session.metadata?.items_json;
+    const pickup_label = (session.metadata?.pickup_label as string | undefined) || "";
     const email =
       (session.metadata?.email as string | undefined) ||
       session.customer_email ||
@@ -95,7 +96,7 @@ export async function GET(req: Request) {
           name: it.name,
           price: it.price,
           stock: 0,
-          pickup: "—",
+          pickup: pickup_label || "—",
           note: "",
           photo: "🛍️",
         },

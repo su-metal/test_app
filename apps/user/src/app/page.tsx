@@ -5,6 +5,11 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 // 追加：受取時間の表示コンポーネント
 import PickupTimeSelector, { type PickupSlot } from "@/components/PickupTimeSelector";
 
+// Stripe（ブラウザ用 SDK）
+import { loadStripe } from "@stripe/stripe-js";
+
+const stripePromise = loadStripe(process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY!);
+
 
 // ===== debug switch =====
 const DEBUG = (process.env.NEXT_PUBLIC_DEBUG === '1');
@@ -2328,161 +2333,56 @@ export default function UserPilotApp() {
 
     const toOrder = (sid: string) => { setOrderTarget(sid); setTab("order"); };
 
-    const confirmPay = useCallback(async () => {
-        if (!orderTarget || isPayingRef.current || isPaying) return;
-        isPayingRef.current = true;
-        setIsPaying(true);
+    // 受け取りグループ(gkey)をStripe Checkoutへ
+    const startStripeCheckout = useCallback(async () => {
+        if (!orderTarget) return;
+        const g = cartGroups[orderTarget];
+        if (!g || g.lines.length === 0) {
+            emitToast("error", "カートが空です");
+            return;
+        }
+        // セッションペイロード（サーバへ渡す簡易スナップショット）
+        const linesPayload = g.lines.map(l => ({
+            id: l.item.id,
+            name: l.item.name,
+            price: Number(l.item.price) || 0, // 円
+            qty: Number(l.qty) || 0,
+        })).filter(x => x.qty > 0);
+
+        if (linesPayload.length === 0) {
+            emitToast("error", "数量が0の商品のみです");
+            return;
+        }
 
         try {
-            // ★ orderTarget は「グループキー」
-            const gkey = orderTarget;
-            const g = gkey ? cartGroups[gkey] : undefined;
-            if (!g) { emitToast("error", "対象カートが見つかりません"); return; }
-
-            const sid = g.storeId; // 実店舗ID
-            const linesSnapshot = g.lines.map(l => ({ ...l })); // グループ内の行だけ
-            if (linesSnapshot.length === 0) { emitToast("error", "対象カートが空です"); return; }
-
-            // 在庫検証（実店舗IDで参照）
-            for (const l of linesSnapshot) {
-                const inv = itemsById.get(sid)?.get(l.item.id)?.stock ?? 0;
-                if (l.qty > inv) {
-                    emitToast("error", `在庫不足: ${l.item.name} の在庫は ${inv} です（カート数量 ${l.qty}）`);
-                    return;
-                }
-            }
-            // 金額確定
-            const amount = linesSnapshot.reduce((a, l) => a + l.item.price * l.qty, 0);
-            const oid = uid();
-
-            // Supabase用ペイロード（店舗側は PENDING で受け取り待ち）
-            const orderPayload = {
-                store_id: sid as any, // 購入店舗の id（stores.id）を保存
-                code: to6(oid),
-                customer: userEmail || "guest@example.com",
-                items: linesSnapshot.map(l => ({
-                    id: l.item.id,
-                    name: l.item.name,
-                    qty: l.qty,
-                    price: l.item.price,  // ★ 重要：価格もスナップショット保存
-                })), // JSONB
-                total: amount,          // number（文字列ではない）
-                status: "PENDING" as const,
-                // placed_at は DB 側に DEFAULT now() がある想定。なければ後で DB に追加。
-            };
-
-
-
-            // Supabaseが設定されていればDBへ作成
-            if (supabase) {
-                let data: any = null;
-                let error: any = null;
-                let status = 200;
-
-                try {
-                    const rows = await restInsertOrder(orderPayload);
-                    data = Array.isArray(rows) ? rows[0] : rows;
-                } catch (e: any) {
-                    status = Number((e.message || '').match(/HTTP (\d{3})/)?.[1] || 500);
-                    error = { message: e.message };
-                }
-
-                if (error) {
-                    // ---- ここから詳細ログ強化（開発時のみ想定。不要になったら削除OK）----
-                    console.error("[orders.insert] status", status);
-                    console.error("[orders.insert] payload", JSON.stringify(orderPayload, null, 2));
-                    console.error("[orders.insert] env.heads", {
-                        url: (process.env.NEXT_PUBLIC_SUPABASE_URL || "").slice(0, 32),
-                        anon: (process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "").slice(0, 12),
-                        storeId,
-                    });
-                    console.error("[orders.insert] error raw", error);
-                    try {
-                        console.error("[orders.insert] error json", JSON.stringify(error, null, 2));
-                    } catch { }
-                    // ---- ここまで ----
-
-                    emitToast("error", `注文の作成に失敗: ${error.message || "不明なエラー"}`);
-                    return;
-                }
-
-
-
-                // ★ここを追加：DBに作成した注文と“同じコード”をローカル履歴にも保存する
-                const createdAt = Date.now();
-                const localOrder: Order = {
-                    id: String(data?.id ?? oid),                 // 取得できたらDBのid、なければoid
-                    userEmail: userEmail || "guest@example.com",
-                    shopId: sid,
-                    amount,
-                    status: "paid",                               // ユーザー側は「未引換チケット」を paid で扱う既存UIのまま
-                    code6: orderPayload.code,                     // ← ここが超重要：DBに入れた code をそのまま使う
-                    createdAt,
-                    lines: linesSnapshot,
-                };
-                setOrders(prev => [localOrder, ...prev]);
-
-                // 在庫を「支払い時点」でDBに反映（テスト運用）
-                // TODO(req v2): 原子的減算のためサーバーRPC等へ移行
-                try {
-                    await Promise.all(linesSnapshot.map(async (l) => {
-                        const { data: prod } = await supabase.from('products').select('id, stock').eq('id', l.item.id).single();
-                        const cur = Math.max(0, Number((prod as any)?.stock ?? 0));
-                        const next = Math.max(0, cur - l.qty);
-                        await supabase.from('products').update({ stock: next }).eq('id', l.item.id);
-                    }));
-                } catch {/* noop */ }
-
-            } else {
-                // Supabase未設定時のフォールバック（従来のローカル動作）
-                const localOrder: Order = {
-                    id: oid,
-                    userEmail: userEmail || "guest@example.com",
-                    shopId: sid,
-                    amount,
-                    status: "paid",
-                    code6: orderPayload.code,                     // ← フォールバック時もアルゴリズムを1本化
-                    createdAt: Date.now(),
-                    lines: linesSnapshot,
-                };
-                setOrders(prev => [localOrder, ...prev]);
-            }
-
-
-            // 在庫減算＆カートクリア（ローカルUIの整合性のため常に実施）
-            const qtyByItemId = new Map<string, number>();
-            for (const l of linesSnapshot) {
-                qtyByItemId.set(l.item.id, (qtyByItemId.get(l.item.id) || 0) + l.qty);
-            }
-            const nextShops = shops.map(s =>
-                s.id !== sid
-                    ? s
-                    : {
-                        ...s,
-                        items: s.items.map(it => {
-                            const q = qtyByItemId.get(it.id) || 0;
-                            return q > 0 ? { ...it, stock: Math.max(0, it.stock - q) } : it;
-                        }),
-                    }
-            );
-            const groupItemKeys = new Set(linesSnapshot.map(l => `${l.shopId}:${l.item.id}`));
-            const nextCart = cart.filter(l => !groupItemKeys.has(`${l.shopId}:${l.item.id}`));
-
-
-            startTransition(() => {
-                setShops(nextShops);
-                setCart(nextCart);
-                setTab("account");
+            setIsPaying(true);
+            const res = await fetch("/api/stripe/checkout", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    storeId: g.storeId,
+                    userEmail,
+                    lines: linesPayload,
+                }),
             });
+            const json = await res.json();
+            if (!res.ok || !json?.id) {
+                throw new Error(json?.error || "Checkout セッション作成に失敗");
+            }
+            const stripeJs = await stripePromise; // Stripe | null（自動推論でOK）
+            if (json.url) { window.location.href = json.url as string; return; }
+            if (!stripeJs) throw new Error("Stripe が初期化できませんでした");
+            // @ts-expect-error @stripe/stripe-js のメソッドです（サーバSDKの Stripe ではありません）
+            const { error } = await stripeJs.redirectToCheckout({ sessionId: String(json.id) });
 
-            const card = { brand: payBrand } as const; // テスト用: 旧トースト文言互換
-            setCardDigits("");
-            emitToast("success", `注文が完了しました。カード: ${card.brand || "TEST"}`);
-        } finally {
-            isPayingRef.current = false;
+            if (error) throw error;
+
+        } catch (e: any) {
+            console.error(e);
+            emitToast("error", "Stripe への遷移に失敗しました");
             setIsPaying(false);
         }
-    }, [orderTarget, isPaying, cardDigits, cartGroups, itemsById, shops, cart, userEmail, supabase, paymentMethod]);
+    }, [orderTarget, cartGroups, userEmail, setIsPaying]);
 
     // --- 開発用：この店舗の注文をすべてリセット（削除） ---
     const devResetOrders = useCallback(async () => {
@@ -3460,15 +3360,11 @@ export default function UserPilotApp() {
                                             })()}
                                             <button
                                                 type="button"
-                                                className="w-full px-3 py-2 rounded border cursor-pointer disabled:opacity-40"
-                                                onClick={confirmPay}
-                                                disabled={
-                                                    isPaying ||
-                                                    ((cartGroups[orderTarget]?.lines.length ?? 0) === 0) ||
-                                                    (paymentMethod === 'card' && cardDigits.length < 16)
-                                                }
+                                                onClick={startStripeCheckout}
+                                                disabled={isPaying || ((cartGroups[orderTarget]?.lines.length ?? 0) === 0)}
+                                                className="w-full px-3 py-2 rounded border cursor-pointer disabled:opacity-40 bg-zinc-900 text-white"
                                             >
-                                                支払いを確定する（テスト）
+                                                Stripe で支払う（デモ）
                                             </button>
                                         </div>
                                     </div>

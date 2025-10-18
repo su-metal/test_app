@@ -1948,6 +1948,23 @@ export default function UserPilotApp() {
         return ka < kb ? `${ka}|${kb}|walk` : `${kb}|${ka}|walk`;
     };
 
+    // 所要時間（徒歩/車）ラベル：ルート距離が出るまで「距離算定中」
+    const travelTimeLabelFor = useCallback((s: ShopForSort | Shop): { icon: string; text: string } => {
+        const target = bestLatLngForDistance(s as Shop);
+        if (!myPos || !target) return { icon: "🚶", text: "—" };
+        const rk = routeKmByStore[s.id as string]; // km（OSRM）
+        if (rk == null) return { icon: "🚶", text: "距離算定中" };
+
+        // 徒歩（4km/h）= 1kmあたり15分
+        const walkMin = Math.max(1, Math.ceil(rk * 15));
+        if (walkMin <= 15) return { icon: "🚶", text: `徒歩${walkMin}分` };
+
+        // 車（35km/h）= 1kmあたり約1.714分
+        const carMin = Math.max(1, Math.ceil((rk * 60) / 35));
+        return { icon: "🚗", text: `所要${carMin}分` };
+    }, [myPos, routeKmByStore]);
+
+
     // 表示用の距離文言
     const distanceLabelFor = useCallback((s: ShopForSort | Shop): string => {
         const target = bestLatLngForDistance(s as Shop);
@@ -2803,9 +2820,22 @@ export default function UserPilotApp() {
                                                     <div className="absolute left-3 top-3 px-2 py-1 rounded bg-black/60 text-white text-sm">
                                                         {s.name}
                                                     </div>
-                                                    <div className="absolute right-3 top-3 px-2 py-1 rounded-full bg-white/90 border text-[11px]">
-                                                        {distanceLabelFor(s)}
-                                                    </div>
+                                                    {(() => {
+                                                        const tt = travelTimeLabelFor(s);
+                                                        return (
+                                                            <span
+                                                                className="absolute right-3 bottom-3 inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1 text-[11px]"
+                                                                aria-label={`所要時間: ${tt.text}`}
+                                                            >
+                                                                {/* 絵文字アイコンを正方形ボックスで中央寄せ */}
+                                                                <span className="inline-grid w-4 h-4 mr-1 place-items-center leading-none text-[16px]">
+                                                                    {tt.icon}
+                                                                </span>
+                                                                {/* テキストも行高を1にして上下を詰める */}
+                                                                <span className="font-medium leading-[1]">{tt.text}</span>
+                                                            </span>
+                                                        );
+                                                    })()}
                                                 </div>
 
                                                 {hasAny ? (
@@ -2920,7 +2950,7 @@ export default function UserPilotApp() {
 
                                                             {/* 距離 */}
                                                             <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1">
-                                                                <span>🚶</span>
+                                                                <span>📍</span>
                                                                 <span className="font-medium">{distanceLabelFor(s)}</span>
                                                             </span>
 
@@ -2934,7 +2964,7 @@ export default function UserPilotApp() {
                                                         {/* 住所/ミニマップ（スクショ風） */}
                                                         <div className="mt-3">
                                                             <div className="flex items-center gap-2 text-sm text-zinc-700">
-                                                                <span>📍</span>
+                                                                <span>🏢</span>
                                                                 <span className="truncate flex-1">{s.address ?? "住所未登録"}</span>
                                                                 <a
                                                                     href={googleMapsUrlForShop(s)}

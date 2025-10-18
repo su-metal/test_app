@@ -4,6 +4,8 @@ import { createClient, type RealtimeChannel } from "@supabase/supabase-js";
 import type { SupabaseClient } from '@supabase/supabase-js';
 // 追加：受取時間の表示コンポーネント
 import PickupTimeSelector, { type PickupSlot } from "@/components/PickupTimeSelector";
+import { EmbeddedCheckoutProvider, EmbeddedCheckout } from "@stripe/react-stripe-js";
+
 
 // Stripe（ブラウザ用 SDK）
 import { loadStripe } from "@stripe/stripe-js";
@@ -584,6 +586,9 @@ function useLockBodyScroll(locked: boolean) {
 
 
 // ---- テストカード検証（簡易） ----
+
+
+
 function sanitizeCard(input: string) { return input.replace(/\s|-/g, ""); }
 function validateTestCard(cardRaw: string) {
     const card = sanitizeCard(cardRaw);
@@ -1017,8 +1022,117 @@ const IconExternal = ({ className = "" }: { className?: string }) => (
 );
 
 
+function BottomSheet({
+    open,
+    title,
+    onClose,
+    children,
+}: {
+    open: boolean;
+    title?: string;
+    onClose: () => void;
+    children: React.ReactNode;
+}) {
+    const startY = React.useRef(0);
+    const currentY = React.useRef(0);
+    const [dragY, setDragY] = React.useState(0);
+    const [dragging, setDragging] = React.useState(false);
+
+    const onBackdrop = React.useCallback(() => { onClose(); }, [onClose]);
+
+    // ▼ ドラッグ操作は“上部ハンドル領域だけ”で受ける
+    const onTouchStart = (e: React.TouchEvent) => {
+        const t = e.touches[0];
+        startY.current = t.clientY;
+        currentY.current = t.clientY;
+        setDragging(true);
+    };
+    const onTouchMove = (e: React.TouchEvent) => {
+        if (!dragging) return;
+        const t = e.touches[0];
+        currentY.current = t.clientY;
+        const dy = Math.max(0, currentY.current - startY.current);
+        setDragY(dy);
+        e.preventDefault(); // ← ハンドル内のみなので内部フォーム/iframeのスクロールは邪魔しない
+    };
+    const onTouchEnd = () => {
+        setDragging(false);
+        if (dragY > 120) { onClose(); setDragY(0); return; }
+        setDragY(0);
+    };
+
+    if (!open) return null;
+
+    return (
+        <div role="dialog" aria-modal="true" className="fixed inset-0 z-[3000]">
+            {/* 背景 */}
+            <div className="absolute inset-0 bg-black/40" onClick={onBackdrop} aria-hidden />
+            {/* シート位置 */}
+            <div className="absolute inset-x-0 bottom-0 flex justify-center pointer-events-none">
+                {/* シート本体 */}
+                <div
+                    className={`
+            pointer-events-auto w-full max-w-[520px]
+            rounded-t-2xl bg-white shadow-xl border-t
+            touch-pan-y overscroll-contain
+            max-h-[90vh] overflow-hidden
+            ${dragging ? "" : "transition-transform duration-300"}
+          `}
+                    style={{ transform: `translateY(${dragY}px)` }}
+                >
+                    {/* ハンドル＋ヘッダー（ここだけがドラッグ対象） */}
+                    <div
+                        className="py-2 grid place-items-center select-none"
+                        onTouchStart={onTouchStart}
+                        onTouchMove={onTouchMove}
+                        onTouchEnd={onTouchEnd}
+                    >
+                        <div aria-hidden className="h-1.5 w-12 rounded-full bg-zinc-300" />
+                    </div>
+                    <div
+                        className="px-4 pb-2 flex items-center justify-between select-none"
+                        onTouchStart={onTouchStart}
+                        onTouchMove={onTouchMove}
+                        onTouchEnd={onTouchEnd}
+                    >
+                        <div className="text-sm font-semibold">{title || ""}</div>
+                        <button
+                            type="button"
+                            aria-label="閉じる"
+                            className="w-8 h-8 rounded-full border bg-white hover:bg-zinc-50"
+                            onClick={onClose}
+                        >✕</button>
+                    </div>
+
+                    {/* コンテンツ：ここは自由にスクロールできる */}
+                    <div
+                        className="px-0 pb-3 overflow-auto"
+                        style={{ maxHeight: "calc(90vh - 64px)" }} // 64px ≒ ハンドル＋ヘッダー分
+                    >
+                        {children}
+                    </div>
+
+                    {/* iOSホームバー対策 */}
+                    <div className="h-4" />
+                </div>
+            </div>
+        </div>
+    );
+}
+
 
 export default function UserPilotApp() {
+
+    const [embeddedClientSecret, setEmbeddedClientSecret] = useState<string | null>(null);
+    const [isCheckoutOpen, setIsCheckoutOpen] = useState(false);
+
+    // コンポーネント“内”で再定義（①で削除したものの正しい版）
+    const updateCardLabel = useCallback((digits: string) => {
+        const v = validateTestCard(digits);
+        setSelectedPayLabel(v.ok ? ((v as any).brand || "クレジットカード") : null);
+    }, []);
+
+
 
     // 永続化
     const [shops, setShops] = useLocalStorageState<Shop[]>(K.shops, seedShops);
@@ -1122,7 +1236,8 @@ export default function UserPilotApp() {
     const carouselWrapRef = useRef<HTMLDivElement | null>(null);
     const touchStateRef = useRef<{ sx: number; sy: number } | null>(null);
 
-    useLockBodyScroll(!!detail); // ← 追加：モーダル開閉に連動してスクロール停止
+    // 画面全体のスクロールを、詳細モーダル or 決済シートが開いている間はロック
+    useLockBodyScroll(!!detail || isCheckoutOpen);
     const detailImages = useMemo<string[]>(() => {
         if (!detail?.item) return [];
         return [
@@ -2309,8 +2424,15 @@ export default function UserPilotApp() {
 
     // 注文処理
     const [cardDigits, setCardDigits] = useState(""); // 数字のみ（最大16桁）
+    // ▼ 支払い選択フロー（ボトムシート制御）
+    const [isPayMethodOpen, setIsPayMethodOpen] = useState(false); // シート①：支払い方法の選択
+    const [isCardEntryOpen, setIsCardEntryOpen] = useState(false); // シート②：カード番号入力
+    const [selectedPayLabel, setSelectedPayLabel] = useState<string | null>(null); // 行に表示するラベル（例: "Visa(4242)"）
+    // 支払い方法のタブ切り替え用（ボタンの見た目制御に使用）
+    const [paymentMethod, setPaymentMethod] = useState<'card' | 'paypay' | null>(null);
+
+
     const [orderTarget, setOrderTarget] = useState<string | undefined>(undefined);
-    const [paymentMethod, setPaymentMethod] = useState<"card" | "paypay">("card"); // 支払方法（テスト）
     const unredeemedOrders = useMemo(() => orders.filter(o => o.status === 'paid'), [orders]);
     const redeemedOrders = useMemo(() => orders.filter(o => o.status === 'redeemed'), [orders]);
     // テストカードのブランド表示（失敗/未入力は TEST 扱い）
@@ -2359,14 +2481,15 @@ export default function UserPilotApp() {
             emitToast("error", "カートが空です");
             return;
         }
+
         // カートで選択された受取時間（グループ単位）
         const sel = pickupByGroup[key] ?? null;
         const pickupLabel = sel ? `${sel.start}〜${sel.end}` : "";
-        // セッションペイロード（サーバへ渡す簡易スナップショット）
+
         const linesPayload = g.lines.map(l => ({
             id: l.item.id,
             name: l.item.name,
-            price: Number(l.item.price) || 0, // 円
+            price: Number(l.item.price) || 0,
             qty: Number(l.qty) || 0,
         })).filter(x => x.qty > 0);
 
@@ -2384,27 +2507,27 @@ export default function UserPilotApp() {
                     storeId: g.storeId,
                     userEmail,
                     lines: linesPayload,
-                    // Stripe 決済画面に表示するため、受取予定時間を渡す
+                    // 互換目的で両方送る（あなたのサーバ実装どちらでも拾えるように）
                     pickup: pickupLabel,
+                    pickupLabel,
                 }),
             });
             const json = await res.json();
-            if (!res.ok || !json?.id) {
-                throw new Error(json?.error || "Checkout セッション作成に失敗");
-            }
-            const stripeJs = await stripePromise; // Stripe | null（自動推論でOK）
-            if (json.url) { window.location.href = json.url as string; return; }
-            if (!stripeJs) throw new Error("Stripe が初期化できませんでした");
-            // @ts-expect-error @stripe/stripe-js のメソッドです（サーバSDKの Stripe ではありません）
-            const { error } = await stripeJs.redirectToCheckout({ sessionId: String(json.id) });
-            if (error) throw error;
+            if (!res.ok) throw new Error(json?.error || "Checkout セッション作成に失敗");
+
+            // ← Embedded：URLへリダイレクトせず、client_secret を受け取って埋め込み表示
+            const cs = json?.client_secret;
+            if (!cs) throw new Error("client_secret が取得できませんでした");
+            setEmbeddedClientSecret(cs);
+            setIsCheckoutOpen(true);
         } catch (e: any) {
             console.error(e);
-            emitToast("error", "Stripe への遷移に失敗しました");
+            emitToast("error", e?.message || "Stripe セッション作成に失敗しました");
+        } finally {
             setIsPaying(false);
         }
-        // 依存は orderTarget ではなく targetKey を優先的に使う
-    }, [orderTarget, cartGroups, userEmail, setIsPaying, pickupByGroup]);
+    }, [orderTarget, cartGroups, userEmail, pickupByGroup, setIsPaying]);
+
 
 
     // --- 開発用：この店舗の注文をすべてリセット（削除） ---
@@ -3323,20 +3446,42 @@ export default function UserPilotApp() {
                                             );
                                         })()}
 
-                                        <div className="p-4 space-y-2">
-                                            {(g.lines ?? [])
-                                                .filter(l => l && l.item && typeof l.qty === "number")
-                                                .map((l, i) => (
-                                                    <div key={`${l.item?.id ?? "unknown"}-${i}`} className="text-sm flex items-start justify-between">
-                                                        <div>
-                                                            <div className="font-medium">{l.item?.name ?? "商品"} × {l.qty}</div>
-                                                            <div className="text-xs text-zinc-500">受取 {l.item?.pickup ?? "—"} / 注意 {l.item?.note || "-"}</div>
-                                                        </div>
-                                                        <div className="tabular-nums">{currency((l.item?.price ?? 0) * l.qty)}</div>
-                                                    </div>
-                                                ))}
+                                        <div className="p-4 border-t space-y-3">
+                                            {/* 行：支払い方法（スクショ風） */}
+                                            <div className="grid grid-cols-[auto_1fr_auto] items-center gap-3">
+                                                <div className="text-sm font-medium">クレジット</div>
+                                                <div className="text-sm text-zinc-500 truncate">
+                                                    {selectedPayLabel ? selectedPayLabel : "選択されていません"}
+                                                </div>
+                                                <button
+                                                    type="button"
+                                                    className="text-[#6b0f0f] text-sm underline decoration-1 underline-offset-2"
+                                                    onClick={() => setIsPayMethodOpen(true)}
+                                                >
+                                                    {selectedPayLabel ? "変更する" : "選択する"}
+                                                </button>
+                                            </div>
 
+                                            <p className="text-xs text-zinc-500">
+                                                テスト: 4242 4242 4242 4242 は成功 / 4000 0000 0000 0002 は失敗として扱います。
+                                            </p>
+
+                                            {/* 支払ボタン：カード選択が済むまで無効 */}
+                                            <button
+                                                type="button"
+                                                onClick={() => startStripeCheckout()}
+                                                disabled={
+                                                    isPaying ||
+                                                    !selectedPayLabel ||
+                                                    ((cartGroups[orderTarget]?.lines.length ?? 0) === 0)
+                                                }
+                                                className={`w-full px-3 py-2 rounded border text-white
+      ${(!selectedPayLabel || isPaying) ? "bg-zinc-300 cursor-not-allowed" : "bg-zinc-900 hover:bg-zinc-800"}`}
+                                            >
+                                                Stripe で支払う（デモ）
+                                            </button>
                                         </div>
+
                                         <div className="p-4 border-t space-y-2">
                                             {/* 支払い方法 */}
                                             <div className="grid grid-cols-2 gap-2" role="group" aria-label="支払い方法">
@@ -3597,6 +3742,119 @@ export default function UserPilotApp() {
                     </div>
                 )}
             </div >
+
+            {/* シート①：支払い方法の選択 */}
+            {isPayMethodOpen && (
+                <BottomSheet
+                    open
+                    title="支払い方法を選択"
+                    onClose={() => setIsPayMethodOpen(false)}
+                >
+                    <div className="px-4 pb-4 space-y-2">
+                        <button
+                            type="button"
+                            className="w-full text-left px-3 py-3 rounded-xl border hover:bg-zinc-50"
+                            onClick={() => {
+                                setPaymentMethod('card');
+                                setIsPayMethodOpen(false);
+                                setIsCardEntryOpen(true); // 次：カード入力へ
+                            }}
+                        >
+                            <div className="font-medium">クレジットカード</div>
+                            <div className="text-xs text-zinc-500">Visa / Mastercard（テスト番号可）</div>
+                        </button>
+                    </div>
+                </BottomSheet>
+            )}
+
+            {/* シート②：カード番号入力（テスト） */}
+            {isCardEntryOpen && (
+                <BottomSheet
+                    open
+                    title="カード情報の入力（テスト）"
+                    onClose={() => setIsCardEntryOpen(false)}
+                >
+                    <div className="px-4 pb-4 space-y-2">
+                        {(() => {
+                            const d = cardDigits.replace(/\D/g, "").slice(0, 16);
+                            const formatted = (d.match(/.{1,4}/g)?.join(" ") ?? d);
+                            const len = d.length;
+                            const v = validateTestCard(d);
+                            const ok = !!v.ok;
+
+                            return (
+                                <>
+                                    <input
+                                        className="w-full px-3 py-2 rounded border font-mono tracking-widest"
+                                        placeholder="4242 4242 4242 4242"
+                                        value={formatted}
+                                        onChange={(e) => {
+                                            const nd = e.target.value.replace(/\D/g, "").slice(0, 16);
+                                            setCardDigits(nd);
+                                            updateCardLabel(nd);  // ← 行ラベルを即更新（Visa(4242) など）
+                                        }}
+                                        inputMode="numeric"
+                                        maxLength={19}
+                                        autoComplete="cc-number"
+                                        aria-label="カード番号（テスト）"
+                                    />
+                                    <div className="flex items-center justify-between text-[11px] text-zinc-500">
+                                        <span>{len}/16 桁</span><span>4桁ごとにスペース</span>
+                                    </div>
+                                    <div className="h-1 bg-zinc-200 rounded">
+                                        <div className="h-1 bg-zinc-900 rounded" style={{ width: `${(len / 16) * 100}%` }} />
+                                    </div>
+
+                                    {!ok && len > 0 && (
+                                        <div className="text-xs text-red-600">{(v as any).msg}</div>
+                                    )}
+
+                                    <div className="pt-2 grid grid-cols-2 gap-2">
+                                        <button
+                                            type="button"
+                                            className="px-3 py-2 rounded-xl border"
+                                            onClick={() => setIsCardEntryOpen(false)}
+                                        >
+                                            キャンセル
+                                        </button>
+                                        <button
+                                            type="button"
+                                            className={`px-3 py-2 rounded-xl border text-white ${ok ? "bg-zinc-900" : "bg-zinc-300 cursor-not-allowed"}`}
+                                            disabled={!ok}
+                                            onClick={() => {
+                                                // ラベルは updateCardLabel ですでに更新済み
+                                                setIsCardEntryOpen(false);
+                                            }}
+                                        >
+                                            このカードを使う
+                                        </button>
+                                    </div>
+                                </>
+                            );
+                        })()}
+                    </div>
+                </BottomSheet>
+            )}
+
+
+            {isCheckoutOpen && embeddedClientSecret && (
+                <BottomSheet
+                    open={true}
+                    title="お支払い"
+                    onClose={() => setIsCheckoutOpen(false)}
+                >
+                    <EmbeddedCheckoutProvider
+                        stripe={stripePromise}
+                        options={{ clientSecret: embeddedClientSecret }}
+                    >
+                        {/* Stripe 推奨の最小高さ。ボトムシート内にそのまま置く */}
+                        <div id="checkout" className="min-h-[560px]">
+                            <EmbeddedCheckout />
+                        </div>
+                    </EmbeddedCheckoutProvider>
+                </BottomSheet>
+            )}
+
         </MinimalErrorBoundary >
     );
 }

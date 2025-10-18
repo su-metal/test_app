@@ -3739,9 +3739,15 @@ export default function UserPilotApp() {
                                             <QtyChip sid={detail.shopId} it={detail.item} />
                                         </div>
                                     </div>
-                                    <div className="grid grid-cols-2 gap-2 pt-1">
-                                        <button type="button" className="px-3 py-2 rounded-xl border" onClick={() => { setAllergyOpen(false); setDetail(null); }}>閉じる</button>
-                                        <button type="button" className="px-3 py-2 rounded-xl border bg-zinc-900 text-white" onClick={() => { addToCart(detail.shopId, detail.item); emitToast('success', 'カートに追加しました'); setDetail(null); }}>カートに追加</button>
+                                    {/* モーダルのフッター：閉じるのみ（「カートに追加」は削除） */}
+                                    <div className="pt-1">
+                                        <button
+                                            type="button"
+                                            className="w-full px-3 py-2 rounded-xl border"
+                                            onClick={() => { setAllergyOpen(false); setDetail(null); }}
+                                        >
+                                            閉じる
+                                        </button>
                                     </div>
                                 </div>
 

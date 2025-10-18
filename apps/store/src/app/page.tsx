@@ -1567,6 +1567,17 @@ function ProductImageSlot(props: StagedProps | ExistingProps) {
   const [openCam, setOpenCam] = React.useState(false);
   const pickerRef = React.useRef<HTMLInputElement | null>(null);
   const [loading, setLoading] = React.useState(false);
+  // ▼ 既存商品のモーダル内プレビューを即時反映するためのローカル状態
+  const isExisting = (props as any).mode === "existing";
+  const [currentPath, setCurrentPath] = React.useState<string | null>(
+    isExisting ? (props as any).path ?? null : null
+  );
+  const [localVer, setLocalVer] = React.useState(0);
+  // 親が reload して props.path が変わったときは同期（一覧側でも破綻しない）
+  React.useEffect(() => {
+    if (!isExisting) return;
+    setCurrentPath((props as any).path ?? null);
+  }, [isExisting ? (props as any).path : null]);
 
   // 共通見た目クラス
   const Card: React.FC<{ children: React.ReactNode }> = ({ children }) => (
@@ -1606,10 +1617,11 @@ function ProductImageSlot(props: StagedProps | ExistingProps) {
     if (props.mode === "staged" && preview) {
       imgEl = <img src={preview} alt={`${label}`} className="w-full h-full object-cover transition-transform group-hover:scale-[1.02]" />;
     }
-    if (props.mode === "existing" && props.path) {
+    if (props.mode === "existing" && (currentPath ?? props.path)) {
+      const effectivePath = currentPath ?? props.path!;
       imgEl = (
         <img
-          src={`${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/public-images/${props.path}?v=${props.imgVer ?? 0}`}
+          src={`${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/public-images/${effectivePath}?v=${(props as any).imgVer ?? localVer}`}
           alt={label}
           className="w-full h-full object-cover transition-transform group-hover:scale-[1.02]"
           loading="lazy"
@@ -1649,7 +1661,9 @@ function ProductImageSlot(props: StagedProps | ExistingProps) {
       (async () => {
         try {
           setLoading(true);
-          await uploadProductImage(props.productId, f, props.slot);
+          const newPath = await uploadProductImage(props.productId, f, props.slot);
+          setCurrentPath(String(newPath || null));
+          setLocalVer(v => v + 1);
           await props.onReload();
           alert(`${props.label}画像を更新しました`);
         } catch (err: any) {
@@ -1668,7 +1682,11 @@ function ProductImageSlot(props: StagedProps | ExistingProps) {
       (async () => {
         try {
           setLoading(true);
-          await uploadProductImage(props.productId, file, props.slot);
+          const newPath = await uploadProductImage(props.productId, file, props.slot);
+          // モーダル内サムネを即時更新
+          setCurrentPath(String(newPath || null));
+          setLocalVer(v => v + 1);
+          // 親の再同期（一覧側）も従来どおり実施
           await props.onReload();
           alert(`${props.label}画像を更新しました`);
         } catch (e: any) {
@@ -1688,6 +1706,9 @@ function ProductImageSlot(props: StagedProps | ExistingProps) {
         try {
           setLoading(true);
           await deleteProductImage(props.productId, props.slot);
+          // ▼ 即時にプレビューを消す
+          setCurrentPath(null);
+          setLocalVer(v => v + 1);
           await props.onReload();
           alert(`${props.label}画像を削除しました`);
         } catch (e: any) {

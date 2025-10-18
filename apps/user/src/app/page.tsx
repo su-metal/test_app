@@ -5,13 +5,11 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 // 追加：受取時間の表示コンポーネント
 import PickupTimeSelector, { type PickupSlot } from "@/components/PickupTimeSelector";
 
-// Stripe
+// Stripe（ブラウザ用 SDK）
 import { loadStripe } from "@stripe/stripe-js";
-import type { Stripe as BrowserStripe } from "@stripe/stripe-js";
 
-// loadStripe の戻り値型 (Stripe | null) をそのまま使う
-const stripePromise: Promise<BrowserStripe | null> =
-    loadStripe(process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY!);
+const stripePromise = loadStripe(process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY!);
+
 
 // ===== debug switch =====
 const DEBUG = (process.env.NEXT_PUBLIC_DEBUG === '1');
@@ -2371,13 +2369,12 @@ export default function UserPilotApp() {
             if (!res.ok || !json?.id) {
                 throw new Error(json?.error || "Checkout セッション作成に失敗");
             }
-            const stripe = await stripePromise; // 型: BrowserStripe | null
-            if (!stripe) throw new Error("Stripe が初期化できませんでした");
-            if (json.url) {
-                window.location.href = json.url as string;
-                return;
-            }
-            const { error } = await stripe.redirectToCheckout({ sessionId: json.id as string });
+            const stripeJs = await stripePromise; // Stripe | null（自動推論でOK）
+            if (json.url) { window.location.href = json.url as string; return; }
+            if (!stripeJs) throw new Error("Stripe が初期化できませんでした");
+            // @ts-expect-error @stripe/stripe-js のメソッドです（サーバSDKの Stripe ではありません）
+            const { error } = await stripeJs.redirectToCheckout({ sessionId: String(json.id) });
+
             if (error) throw error;
 
         } catch (e: any) {

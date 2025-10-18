@@ -3422,6 +3422,7 @@ export default function UserPilotApp() {
                                                         <div className="grid grid-cols-2 gap-4 items-center mt-3">
                                                             <div>
 
+                                                                <div className="text-xs text-zinc-500 mb-1">引換コード</div>
                                                                 <div className="text-2xl font-mono tracking-widest">{o.code6}</div>
                                                                 <div className="text-xs text-zinc-500 mt-2">合計</div>
                                                                 <div className="text-base font-semibold">{currency(o.amount)}</div>

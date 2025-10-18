@@ -7,7 +7,11 @@ import PickupTimeSelector, { type PickupSlot } from "@/components/PickupTimeSele
 
 // Stripe
 import { loadStripe } from "@stripe/stripe-js";
-const stripePromise = loadStripe(process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY!);
+import type { Stripe as BrowserStripe } from "@stripe/stripe-js";
+
+// loadStripe の戻り値型 (Stripe | null) をそのまま使う
+const stripePromise: Promise<BrowserStripe | null> =
+    loadStripe(process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY!);
 
 // ===== debug switch =====
 const DEBUG = (process.env.NEXT_PUBLIC_DEBUG === '1');
@@ -2367,16 +2371,15 @@ export default function UserPilotApp() {
             if (!res.ok || !json?.id) {
                 throw new Error(json?.error || "Checkout セッション作成に失敗");
             }
-            const stripe = await stripePromise;
+            const stripe = await stripePromise; // 型: BrowserStripe | null
             if (!stripe) throw new Error("Stripe が初期化できませんでした");
-            // 1) hosted url へ移動（最速）
             if (json.url) {
                 window.location.href = json.url as string;
                 return;
             }
-            // 2) フォールバック: redirectToCheckout
             const { error } = await stripe.redirectToCheckout({ sessionId: json.id as string });
             if (error) throw error;
+
         } catch (e: any) {
             console.error(e);
             emitToast("error", "Stripe への遷移に失敗しました");

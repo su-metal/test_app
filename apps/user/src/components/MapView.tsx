@@ -1,47 +1,29 @@
 "use client";
-import { MapContainer, TileLayer, Marker, Popup } from "react-leaflet";
-import L from "leaflet";
-
-const markerIcon = L.icon({
-    iconUrl: "https://unpkg.com/leaflet@1.9.3/dist/images/marker-icon.png",
-    iconSize: [25, 41],
-    iconAnchor: [12, 41],
-});
+import React from "react";
 
 export default function MapView({
-    lat, lng, name,
-}: { lat: number; lng: number; name: string }) {
-    const apiKey = process.env.NEXT_PUBLIC_MAPTILER_API_KEY;
-
-    // 0,0（未設定）なら名古屋駅にフォールバック
-    const isZero = !lat && !lng;
-    const center = isZero ? { lat: 35.171, lng: 136.881 } : { lat, lng };
+    lat,
+    lng,
+    name,
+    address,
+}: { lat?: number; lng?: number; name: string; address?: string | null }) {
+    // 住所を最優先に埋め込み。無ければ lat,lng。さらに無ければ名古屋駅。
+    const hasLL = typeof lat === 'number' && Number.isFinite(lat) && typeof lng === 'number' && Number.isFinite(lng);
+    const query = (address && address.trim()) || (hasLL ? `${lat},${lng}` : '名古屋駅');
+    const src = `https://www.google.com/maps?q=${encodeURIComponent(query)}&hl=ja&z=16&output=embed`;
 
     return (
-        <MapContainer
-            center={[center.lat, center.lng]}
-            zoom={16}
-            minZoom={2}
-            maxZoom={19}
-            scrollWheelZoom={false}
-            // center変更時に確実に再初期化
-            key={`${center.lat.toFixed(6)},${center.lng.toFixed(6)}`}
-            style={{ height: "180px", width: "100%", borderRadius: "0.75rem" }}
-        >
-            <TileLayer
-                // ← ここを修正（/tiles/や/256/を使わない）
-                url={`https://api.maptiler.com/maps/streets-v2/{z}/{x}/{y}.png?key=${apiKey}`}
-                // 高解像度にしたい場合は上を @2x.png に変えてください
-                // url={`https://api.maptiler.com/maps/streets-v2/{z}/{x}/{y}@2x.png?key=${apiKey}`}
-                attribution='&copy; OpenStreetMap contributors & MapTiler'
-                crossOrigin={true}
-                eventHandlers={{
-                    tileerror: (e) => console.warn("Tile load error:", e),
-                }}
+        <div style={{ height: "180px", width: "100%", borderRadius: "0.75rem", overflow: 'hidden' }}>
+            <iframe
+                title={`地図: ${name}`}
+                src={src}
+                width="100%"
+                height="180"
+                style={{ border: 0 }}
+                loading="lazy"
+                referrerPolicy="no-referrer-when-downgrade"
+                aria-label={`Googleマップで ${name} の位置を表示`}
             />
-            <Marker position={[center.lat, center.lng]} icon={markerIcon}>
-                <Popup>{name}</Popup>
-            </Marker>
-        </MapContainer>
+        </div>
     );
 }

@@ -60,6 +60,9 @@ type ProductsRow = {
   main_image_path: string | null;
   sub_image_path1: string | null;
   sub_image_path2: string | null;
+  pickup_slot_no?: number | null;
+  publish_at?: string | null;
+  note?: string | null;
 };
 
 type Product = {
@@ -70,9 +73,15 @@ type Product = {
   main_image_path: string | null;
   sub_image_path1: string | null;
   sub_image_path2: string | null;
+  pickup_slot_no?: number | null;
+  publish_at?: string | null;
+  note?: string | null;
 };
 
 // ===== Util =====
+type Slot = "main" | "sub1" | "sub2";
+const slotJp = (s: Slot) => (s === "main" ? "メイン" : s === "sub1" ? "サブ1" : "サブ2");
+
 const getStoreId = () =>
   (typeof window !== "undefined" && (window as any).__STORE_ID__) ||
   (typeof process !== "undefined" && (process.env?.NEXT_PUBLIC_STORE_ID as string | undefined)) ||
@@ -124,6 +133,9 @@ function mapProduct(r: ProductsRow): Product {
     main_image_path: r.main_image_path ?? null,
     sub_image_path1: r.sub_image_path1 ?? null,
     sub_image_path2: r.sub_image_path2 ?? null,
+    pickup_slot_no: (r as any).pickup_slot_no ?? null,
+    publish_at: (r as any).publish_at ?? null,
+    note: (r as any).note ?? null,
   };
 }
 
@@ -147,24 +159,46 @@ function useSupabase() {
   }, []);
 }
 
-// --- ここから追加（匿名ログインで authenticated ロールを確保） ---
+
+// --- ここから修正版（匿名ログインはフラグ有効時のみ + 一回限り） ---
 function useEnsureAuth() {
   const sb = useSupabase();
+
+  // 一度でも試行したら再実行しない（Strict Mode対策）
+  const triedRef = React.useRef(false);
+
   useEffect(() => {
     (async () => {
-      if (!sb) return;
+      if (!sb || triedRef.current) return;
+      triedRef.current = true;
+
       try {
+        // 既にセッションがあれば何もしない
         const { data: { session } } = await sb.auth.getSession();
-        if (!session) {
-          await sb.auth.signInAnonymously(); // Supabase Auth で Anonymous を有効化しておく
+        if (session) return;
+
+        // 環境変数で匿名ログインを明示的に有効化した場合のみ試行
+        const enableAnon =
+          (typeof process !== "undefined" && process.env?.NEXT_PUBLIC_ENABLE_ANON_AUTH === "1") ||
+          (typeof window !== "undefined" && (window as any).NEXT_PUBLIC_ENABLE_ANON_AUTH === "1");
+
+        if (enableAnon && typeof (sb.auth as any).signInAnonymously === "function") {
+          const { error } = await (sb.auth as any).signInAnonymously();
+          if (error) {
+            // 422などは info ログで握りつぶす（ネットワークエラーを発生させない）
+            console.info("[auth] anonymous sign-in skipped:", error.message || error);
+          }
+        } else {
+          // 無効時は何もしない（未ログインのまま）
+          console.info("[auth] anonymous auth disabled; skipped sign-in");
         }
       } catch (e) {
-        console.error("[auth] ensure auth error", e);
+        console.info("[auth] ensure auth skipped:", (e as any)?.message ?? e);
       }
     })();
   }, [sb]);
 }
-// --- ここまで追加 ---
+// --- ここまで修正版 ---
 
 
 // ===== Stores =====
@@ -214,31 +248,161 @@ function useBroadcast(name: string) {
   return { post } as const;
 }
 
+// ===== Pickup Presets (name + time) =====
+function usePickupPresets() {
+  const supabase = useSupabase();
+  const [presets, setPresets] = useState<Record<1 | 2 | 3, { name: string; start: string; end: string }>>({
+    1: { name: "プリセット1", start: "00:00", end: "00:00" },
+    2: { name: "プリセット2", start: "00:00", end: "00:00" },
+    3: { name: "プリセット3", start: "00:00", end: "00:00" },
+  });
+  const [loading, setLoading] = useState(false);
+
+  const hhmm = (t?: string | null) => (t ? t.slice(0, 5) : "00:00");
+
+  const load = useCallback(async () => {
+    if (!supabase) return;
+    setLoading(true);
+    const { data, error } = await supabase
+      .from("store_pickup_presets")
+      .select("slot_no,name,start_time,end_time")
+      .eq("store_id", getStoreId())
+      .order("slot_no", { ascending: true });
+
+    if (!error && Array.isArray(data)) {
+      const next = { ...presets };
+      for (const row of data as Array<{ slot_no: 1 | 2 | 3; name: string; start_time: string; end_time: string }>) {
+        next[row.slot_no] = {
+          name: row.name?.trim() || `プリセット${row.slot_no}`,
+          start: hhmm(row.start_time),
+          end: hhmm(row.end_time),
+        };
+      }
+      setPresets(next);
+    }
+    setLoading(false);
+  }, [supabase]);
+
+  useEffect(() => { load(); }, [load]);
+
+  return { presets, loading, reload: load } as const;
+}
+
+
 // ===== Products =====
 function useProducts() {
   const supabase = useSupabase();
   const [products, setProducts] = useState<Product[]>([]);
+  const channelRef = useRef<RealtimeChannel | null>(null);
+  const chanName = `products-realtime-${getStoreId()}`;
+  const prodChan = useBroadcast('product-sync');
   const [perr, setPerr] = useState<string | null>(null);
   const [ploading, setPloading] = useState(false);
 
   const load = useCallback(async () => {
     if (!supabase) return; setPloading(true); setPerr(null);
-    const { data, error } = await supabase.from('products').select('*').eq('store_id', getStoreId()).order('updated_at', { ascending: false });
+    const { data, error } = await supabase
+      .from('products')
+      .select('id,store_id,name,price,stock,updated_at,main_image_path,sub_image_path1,sub_image_path2,pickup_slot_no,publish_at,note')
+      .eq('store_id', getStoreId())
+      .order('updated_at', { ascending: false });
     if (error) setPerr(error.message || '商品の取得に失敗しました');
     else setProducts(((data ?? []) as ProductsRow[]).map(mapProduct));
     setPloading(false);
   }, [supabase]);
-  useEffect(() => { load(); }, [load]);
 
-  const add = useCallback(async (payload: { name: string; price: number; stock: number }) => {
-    if (!payload.name) { setPerr('商品名を入力してください'); return; }
-    if (!supabase) return;
-    setPloading(true); setPerr(null);
-    const { data, error } = await supabase.from('products').insert({ ...payload, store_id: getStoreId() }).select('*').single();
-    if (error) setPerr(error.message || '商品の登録に失敗しました');
-    else if (data) setProducts(prev => [mapProduct(data as ProductsRow), ...prev]);
-    setPloading(false);
+
+  const cleanup = useCallback(() => {
+    try { channelRef.current?.unsubscribe?.(); } catch { }
+    try { const sbAny = supabase as any; if (sbAny && channelRef.current) sbAny.removeChannel(channelRef.current); } catch { }
+    channelRef.current = null;
   }, [supabase]);
+
+
+  useEffect(() => {
+    (async () => {
+      await load();               // まずは通常取得
+      if (!supabase) return;
+      // 既存チャンネルを外してから張り直す
+      cleanup();
+
+      const sid = getStoreId();
+      const ch = (supabase as any)
+        .channel(chanName)
+        .on('postgres_changes',
+          { event: 'INSERT', schema: 'public', table: 'products', filter: `store_id=eq.${sid}` },
+          (p: any) => { if (p?.new) setProducts(prev => [mapProduct(p.new as ProductsRow), ...prev]); }
+        )
+        .on('postgres_changes',
+          { event: 'UPDATE', schema: 'public', table: 'products', filter: `store_id=eq.${sid}` },
+          (p: any) => {
+            if (p?.new) {
+              const row = mapProduct(p.new as ProductsRow);
+              setProducts(prev => prev.map(it => it.id === row.id ? row : it));
+            }
+          }
+        )
+        // DELETE は REPLICA IDENTITY 設定によって store_id が old に無いことがあるため filter を外す
+        .on('postgres_changes',
+          { event: 'DELETE', schema: 'public', table: 'products' },
+          (p: any) => {
+            const id = String((p?.old as any)?.id || '');
+            if (!id) return;
+            setProducts(prev => prev.filter(it => it.id !== id));
+          }
+        )
+        .subscribe() as RealtimeChannel;
+
+      channelRef.current = ch;
+    })();
+
+    return () => { cleanup(); };
+  }, [supabase, load, cleanup, chanName]);
+
+
+  const add = useCallback(
+    async (payload: {
+      name: string;
+      price: number;
+      stock: number;
+      pickup_slot_no?: number | null;
+      publish_at?: string | null;
+      note?: string | null;
+    }): Promise<Product | null> => {
+      if (!payload.name) { setPerr('商品名を入力してください'); return null; }
+      if (!supabase) return null;
+
+      setPloading(true); setPerr(null);
+      const { data, error } = await supabase
+        .from('products')
+        .insert({
+          ...payload,
+          store_id: getStoreId(),
+          pickup_slot_no: payload.pickup_slot_no ?? null,
+          note: payload.note ?? null,
+        })
+        .select('id,store_id,name,price,stock,updated_at,main_image_path,sub_image_path1,sub_image_path2,pickup_slot_no,publish_at,note')
+        .single();
+
+      if (error) {
+        setPerr(error.message || '商品の登録に失敗しました');
+        setPloading(false);
+        return null;
+      }
+
+      if (data) {
+        const mapped = mapProduct(data as ProductsRow);
+        setProducts(prev => [mapped, ...prev]);
+        prodChan.post({ type: 'PRODUCT_ADDED', id: String((data as any).id), at: Date.now() });
+        setPloading(false);
+        return mapped; // ★ 作成した商品の情報を返す
+      }
+
+      setPloading(false);
+      return null;
+    },
+    [supabase]
+  );
 
   const remove = useCallback(async (id: string) => {
     if (!id) return; setProducts(prev => prev.filter(p => p.id !== id));
@@ -268,7 +432,147 @@ function useProducts() {
     if (data) setProducts(prev => prev.map(p => p.id === id ? mapProduct(data as ProductsRow) : p));
   }, [supabase, load]);
 
-  return { products, perr, ploading, add, remove, updateStock, reload: load } as const;
+  const updatePickupSlot = useCallback(async (id: string, slot: number | null) => {
+    // 楽観更新
+    setProducts(prev => prev.map(p => p.id === id ? { ...p, pickup_slot_no: slot } : p));
+    if (!supabase) return;
+    const { data, error } = await supabase
+      .from('products')
+      .update({ pickup_slot_no: slot })
+      .eq('id', id)
+      .eq('store_id', getStoreId())
+      .select('id,store_id,name,price,stock,updated_at,main_image_path,sub_image_path1,sub_image_path2,pickup_slot_no,publish_at,note')
+      .single();
+    if (error) {
+      // 失敗時はリロードで整合
+      await load();
+    } else if (data) {
+      setProducts(prev => prev.map(p => p.id === id ? mapProduct(data as ProductsRow) : p));
+    }
+  }, [supabase, load]);
+
+
+  const updatePublishAt = useCallback(async (id: string, isoOrNull: string | null) => {
+    // 楽観更新
+    setProducts(prev => prev.map(p => p.id === id ? { ...p, publish_at: isoOrNull } : p));
+    if (!supabase) return;
+    const { data, error } = await supabase
+      .from('products')
+      .update({ publish_at: isoOrNull })
+      .eq('id', id)
+      .eq('store_id', getStoreId())
+      .select('id,store_id,name,price,stock,updated_at,main_image_path,sub_image_path1,sub_image_path2,pickup_slot_no,publish_at')
+      .single();
+    if (error) {
+      await load(); // 差し戻し
+    } else if (data) {
+      setProducts(prev => prev.map(p => p.id === id ? mapProduct(data as ProductsRow) : p));
+    }
+  }, [supabase, load]);
+
+  const updateNote = useCallback(async (id: string, nextRaw: string | null) => {
+    // 300 文字・trim・空なら null
+    const normalized = (nextRaw ?? "").trim().slice(0, 300) || null;
+
+    // 楽観更新（まずローカル反映）
+    setProducts(prev => prev.map(p => p.id === id ? { ...p, note: normalized } : p));
+
+    if (!supabase) return;
+    const { data, error } = await supabase
+      .from('products')
+      .update({ note: normalized })
+      .eq('id', id)
+      .eq('store_id', getStoreId())
+      .select('id,store_id,name,price,stock,updated_at,main_image_path,sub_image_path1,sub_image_path2,pickup_slot_no,publish_at,note')
+      .single();
+
+    if (error) {
+      // 失敗時は再同期（ロールバック）
+      await load();
+      return;
+    }
+    if (data) {
+      setProducts(prev => prev.map(p => p.id === id ? mapProduct(data as ProductsRow) : p));
+    }
+  }, [supabase, load]);
+
+  // まとめて更新（名前・価格・在庫・受取プリセット・公開・ひとこと）
+  const updateProduct = useCallback(async (id: string, patch: {
+    name?: string;
+    price?: number;
+    stock?: number;
+    pickup_slot_no?: number | null;
+    publish_at?: string | null;
+    note?: string | null;
+  }) => {
+    // 正規化（ビジネスルール）
+    const normalized = {
+      ...(patch.name !== undefined ? { name: String(patch.name).trim() } : {}),
+      ...(patch.price !== undefined ? { price: Math.max(0, Math.floor(Number(patch.price || 0))) } : {}),
+      ...(patch.stock !== undefined ? { stock: Math.max(0, Math.floor(Number(patch.stock || 0))) } : {}),
+      ...(patch.pickup_slot_no !== undefined ? { pickup_slot_no: (patch.pickup_slot_no ?? null) } : {}),
+      ...(patch.publish_at !== undefined ? { publish_at: patch.publish_at ?? null } : {}),
+      ...(patch.note !== undefined ? { note: (patch.note ?? '').trim().slice(0, 300) || null } : {}),
+    };
+
+    // 楽観更新
+    setProducts(prev => prev.map(p => p.id === id ? { ...p, ...normalized } as Product : p));
+
+    if (!supabase) return;
+    const { data, error } = await supabase
+      .from('products')
+      .update(normalized)
+      .eq('id', id)
+      .eq('store_id', getStoreId())
+      .select('id,store_id,name,price,stock,updated_at,main_image_path,sub_image_path1,sub_image_path2,pickup_slot_no,publish_at,note')
+      .single();
+
+    if (error) {
+      // 失敗時は再同期
+      await load();
+      return;
+    }
+    if (data) {
+      setProducts(prev => prev.map(p => p.id === id ? mapProduct(data as ProductsRow) : p));
+    }
+  }, [supabase, load]);
+
+
+
+  // ── 予約公開の到来を検知して自動反映 ─────────────────────────────
+  useEffect(() => {
+    // 未来の publish_at を集計
+    const now = Date.now();
+    const future = products
+      .map(p => p.publish_at ? Date.parse(p.publish_at) : NaN)
+      .filter(ts => Number.isFinite(ts) && ts > now)
+      .sort((a, b) => a - b);
+
+    if (future.length === 0) return; // 次の予約がなければ何もしない
+
+    const nextTs = future[0];
+    const delay = Math.max(0, nextTs - now) + 500; // 500ms マージン
+    const id = window.setTimeout(() => {
+      // 軽く再同期（どちらでも可）
+      // 1) サーバーと再同期したい場合
+      load();
+      // 2) 再フェッチ不要でローカル再評価だけで良い場合は下を使う
+      // setProducts(prev => [...prev]); // 再レンダー誘発
+    }, delay);
+
+    return () => { window.clearTimeout(id); };
+  }, [products, load]);
+
+
+  return {
+    products, perr, ploading,
+    add, remove, updateStock, updatePickupSlot,
+    updatePublishAt,
+    updateNote,
+    updateProduct,
+    reload: load
+  } as const;
+
 }
 
 // ===== Orders =====
@@ -364,6 +668,32 @@ function useOrders() {
   const fulfilled = useMemo(() => orders.filter(o => o.status === 'FULFILLED'), [orders]);
   return { ready, err, orders, pending, fulfilled, fulfill, clearPending, clearFulfilled, retry: fetchAndSubscribe } as const;
 }
+
+
+// 画面背面のスクロールをロック（iOS対応）
+function useModalScrollLock(open: boolean) {
+  useEffect(() => {
+    if (!open) return;
+    const body = document.body;
+    const scrollY = window.scrollY;
+    const prev = body.style.cssText;
+
+    // 背面固定＋スクロール停止（iOS/SE対策）
+    body.style.position = 'fixed';
+    body.style.top = `-${scrollY}px`;
+    body.style.left = '0';
+    body.style.right = '0';
+    body.style.width = '100%';
+    body.style.overflow = 'hidden';
+    body.style.touchAction = 'none';
+
+    return () => {
+      body.style.cssText = prev;
+      window.scrollTo(0, scrollY); // 解除時に元の位置へ戻す
+    };
+  }, [open]);
+}
+
 
 // ===== UI =====
 const SectionTitle = React.memo(function SectionTitle({ children, badge }: { children: React.ReactNode; badge?: string; }) {
@@ -462,6 +792,136 @@ function QRScanner({ onDetect, onClose }: { onDetect: (code: string) => void; on
   );
 }
 
+// ▼▼▼ 静止画カメラ撮影モーダル ▼▼▼
+function CameraCaptureModal({
+  open,
+  title = "写真を撮影",
+  onClose,
+  onCapture, // (blob: Blob) => void
+  facing = "environment", // "user" でインカメ
+}: {
+  open: boolean;
+  title?: string;
+  onClose: () => void;
+  onCapture: (blob: Blob) => void;
+  facing?: "environment" | "user";
+}) {
+  const videoRef = React.useRef<HTMLVideoElement | null>(null);
+  const canvasRef = React.useRef<HTMLCanvasElement | null>(null);
+  const [err, setErr] = React.useState<string | null>(null);
+  const [stream, setStream] = React.useState<MediaStream | null>(null);
+  const [isPreview, setIsPreview] = React.useState(false);
+  const [facingMode, setFacingMode] = React.useState<"environment" | "user">(facing);
+
+  useEffect(() => {
+    if (!open) return;
+    let active = true;
+    (async () => {
+      try {
+        const s = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: facingMode } },
+          audio: false,
+        });
+        if (!active) {
+          s.getTracks().forEach(t => t.stop());
+          return;
+        }
+        setStream(s);
+        const v = videoRef.current;
+        if (v) {
+          (v as any).srcObject = s;
+          await v.play();
+        }
+      } catch (e) {
+        setErr("カメラを起動できませんでした");
+      }
+    })();
+    return () => {
+      active = false;
+      try { stream?.getTracks().forEach(t => t.stop()); } catch { }
+      setStream(null);
+    };
+  }, [open, facingMode]);
+
+  const doCapture = async () => {
+    const v = videoRef.current;
+    const c = canvasRef.current;
+    if (!v || !c) return;
+    const w = v.videoWidth || 1280;
+    const h = v.videoHeight || 720;
+    c.width = w;
+    c.height = h;
+    const ctx = c.getContext("2d");
+    if (!ctx) return;
+    ctx.drawImage(v, 0, 0, w, h);
+    setIsPreview(true);
+  };
+
+  const confirmUse = async () => {
+    const c = canvasRef.current;
+    if (!c) return;
+    c.toBlob((blob) => {
+      if (blob) onCapture(blob);
+    }, "image/jpeg", 0.9);
+  };
+
+  if (!open) return null;
+
+  return (
+    <div className="fixed inset-0 z-[70] grid place-items-center bg-black/40 p-4" role="dialog" aria-modal="true" onClick={onClose}>
+      <div className="w-full max-w-md rounded-2xl bg-white shadow-xl border p-4" onClick={e => e.stopPropagation()}>
+        <div className="text-base font-semibold mb-2">{title}</div>
+
+        {!isPreview ? (
+          <div className="space-y-3">
+            <div className="aspect-[4/3] bg-black/90 rounded-xl overflow-hidden">
+              <video ref={videoRef} className="w-full h-full object-contain" playsInline muted />
+            </div>
+            {err ? <div className="text-sm text-red-600">{err}</div> : null}
+            <div className="flex items-center justify-between">
+              <button
+                className="rounded-lg border px-3 py-2 text-sm"
+                onClick={() => setFacingMode(m => (m === "environment" ? "user" : "environment"))}
+                type="button"
+              >
+                カメラ切替
+              </button>
+              <button
+                className="rounded-xl bg-zinc-900 text-white px-4 py-2 text-sm"
+                onClick={doCapture}
+                type="button"
+              >
+                撮影
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <div className="aspect-[4/3] bg-black/90 rounded-xl overflow-hidden">
+              <canvas ref={canvasRef} className="w-full h-full object-contain" />
+            </div>
+            <div className="flex items-center justify-end gap-2">
+              <button className="rounded-lg border px-3 py-2 text-sm" onClick={() => setIsPreview(false)} type="button">
+                撮り直す
+              </button>
+              <button className="rounded-xl bg-zinc-900 text-white px-4 py-2 text-sm" onClick={confirmUse} type="button">
+                この写真を使う
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* キャンバスはプリビュー切替後に描画するため、常時置いておく */}
+        <canvas ref={canvasRef} className="hidden" />
+        <div className="text-right mt-2">
+          <button className="rounded-lg border px-3 py-2 text-sm" onClick={onClose} type="button">閉じる</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
 function StockInline({ id, stock, disabled, onCommit }: { id: string; stock: number; disabled: boolean; onCommit: (val: number) => void }) {
   const [val, setVal] = React.useState<string>(() => String(Math.max(0, Math.floor(Number(stock || 0)))));
   React.useEffect(() => { setVal(String(Math.max(0, Math.floor(Number(stock || 0))))); }, [stock]);
@@ -470,6 +930,7 @@ function StockInline({ id, stock, disabled, onCommit }: { id: string; stock: num
     if (!Number.isFinite(n)) return;
     onCommit(n);
   }, [val, onCommit]);
+
   return (
     <div className="mt-1 flex items-center justify-end gap-1">
       <input
@@ -512,6 +973,10 @@ function StockAdjustModal({
     if (!Number.isFinite(n)) return;
     onCommit(n);
   }, [val, onCommit]);
+  // ▼ 反映プレビュー用の計算
+  const nextNum = Math.max(0, Math.floor(Number(val || 0)));
+  const currentNum = Math.max(0, Math.floor(Number(initial || 0)));
+  const diff = nextNum - currentNum;
   if (!open) return null;
   return (
     <div className="fixed inset-0 z-[60] grid place-items-center bg-black/40 p-4" role="dialog" aria-modal="true" onClick={onClose}>
@@ -537,10 +1002,429 @@ function StockAdjustModal({
             <span className="text-zinc-700">直接入力</span>
             <input type="number" inputMode="numeric" min={0} step={1} className="mt-1 w-full rounded-xl border px-3 py-3 text-base text-right" value={val} onChange={e => setVal(e.target.value)} onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); commit(); } }} aria-label="在庫数" disabled={disabled} />
           </label>
+          {/* ▼ 反映プレビュー：調整前 → 調整後（±差） */}
+          {/* ▼ 反映プレビュー（強調）：調整前 → 調整後（±差） */}
+          <div
+            className={
+              `mt-3 rounded-xl border px-4 py-3 tabular-nums relative overflow-hidden
+               ${diff === 0
+                ? 'bg-zinc-50 border-zinc-200'
+                : diff > 0
+                  ? 'bg-emerald-50/80 border-emerald-300 ring-1 ring-emerald-300'
+                  : 'bg-red-50/80 border-red-300 ring-1 ring-red-300'}`
+            }
+          >
+            {/* 左端のアクセントバー */}
+            <div
+              className={`absolute inset-y-0 left-0 w-1
+                ${diff === 0 ? 'bg-zinc-200' : diff > 0 ? 'bg-emerald-400' : 'bg-red-400'}`}
+            />
+            <div className="pl-3">
+              <div className="pl-3">
+                <div
+                  className={`text-[11px] uppercase tracking-wide ${diff === 0 ? 'text-zinc-500' : diff > 0 ? 'text-emerald-700' : 'text-red-700'
+                    }`}
+                >
+                  PREVIEW
+                </div>
+                <div className="mt-1 flex items-baseline gap-2">
+                  ...
+
+                  <span className="text-lg font-semibold">{currentNum}</span>
+                  <span className="text-base">→</span>
+                  <span className="text-2xl font-extrabold">{nextNum}</span>
+                  <span
+                    className={`ml-2 inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold
+                    ${diff === 0
+                        ? 'bg-zinc-200 text-zinc-700'
+                        : diff > 0
+                          ? 'bg-emerald-600 text-white'
+                          : 'bg-red-600 text-white'}`}
+                    aria-label="差分"
+                  >
+                    {diff > 0 ? '＋' : diff < 0 ? '－' : '±'}{Math.abs(diff)}
+                  </span>
+                </div>
+                {diff !== 0 && (
+                  <div className={`mt-1 text-[12px] ${diff > 0 ? 'text-emerald-700' : 'text-red-700'}`}>
+                    {diff > 0 ? '在庫を増やします' : '在庫を減らします'}
+                  </div>
+                )}
+              </div>
+            </div>
+
+          </div>
+          <div className="mt-2 flex items-center justify-end gap-2">
+            <button onClick={onClose} className="rounded-xl border px-4 py-3 text-sm">キャンセル</button>
+            <button onClick={commit} disabled={disabled} className={`rounded-xl px-4 py-3 text-sm text-white ${disabled ? "bg-zinc-400 cursor-not-allowed" : "bg-zinc-900"}`}>更新</button>
+          </div>
         </div>
-        <div className="mt-2 flex items-center justify-end gap-2">
-          <button onClick={onClose} className="rounded-xl border px-4 py-3 text-sm">キャンセル</button>
-          <button onClick={commit} disabled={disabled} className={`rounded-xl px-4 py-3 text-sm text-white ${disabled ? "bg-zinc-400 cursor-not-allowed" : "bg-zinc-900"}`}>更新</button>
+      </div >
+      );
+    </div >
+  )
+}
+
+// 受け取り時間 変更モーダル（プリセットを1つ選ぶ）
+function PickupSlotModal({
+  open,
+  productName,
+  initial,           // 初期: 現在の slot_no (1|2|3)
+  presets,
+  onClose,
+  onCommit,          // (val: 1|2|3) => void
+  disabled,
+}: {
+  open: boolean;
+  productName: string;
+  initial: number | null;
+  presets: Record<1 | 2 | 3, { name: string; start: string; end: string }>;
+  onClose: () => void;
+  onCommit: (val: 1 | 2 | 3) => void;
+  disabled: boolean;
+}) {
+  const [val, setVal] = React.useState<number | null>(initial ?? 1);
+  React.useEffect(() => { setVal(initial ?? 1); }, [initial, open]);
+
+  if (!open) return null;
+
+  return (
+    <div className="fixed inset-0 z-[60] grid place-items-center bg-black/40 p-4" role="dialog" aria-modal="true" onClick={onClose}>
+      <div className="w-full max-w-md rounded-2xl bg-white shadow-xl border p-4" onClick={e => e.stopPropagation()}>
+        <div className="text-base font-semibold mb-1">受け取り時間を選択</div>
+        <div className="text-sm text-zinc-600 mb-3">対象: {productName}</div>
+
+        <div className="space-y-2">
+          {[1, 2, 3].map((n) => (
+            <label key={n} className="flex items-center justify-between rounded-xl border px-3 py-2 cursor-pointer hover:bg-zinc-50">
+              <div className="min-w-0">
+                <div className="text-sm font-medium">{presets[n as 1 | 2 | 3]?.name}</div>
+                <div className="text-xs text-zinc-600">{presets[n as 1 | 2 | 3]?.start}〜{presets[n as 1 | 2 | 3]?.end}</div>
+              </div>
+              <input
+                type="radio"
+                name="pickup-slot"
+                className="ml-2"
+                checked={val === n}
+                onChange={() => setVal(n)}
+              />
+            </label>
+          ))}
+        </div>
+
+        <div className="mt-4 flex items-center justify-end gap-2">
+          <button onClick={onClose} className="rounded-xl border px-4 py-2 text-sm">キャンセル</button>
+          <button
+            onClick={() => { if (val === 1 || val === 2 || val === 3) onCommit(val as 1 | 2 | 3); }}
+            disabled={disabled}
+            className={`rounded-xl px-4 py-2 text-sm text-white ${disabled ? "bg-zinc-400 cursor-not-allowed" : "bg-zinc-900 hover:bg-zinc-800"}`}
+          >
+            保存
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ひとこと編集モーダル（300文字まで）
+function NoteEditModal({
+  open,
+  productName,
+  initial,         // 初期値（null/undefinedなら空文字）
+  onClose,
+  onCommit,        // (next: string | null) => void
+  disabled,
+}: {
+  open: boolean;
+  productName: string;
+  initial: string | null | undefined;
+  onClose: () => void;
+  onCommit: (val: string | null) => void;
+  disabled: boolean;
+}) {
+  const [val, setVal] = React.useState<string>("");
+  React.useEffect(() => {
+    if (!open) return;
+    setVal(String(initial ?? "").slice(0, 300));
+  }, [open, initial]);
+
+  if (!open) return null;
+
+  const remain = 300 - (val?.length ?? 0);
+
+  return (
+    <div className="fixed inset-0 z-[60] grid place-items-center bg-black/40 p-4" role="dialog" aria-modal="true" onClick={onClose}>
+      <div className="w-full max-w-md rounded-2xl bg-white shadow-xl border p-4" onClick={e => e.stopPropagation()}>
+        <div className="text-base font-semibold mb-1">「お店からのひとこと」を編集</div>
+        <div className="text-sm text-zinc-600 mb-3">対象: {productName}</div>
+
+        <textarea
+          className="w-full rounded-md border border-zinc-300 px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-zinc-300"
+          placeholder="例）おすすめ商品です。数量限定につきお早めに！"
+          rows={6}
+          maxLength={300}
+          value={val}
+          onChange={(e) => setVal(e.target.value.slice(0, 300))}
+          autoFocus
+        />
+        <div className="mt-1 text-right text-[11px] text-zinc-500">{val.length}/300</div>
+
+        <div className="mt-3 flex items-center justify-end gap-2">
+          <button onClick={onClose} className="rounded-xl border px-4 py-2 text-sm" disabled={disabled}>キャンセル</button>
+          <button
+            onClick={() => onCommit((val ?? "").trim() ? (val ?? "").trim() : null)}
+            className={`rounded-xl px-4 py-2 text-sm text-white ${disabled ? 'bg-zinc-400 cursor-not-allowed' : 'bg-zinc-900 hover:bg-zinc-800'}`}
+            disabled={disabled}
+          >
+            保存
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// 登録済み商品のフル編集モーダル
+function EditProductModal({
+  open,
+  product,
+  presets,
+  disabled,
+  onClose,
+  onCommit, // (patch) => Promise<void>
+}: {
+  open: boolean;
+  product: Product;
+  presets: Record<1 | 2 | 3, { name: string; start: string; end: string }>;
+  disabled: boolean;
+  onClose: () => void;
+  onCommit: (patch: {
+    name: string;
+    price: number;
+    stock: number;
+    pickup_slot_no: number | null;
+    publish_at: string | null;
+    note: string | null;
+  }) => Promise<void>;
+}) {
+  const [name, setName] = React.useState(product.name);
+  const [price, setPrice] = React.useState(String(product.price));
+  const [stock, setStock] = React.useState(String(product.stock));
+  const [slot, setSlot] = React.useState<number | null>(product.pickup_slot_no ?? null);
+
+  const [stockDlgOpen, setStockDlgOpen] = React.useState(false); // ← 在庫調整モーダルの開閉
+
+  // 予約/即時 切替（予約なら datetime-local を編集）
+  const isScheduled = !!product.publish_at && Date.parse(product.publish_at) > Date.now();
+  const [pubMode, setPubMode] = React.useState<'now' | 'schedule'>(isScheduled ? 'schedule' : 'now');
+  const [publishLocal, setPublishLocal] = React.useState<string>(() => {
+    if (!product.publish_at) return '';
+    try {
+      const d = new Date(product.publish_at);
+      // ローカルのYYYY-MM-DDTHH:mm
+      const pad = (n: number) => String(n).padStart(2, '0');
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    } catch { return ''; }
+  });
+  const [note, setNote] = React.useState(String(product.note ?? '').slice(0, 300));
+
+  // 画像は即時更新（既存の ProductImageSlot をこのモーダル内でも使える）
+  if (!open) return null;
+
+  useModalScrollLock(open);
+
+
+  return (
+    <div className="fixed inset-0 z-[70] grid place-items-center bg-black/40 p-4 overscroll-contain" role="dialog" aria-modal="true" onClick={onClose}>
+      <div className="w-full max-w-lg rounded-2xl bg-white shadow-xl border p-4
+             max-h-[calc(100svh-2rem)] overflow-y-auto
+             sm:max-h-[calc(100svh-4rem)]
+             pb-[calc(env(safe-area-inset-bottom)+1.5rem)]" onClick={(e) => e.stopPropagation()}>
+        <div className="text-base font-semibold mb-2">内容を変更（{product.name}）</div>
+        <div className="grid grid-cols-1 gap-2">
+
+          <div>
+            <label className="block text-xs text-zinc-600 mb-1">商品名</label>
+            <input className="w-full rounded-md border border-zinc-300 px-3 py-2 text-sm"
+              value={name} onChange={e => setName(e.target.value)} />
+          </div>
+
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="block text-xs text-zinc-600 mb-1">価格</label>
+              <div className="flex items-center gap-2">
+                <input className="w-full rounded-md border border-zinc-300 px-3 py-2 text-sm [appearance:textfield]"
+                  type="number" inputMode="numeric" min={1} step={1}
+                  value={price} onChange={e => setPrice(e.target.value)} />
+                <span className="text-sm text-zinc-500">円</span>
+              </div>
+            </div>
+            <div>
+              <label className="block text-xs text-zinc-600 mb-1">在庫</label>
+              <div className="flex items-center gap-2">
+                <input
+                  className="w-full rounded-md border border-zinc-300 px-3 py-2 text-sm [appearance:textfield]"
+                  type="number"
+                  inputMode="numeric"
+                  min={0}
+                  step={1}
+                  value={stock}
+                  onChange={e => setStock(e.target.value)}
+                />
+                <span className="text-sm text-zinc-500">個</span>
+
+                {/* 以前の「+5」などがある在庫調整モーダルを開く */}
+                <button
+                  type="button"
+                  className="shrink-0 rounded-xl border px-3 py-2 text-sm bg-white hover:bg-zinc-50"
+                  onClick={() => setStockDlgOpen(true)}
+                  disabled={disabled}
+                >
+                  在庫変更
+                </button>
+              </div>
+            </div>
+
+          </div>
+
+          <div>
+            <label className="block text-xs text-zinc-600 mb-1">受け取り時間</label>
+            <select
+              className="w-full rounded-md border border-zinc-300 px-3 py-2 text-sm bg-white"
+              value={slot === null ? '' : String(slot)}
+              onChange={(e) => setSlot(e.target.value === '' ? null : Number(e.target.value))}
+            >
+              <option value="">未指定</option>
+              <option value="1">{presets[1]?.name}（{presets[1]?.start}〜{presets[1]?.end}）</option>
+              <option value="2">{presets[2]?.name}（{presets[2]?.start}〜{presets[2]?.end}）</option>
+              <option value="3">{presets[3]?.name}（{presets[3]?.start}〜{presets[3]?.end}）</option>
+            </select>
+          </div>
+
+          {/* 画像（即時反映型） */}
+          <div>
+            <label className="block text-xs text-zinc-600 mb-1">商品画像</label>
+            <div className="grid grid-cols-3 gap-2">
+              <ProductImageSlot
+                mode="existing"
+                productId={product.id}
+                slot="main"
+                label="メイン"
+                path={product.main_image_path}
+                onReload={async () => { }}
+                // ★ モーダルでは「カメラ」「変更」
+                actions={{ secondary: 'change' }}
+              />
+              <ProductImageSlot
+                mode="existing"
+                productId={product.id}
+                slot="sub1"
+                label="サブ1"
+                path={product.sub_image_path1}
+                onReload={async () => { }}
+                // ★ モーダルでは「カメラ」「削除」
+                actions={{ secondary: 'delete' }}
+              />
+              <ProductImageSlot
+                mode="existing"
+                productId={product.id}
+                slot="sub2"
+                label="サブ2"
+                path={product.sub_image_path2}
+                onReload={async () => { }}
+                // ★ モーダルでは「カメラ」「削除」
+                actions={{ secondary: 'delete' }}
+              />
+            </div>
+            <p className="mt-2 text-[11px] text-zinc-600">メインは必須／サブは任意。タップして画像を選択してください。</p>
+          </div>
+
+          <div>
+            <label className="block text-xs text-zinc-600 mb-1">お店からのひとこと（任意）</label>
+            <textarea
+              className="w-full rounded-md border border-zinc-300 px-3 py-2 text-sm"
+              rows={4} maxLength={300}
+              value={note} onChange={(e) => setNote(e.target.value.slice(0, 300))}
+              placeholder="例）おすすめ商品です。数量限定につきお早めに！"
+            />
+            <div className="mt-1 text-right text-[11px] text-zinc-500">{note.length}/300</div>
+          </div>
+
+          {/* <div>
+            <label className="block text-xs text-zinc-600 mb-1">公開</label>
+            <div className="w-full rounded-lg border border-zinc-300 overflow-hidden bg-white">
+              <div className="grid grid-cols-2 divide-x divide-zinc-300">
+                <label className="flex items-center justify-center gap-2 py-2 text-sm cursor-pointer">
+                  <input type="radio" name="pub-edit" checked={pubMode === 'now'} onChange={() => setPubMode('now')} />
+                  <span>今すぐ公開</span>
+                </label>
+                <label className="flex items-center justify-center gap-2 py-2 text-sm cursor-pointer">
+                  <input type="radio" name="pub-edit" checked={pubMode === 'schedule'} onChange={() => setPubMode('schedule')} />
+                  <span>予約して公開</span>
+                </label>
+              </div>
+            </div>
+            {pubMode === 'schedule' && (
+              <div className="mt-2">
+                <input
+                  type="datetime-local"
+                  className="w-full rounded-md border border-zinc-300 px-3 py-2 text-sm bg-white"
+                  value={publishLocal}
+                  onChange={(e) => setPublishLocal(e.target.value)}
+                  step={60}
+                />
+              </div>
+            )}
+          </div> */}
+
+          <div className="flex items-center justify-end gap-2 pt-1">
+            <button type="button" className="rounded-xl border px-4 py-2 text-sm" onClick={onClose} disabled={disabled}>キャンセル</button>
+            <button
+              type="button"
+              className={`rounded-xl px-4 py-2 text-sm text-white ${disabled ? 'bg-zinc-400' : 'bg-zinc-900 hover:bg-zinc-800'}`}
+              onClick={async () => {
+                // バリデーション
+                const priceNum = Math.max(0, Math.floor(Number(price || 0)));
+                const stockNum = Math.max(0, Math.floor(Number(stock || 0)));
+                if (!name.trim()) { alert('商品名は必須です'); return; }
+                if (!Number.isFinite(priceNum) || priceNum < 1) { alert('価格は1以上の整数で入力してください'); return; }
+                if (!Number.isFinite(stockNum) || stockNum < 0) { alert('在庫は0以上の整数で入力してください'); return; }
+
+                let publishISO: string | null = null;
+                if (pubMode === 'schedule') {
+                  if (!publishLocal) { alert('公開開始の日時を入力してください'); return; }
+                  publishISO = new Date(publishLocal.replace(' ', 'T')).toISOString();
+                }
+
+                await onCommit({
+                  name: name.trim(),
+                  price: priceNum,
+                  stock: stockNum,
+                  pickup_slot_no: slot ?? null,
+                  publish_at: publishISO,
+                  note: (note ?? '').trim() ? (note ?? '').trim().slice(0, 300) : null,
+                });
+              }}
+              disabled={disabled}
+            >
+              保存
+            </button>
+            {/* 在庫調整モーダル（＋1/＋5/＋10 等のボタンUI） */}
+            <StockAdjustModal
+              open={stockDlgOpen}
+              initial={Math.max(0, Math.floor(Number(stock || 0)))}
+              productName={product.name}
+              disabled={disabled}
+              onClose={() => setStockDlgOpen(false)}
+              onCommit={(val) => {
+                // モーダルで確定した値を、この編集モーダルの在庫入力へ反映
+                setStock(String(Math.max(0, Math.floor(Number(val || 0)))));
+                setStockDlgOpen(false);
+              }}
+            />
+
+          </div>
         </div>
       </div>
     </div>
@@ -548,10 +1432,9 @@ function StockAdjustModal({
 }
 
 
+
 function useImageUpload() {
   const supabase = useSupabase();
-
-  type Slot = "main" | "sub1" | "sub2";
   const colOf = (slot: Slot) =>
     slot === "main" ? "main_image_path" :
       slot === "sub1" ? "sub_image_path1" : "sub_image_path2";
@@ -611,50 +1494,697 @@ function useImageUpload() {
     return path;
   }, [supabase]);
 
-  return { uploadProductImage };
+  const deleteProductImage = useCallback(async (productId: string, slot: Slot) => {
+    if (!supabase) throw new Error("Supabase 未初期化");
+
+    // 該当商品の store_id と現在の画像パスを取得
+    const { data: before, error: fetchErr } = await supabase
+      .from("products")
+      .select("store_id, main_image_path, sub_image_path1, sub_image_path2")
+      .eq("id", productId)
+      .single();
+    if (fetchErr) throw fetchErr;
+
+    const sid = getStoreId();
+    if (!before) throw new Error("対象商品が存在しません");
+    if (!sid) throw new Error("店舗IDが未設定です（NEXT_PUBLIC_STORE_ID）");
+    if (String(before.store_id ?? "") !== String(sid)) {
+      throw new Error("他店舗の商品は更新できません");
+    }
+
+    // スロットに紐づく現行パスを取り出し
+    const col = colOf(slot);
+    const currentPath =
+      slot === "main" ? before.main_image_path :
+        slot === "sub1" ? before.sub_image_path1 :
+          before.sub_image_path2;
+
+    if (!currentPath) return; // 既に空なら何もしない
+
+    // 1) DB を null に更新（store_id で二重限定）
+    const upd = await supabase
+      .from("products")
+      .update({ [col]: null })
+      .eq("id", productId)
+      .eq("store_id", sid);
+    if (upd.error) throw upd.error;
+
+    // 2) ストレージから物理削除（失敗しても致命ではないので握りつぶし）
+    await supabase.storage.from("public-images").remove([currentPath]).catch(() => { });
+
+    return true;
+  }, [supabase]);
+
+
+  return { uploadProductImage, deleteProductImage };
 }
 
+// ▼ 画像スロット共通カード（登録済み/新規どちらでも使える）
+// type Slot = "main" | "sub1" | "sub2";
+type StagedProps = {
+  mode: "staged";                 // 新規登録フォーム用（Fileを保持してsubmit時に一括アップ）
+  label: string;                  // メイン / サブ1 / サブ2
+  required?: boolean;
+  file: File | null;              // 現在のFile
+  onChange: (f: File | null) => void;
+  actions?: { secondary: 'delete' | 'change' }; // ★ 追加（モーダル用：メインは'change'、サブは'delete'）
+  readonly?: boolean; // 出品一覧のサムネを閲覧専用にする
+};
+type ExistingProps = {
+  mode: "existing";               // 登録済み商品の即時更新
+  productId: string;
+  slot: Slot;
+  label: string;
+  path: string | null;            // Supabase Storage のパス
+  imgVer?: number;                // キャッシュ破り
+  onReload: () => Promise<void>;  // 親のreload（DB再読込）
+  actions?: { secondary: 'delete' | 'change' }; // ★ 追加（モーダル用：メインは'change'、サブは'delete'）
+  readonly?: boolean;
+};
+
+function ProductImageSlot(props: StagedProps | ExistingProps) {
+  const { uploadProductImage, deleteProductImage } = useImageUpload();
+  const [openCam, setOpenCam] = React.useState(false);
+  const pickerRef = React.useRef<HTMLInputElement | null>(null);
+  const [loading, setLoading] = React.useState(false);
+
+  // 共通見た目クラス
+  const Card: React.FC<{ children: React.ReactNode }> = ({ children }) => (
+    <div className="rounded-[14px] border border-zinc-300 bg-white p-2">{children}</div>
+  );
+  const ThumbButton: React.FC<{ onClick: () => void; children: React.ReactNode }> = ({ onClick, children }) => (
+    <button
+      type="button"
+      onClick={onClick}
+      className="relative w-full aspect-square rounded-[12px] overflow-hidden bg-zinc-100 border border-zinc-300 flex items-center justify-center group focus:outline-none focus:ring-2 focus:ring-red-400/60"
+    >
+      {children}
+      <span className="pointer-events-none absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity bg-black/5" />
+    </button>
+  );
+
+  // プレビュー（stagedのみFileから）
+  const [preview, setPreview] = React.useState<string | null>(null);
+  React.useEffect(() => {
+    if (props.mode !== "staged") return;
+    if (!props.file) { setPreview(null); return; }
+    const url = URL.createObjectURL(props.file);
+    setPreview(url);
+    return () => { URL.revokeObjectURL(url); };
+  }, [props]);
+
+  const isReadonly = (props as any).readonly === true;
+
+  // サムネの中身
+  const renderThumb = () => {
+    const label = props.label;
+    const addOrChange =
+      props.mode === "staged" ? (preview ? "変更" : "追加")
+        : (props.path ? "変更" : "追加");
+
+    let imgEl: React.ReactNode = <span className="text-3xl">{label === "メイン" ? "📷" : "🖼️"}</span>;
+    if (props.mode === "staged" && preview) {
+      imgEl = <img src={preview} alt={`${label}`} className="w-full h-full object-cover transition-transform group-hover:scale-[1.02]" />;
+    }
+    if (props.mode === "existing" && props.path) {
+      imgEl = (
+        <img
+          src={`${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/public-images/${props.path}?v=${props.imgVer ?? 0}`}
+          alt={label}
+          className="w-full h-full object-cover transition-transform group-hover:scale-[1.02]"
+          loading="lazy"
+          decoding="async"
+        />
+      );
+    }
+
+    return (
+      <>
+        {imgEl}
+        {/* 左上ラベル */}
+        <span className="absolute top-1 left-1 px-1.5 py-[2px] text-[11px] rounded-full bg-white/95 border border-zinc-300 text-zinc-700 shadow-[0_0_0_1px_rgba(0,0,0,0.02)]">
+          {label}{(props as StagedProps).required ? " *" : ""}
+        </span>
+        {/* 右下バッジ */}
+        {/* 右下バッジ：閲覧専用では出さない */}
+        {!isReadonly && (
+          <span className="absolute bottom-1 right-1 px-1.5 py-[2px] text-[11px] rounded-md bg-white/95 border border-zinc-300 text-zinc-700">
+            {addOrChange}
+          </span>
+        )}
+        {loading && (
+          <div className="absolute inset-0 grid place-items-center text-xs bg-white/70">更新中…</div>
+        )}
+      </>
+    );
+  };
+
+  // ギャラリー選択（captureなし）
+  const onPick = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.currentTarget.files?.[0] || null;
+    e.currentTarget.value = "";
+    if (props.mode === "staged") {
+      props.onChange(f);
+    } else if (props.mode === "existing" && f) {
+      (async () => {
+        try {
+          setLoading(true);
+          await uploadProductImage(props.productId, f, props.slot);
+          await props.onReload();
+          alert(`${props.label}画像を更新しました`);
+        } catch (err: any) {
+          alert(`アップロードに失敗しました: ${err?.message ?? err}`);
+        } finally { setLoading(false); }
+      })();
+    }
+  };
+
+  // カメラ撮影で受け取ったBlobをFile化して共通処理へ
+  const onCaptured = (blob: Blob) => {
+    const file = new File([blob], "camera.jpg", { type: blob.type || "image/jpeg" });
+    if (props.mode === "staged") {
+      props.onChange(file);
+    } else if (props.mode === "existing") {
+      (async () => {
+        try {
+          setLoading(true);
+          await uploadProductImage(props.productId, file, props.slot);
+          await props.onReload();
+          alert(`${props.label}画像を更新しました`);
+        } catch (e: any) {
+          alert(`アップロードに失敗しました: ${e?.message ?? e}`);
+        } finally { setLoading(false); }
+      })();
+    }
+  };
+
+  // 削除処理
+  const onDelete = () => {
+    if (props.mode === "staged") {
+      props.onChange(null);
+    } else {
+      if (!confirm(`${props.label}画像を削除しますか？`)) return;
+      (async () => {
+        try {
+          setLoading(true);
+          await deleteProductImage(props.productId, props.slot);
+          await props.onReload();
+          alert(`${props.label}画像を削除しました`);
+        } catch (e: any) {
+          alert(`削除に失敗しました: ${e?.message ?? e}`);
+        } finally { setLoading(false); }
+      })();
+    }
+  };
+
+  const hasImage = props.mode === "staged" ? !!props.file : !!props.path;
+  type ActionCfg = { secondary: 'delete' | 'change' } | null;
+  const actions: ActionCfg = (props as any).actions ?? null; // ★ JSXに書かない！
+
+  return (
+    <Card>
+      {/* サムネ：閲覧専用ならクリック不可の <div>、通常は従来どおりボタン */}
+      {isReadonly ? (
+        <div className="relative w-full aspect-square rounded-[12px] overflow-hidden bg-zinc-100 border border-zinc-300 flex items-center justify-center">
+          {renderThumb()}
+        </div>
+      ) : (
+        <ThumbButton onClick={() => pickerRef.current?.click()}>
+          {renderThumb()}
+        </ThumbButton>
+      )}
+
+
+      {/* 隠し input（ギャラリー） */}
+      {!isReadonly && (
+        <input
+          ref={pickerRef}
+          type="file"
+          accept="image/*"
+          className="hidden"
+          onChange={onPick}
+        />
+      )}
+      {/* // ★ モーダル用のアクション上書き（任意）
+      //   - actions.secondary: 'delete' | 'change'
+      //     'change' は「変更」ボタンとしてファイル選択を開く */}
+
+      {/* 縦積みボタン（新規登録フォーム or モーダル上書き時に表示） */}
+      {(props.mode === "staged" || actions) && !isReadonly && (
+        <div className="mt-2 flex flex-col gap-1">
+          {/* カメラ */}
+          <button
+            type="button"
+            className="w-full rounded-lg border px-2 py-1 text-[11px] hover:bg-zinc-50"
+            onClick={() => setOpenCam(true)}
+            disabled={loading}
+          >
+            {/* モーダルでは短いラベルにする指定 */}
+            {actions ? "カメラ" : "カメラで撮る"}
+          </button>
+
+          {/* 削除 or 変更（モーダルのメイン画像は「変更」） */}
+          <button
+            type="button"
+            className={`w-full rounded-lg border px-2 py-1 text-[11px] ${actions?.secondary === 'change'
+              ? ''
+              : 'text-red-600 border-red-300 hover:bg-red-50'
+              } disabled:opacity-40`}
+            onClick={() => {
+              if (actions?.secondary === 'change') {
+                // 「変更」= ファイル選択ダイアログを開く
+                pickerRef.current?.click();
+              } else {
+                onDelete();
+              }
+            }}
+            disabled={loading || (!hasImage && props.mode === "staged" && actions?.secondary !== 'change')}
+          >
+            {actions?.secondary === 'change' ? '変更' : '削除'}
+          </button>
+        </div>
+      )}
+
+      {/* 内蔵のカメラモーダル（既存のを流用） */}
+      {openCam && !isReadonly && (
+        <CameraCaptureModal
+          open={true}
+          title={`${props.label}画像を撮影`}
+          onClose={() => setOpenCam(false)}
+          onCapture={(b) => { onCaptured(b); setOpenCam(false); }}
+          facing="environment"
+        />
+      )}
+    </Card>
+  );
+}
 
 
 
 function ProductForm() {
   useEnsureAuth(); // ★ 追加：匿名ログインで authenticated を確保
-  const { products, perr, ploading, add, remove, updateStock, reload } = useProducts();
+  const { products, perr, ploading, add, remove, updateStock, updatePickupSlot, updateNote, updateProduct, reload } = useProducts();
   // ★ 画像のキャッシュ破り用バージョン
   const [imgVer, setImgVer] = useState(0);
   const [adjust, setAdjust] = useState<null | { id: string; name: string; stock: number }>(null);
   const [pending, setPending] = useState<Record<string, { id: string; name: string; current: number; next: number }>>({});
   const [name, setName] = useState("");
+  const [note, setNote] = useState("");
   const [price, setPrice] = useState("");
   const [stock, setStock] = useState("");
+
+
+
+  // ▼ 既存商品の「ひとこと」編集用
+  const [noteDlg, setNoteDlg] = useState<null | { id: string; name: string; note: string }>(null);
+  const [editDlg, setEditDlg] = useState<null | Product>(null);
+
+
+  const [pickupSlotForNew, setPickupSlotForNew] = useState<number | null>(null); // null=未指定
+  // ▼ メイン画像（必須）
+  const [mainImageFile, setMainImageFile] = useState<File | null>(null);
+  // ▼ サブ画像（任意：2枚まで）
+  const [subImageFile1, setSubImageFile1] = useState<File | null>(null);
+  const [subImageFile2, setSubImageFile2] = useState<File | null>(null);
+  // ▼ 画像プレビューURL（ObjectURL）
+  const [imgPreview, setImgPreview] = useState<{ main?: string; sub1?: string; sub2?: string }>({});
+
+  // ファイル選択→プレビュー更新（メモリ解放込み）
+  useEffect(() => {
+    const next: { main?: string; sub1?: string; sub2?: string } = {};
+    if (mainImageFile) next.main = URL.createObjectURL(mainImageFile);
+    if (subImageFile1) next.sub1 = URL.createObjectURL(subImageFile1);
+    if (subImageFile2) next.sub2 = URL.createObjectURL(subImageFile2);
+    setImgPreview(next);
+    return () => {
+      try { if (next.main) URL.revokeObjectURL(next.main); } catch { }
+      try { if (next.sub1) URL.revokeObjectURL(next.sub1); } catch { }
+      try { if (next.sub2) URL.revokeObjectURL(next.sub2); } catch { }
+    };
+  }, [mainImageFile, subImageFile1, subImageFile2]);
+
+  const subImageInputRef1 = useRef<HTMLInputElement | null>(null);
+  const subImageInputRef2 = useRef<HTMLInputElement | null>(null);
+
+  const mainImageInputRef = useRef<HTMLInputElement | null>(null);
+  // ▼ フォーム用：ギャラリー選択（capture なし）の input を3本
+  const mainPickerRef = useRef<HTMLInputElement | null>(null);
+  const sub1PickerRef = useRef<HTMLInputElement | null>(null);
+  const sub2PickerRef = useRef<HTMLInputElement | null>(null);
+
+
   const take = storeTake(Number(price || 0));
-  const { uploadProductImage } = useImageUpload();
+  const { uploadProductImage, deleteProductImage } = useImageUpload();
   const [uploadingId, setUploadingId] = useState<string | null>(null);
+
+  // 登録フォームに「公開タイミング」を追加
+  const [publishMode, setPublishMode] = useState<'now' | 'schedule'>('now');
+  const [publishLocal, setPublishLocal] = useState<string>(''); // 'YYYY-MM-DDTHH:mm' （ローカル）
+  // ▼ フォーム用：カメラ撮影モーダルの制御（登録済みと同じモーダルを使う）
+  const [formCam, setFormCam] = useState<null | { slot: "main" | "sub1" | "sub2"; label: string }>(null);
+
+
   // ▼▼ ギャラリー（モーダル）用 state
   const [gallery, setGallery] = useState<null | {
     id: string;
     name: string;
     paths: string[]; // [main, sub1, sub2] の有効なものだけを詰める
   }>(null);
+  // カメラ撮影モーダル用 state
+  const [cam, setCam] = useState<null | {
+    productId: string;
+    slot: "main" | "sub1" | "sub2";
+    label: string;
+    name: string; // 商品名（トースト用）
+  }>(null);
+
   const [gIndex, setGIndex] = useState(0);
+  // ▼ 未反映の合計差分（バッジ表示用）
+  const totalDelta = useMemo(() => {
+    const list = Object.values(pending);
+    const sum = list.reduce((acc, it) => acc + (it.next - it.current), 0);
+    return { sum, count: list.length };
+  }, [pending]);
+  const { presets } = usePickupPresets();
+  // 受け取り時間ラベル（名称＋時刻）を作る
+  const labelForSlot = useCallback((slot: number | null | undefined) => {
+    if (slot == null) return "未設定";
+    const s = presets[slot as 1 | 2 | 3];
+    return s ? `${s.name}（${s.start}〜${s.end}）` : "未設定";
+  }, [presets]);
+
+  // 編集中の商品IDと一時値
+  const [editPickupId, setEditPickupId] = useState<string | null>(null);
+  const [editPickupVal, setEditPickupVal] = useState<number | null>(null);
+  // 受け取り時間 変更モーダル用 state
+  const [pickupDlg, setPickupDlg] = useState<null | { id: string; name: string; current: number | null }>(null);
+  // ▼ やさしいトースト（非モーダル）
+  const [toastMsg, setToastMsg] = useState<string | null>(null);
+  const gentleWarn = useCallback((msg: string) => {
+    setToastMsg(msg);
+    // 2秒で自動消去
+    setTimeout(() => setToastMsg(null), 2000);
+  }, []);
 
   return (
     <div className="rounded-2xl border bg-white p-4 space-y-3">
-      <SectionTitle>商品</SectionTitle>
-      <form className="flex flex-wrap items-center gap-2" onSubmit={(e) => { e.preventDefault(); add({ name: name.trim(), price: Number(price || 0), stock: Number(stock || 0) }); setName(""); setPrice(""); setStock(""); }}>
-        <input className="rounded-xl border px-3 py-2 text-sm" placeholder="商品名" value={name} onChange={e => setName(e.target.value)} required />
-        <input className="rounded-xl border px-3 py-2 text-sm" placeholder="価格" inputMode="numeric" value={price} onChange={e => setPrice(e.target.value)} />
-        <input className="rounded-xl border px-3 py-2 text-sm" placeholder="在庫" inputMode="numeric" value={stock} onChange={e => setStock(e.target.value)} />
-        <input className="rounded-xl border px-3 py-2 text-sm bg-zinc-50" value={`店側受取額 ${yen(take)}`} readOnly aria-label="店側受取額" />
-        <button className="rounded-xl bg-zinc-900 text-white px-3 py-2 text-sm" disabled={ploading}>追加</button>
+      <SectionTitle>商品登録</SectionTitle>
+      <form
+        className="grid grid-cols-1 md:grid-cols-2 gap-2 md:gap-3 items-start"
+        onSubmit={async (e) => {
+          e.preventDefault();
+
+          const nameOk = name.trim().length > 0;
+          const priceNum = Math.floor(Number(price));
+          const stockNum = Math.floor(Number(stock));
+          const priceOk = Number.isFinite(priceNum) && priceNum >= 1;
+          const stockOk = Number.isFinite(stockNum) && stockNum >= 0;
+          const pickupOk = pickupSlotForNew !== null;
+
+          if (!nameOk) { alert('商品名は必須です'); return; }
+          if (!priceOk) { alert('価格は1以上の整数で入力してください'); return; }
+          if (!stockOk) { alert('在庫は0以上の整数で入力してください'); return; }
+          if (!pickupOk) { alert('受け取り時間を選択してください'); return; }
+          if (!mainImageFile) { alert('メイン画像を選択してください'); return; }
+
+          // 予約 ISO を作成（予約モードのときだけ）
+          let publishISO: string | null = null;
+          if (publishMode === 'schedule') {
+            if (!publishLocal) { alert('公開開始の日時を入力してください'); return; }
+            const local = publishLocal; // 'YYYY-MM-DDTHH:mm'
+            publishISO = new Date(local.replace(' ', 'T')).toISOString();
+          }
+
+          // 1) まず商品レコードを作成
+          const created = await add({
+            name: name.trim(),
+            price: priceNum,
+            stock: stockNum,
+            pickup_slot_no: pickupSlotForNew,
+            publish_at: publishISO,
+            note: note.trim() || null,
+          });
+
+          if (!created) return;
+
+          // 2) 直後にメイン画像を必須アップロード
+          try {
+            await uploadProductImage(created.id, mainImageFile, "main");
+            await reload();
+            setImgVer(v => v + 1);
+            alert('メイン画像を登録しました');
+            // ▼ サブ画像（任意）：失敗しても商品はロールバックしない（メインは既にOKのため）
+            try {
+              if (subImageFile1) {
+                await uploadProductImage(created.id, subImageFile1, "sub1");
+              }
+              if (subImageFile2) {
+                await uploadProductImage(created.id, subImageFile2, "sub2");
+              }
+            } catch (e) {
+              console.warn('[image] sub upload failed', e);
+              emitToast?.('error' as any, '一部のサブ画像のアップロードに失敗しました（後から登録/変更できます）');
+            }
+
+          } catch (err: any) {
+            // アップロード失敗時は商品をロールバック（必須要件を満たせないため）
+            try { await remove(created.id); } catch { }
+            alert(`メイン画像のアップロードに失敗しました: ${err?.message ?? err}`);
+            return;
+          }
+
+          // 3) クリア
+          setName(""); setPrice(""); setStock("");
+          setNote("");
+          setPickupSlotForNew(null);
+          setPublishMode('now'); setPublishLocal("");
+          setMainImageFile(null);
+          setSubImageFile1(null);
+          setSubImageFile2(null);
+          if (subImageInputRef1.current) subImageInputRef1.current.value = "";
+          if (subImageInputRef2.current) subImageInputRef2.current.value = "";
+          if (mainImageInputRef.current) mainImageInputRef.current.value = "";
+          if (mainPickerRef.current) mainPickerRef.current.value = "";
+          if (sub1PickerRef.current) sub1PickerRef.current.value = "";
+          if (sub2PickerRef.current) sub2PickerRef.current.value = "";
+
+        }}
+      >
+
+        {/* 商品名（2カラムまたぎ） */}
+        <div className="md:col-span-2">
+          <label className="block text-xs text-zinc-600 mb-1">商品名</label>
+          <input
+            className="w-full rounded-md border border-zinc-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-zinc-300"
+            placeholder="商品名"
+            value={name}
+            onChange={e => setName(e.target.value)}
+            required
+          />
+        </div>
+
+
+        {/* 価格 */}
+        <div>
+          <label className="block text-xs text-zinc-600 mb-1">価格</label>
+          <div className="flex items-center gap-2">
+            <input
+              className="w-full rounded-md border border-zinc-300 px-3 py-2 text-sm [appearance:textfield] focus:outline-none focus:ring-2 focus:ring-zinc-300"
+              placeholder="0"
+              type="number"
+              inputMode="numeric"
+              min={1}
+              step={1}
+              value={price}
+              onChange={e => setPrice(e.target.value)}
+              required
+            />
+            <span className="shrink-0 text-sm text-zinc-500">円</span>
+          </div>
+        </div>
+
+        {/* 店側受取額（サマリ行・右寄せ） */}
+        <div className="md:col-span-2 flex items-center justify-between pt-1">
+          <span className="text-xs text-zinc-500">手数料差引後</span>
+          <span className="text-xs font-medium text-zinc-800 tabular-nums">
+            店側受取額 {yen(take)}
+          </span>
+        </div>
+
+        {/* 在庫 */}
+        <div>
+          <label className="block text-xs text-zinc-600 mb-1">在庫</label>
+          <div className="flex items-center gap-2">
+            <input
+              className="w-full rounded-md border border-zinc-300 px-3 py-2 text-sm [appearance:textfield] focus:outline-none focus:ring-2 focus:ring-zinc-300"
+              placeholder="0"
+              type="number"
+              inputMode="numeric"
+              min={0}
+              step={1}
+              value={stock}
+              onChange={e => setStock(e.target.value)}
+              required
+            />
+            <span className="shrink-0 text-sm text-zinc-500">個</span>
+          </div>
+        </div>
+
+        {/* 受け取り時間（プリセット） */}
+        <div>
+          <label className="block text-xs text-zinc-600 mb-1">受け取り時間</label>
+          <select
+            className="w-full rounded-md border border-zinc-300 px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-zinc-300"
+            value={pickupSlotForNew === null ? '' : String(pickupSlotForNew)}
+            onChange={(e) => {
+              const v = e.target.value;
+              setPickupSlotForNew(v === '' ? null : Number(v));
+            }}
+            aria-label="受取プリセット"
+            title="受取プリセット"
+          >
+            <option value="">未指定</option>
+            <option value="1">{presets[1]?.name}（{presets[1]?.start}〜{presets[1]?.end}）</option>
+            <option value="2">{presets[2]?.name}（{presets[2]?.start}〜{presets[2]?.end}）</option>
+            <option value="3">{presets[3]?.name}（{presets[3]?.start}〜{presets[3]?.end}）</option>
+          </select>
+        </div>
+
+        {/* 商品画像（メイン1＋サブ2） / 登録済みと同様の3サムネUI */}
+        {/* 商品画像（メイン1＋サブ2） / 共通カードで統一 */}
+        <div className="md:col-span-2">
+          <label className="block text-xs text-zinc-600 mb-1">商品画像</label>
+          <div className="grid grid-cols-3 gap-2">
+            <ProductImageSlot
+              mode="staged"
+              label="メイン"
+              required
+              file={mainImageFile}
+              onChange={setMainImageFile}
+            />
+            <ProductImageSlot
+              mode="staged"
+              label="サブ1"
+              file={subImageFile1}
+              onChange={setSubImageFile1}
+            />
+            <ProductImageSlot
+              mode="staged"
+              label="サブ2"
+              file={subImageFile2}
+              onChange={setSubImageFile2}
+            />
+          </div>
+          <p className="mt-2 text-[11px] text-zinc-600">
+            メインは必須／サブは任意。タップで画像を選択、「カメラで撮る」で撮影。横長または正方形推奨・~5MB 目安。
+          </p>
+        </div>
+
+        {/* お店からのひとこと（任意） */}
+        <div className="md:col-span-2">
+          <label className="block text-xs text-zinc-600 mb-1">お店からのひとこと（任意）</label>
+          <textarea
+            className="w-full rounded-md border border-zinc-300 px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-zinc-300"
+            placeholder="例）おすすめ商品です。数量限定につきお早めに！"
+            rows={4}
+            maxLength={300}
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+          />
+          <div className="mt-1 text-right text-[11px] text-zinc-500">{note.length}/300</div>
+        </div>
+
+
+        {/* 公開タイミング（今すぐ / 予約して公開） */}
+        <div className="md:col-span-2">
+          <label className="block text-xs text-zinc-600 mb-1">公開</label>
+
+          {/* ▼ PCでもSPと同じ見た目：2分割トグル風 */}
+          <div className="w-full rounded-lg border border-zinc-300 overflow-hidden bg-white">
+            <div className="grid grid-cols-2 divide-x divide-zinc-300">
+              <label className="flex items-center justify-center gap-2 py-2 md:py-2.5 text-sm cursor-pointer">
+                <input
+                  type="radio"
+                  name="pub"
+                  checked={publishMode === 'now'}
+                  onChange={() => setPublishMode('now')}
+                />
+                <span>今すぐ公開</span>
+              </label>
+              <label className="flex items-center justify-center gap-2 py-2 md:py-2.5 text-sm cursor-pointer">
+                <input
+                  type="radio"
+                  name="pub"
+                  checked={publishMode === 'schedule'}
+                  onChange={() => setPublishMode('schedule')}
+                />
+                <span>予約して公開</span>
+              </label>
+            </div>
+          </div>
+
+          {publishMode === 'schedule' && (
+            <div className="mt-2">
+              <input
+                type="datetime-local"
+                className="w-full rounded-md border border-zinc-300 px-3 py-2 text-sm bg-white"
+                value={publishLocal}
+                onChange={(e) => setPublishLocal(e.target.value)}
+                step={60}
+                aria-label="公開開始（ローカル）"
+              />
+            </div>
+          )}
+        </div>
+
+
+        {/* 追加ボタン（フル幅・親指タップしやすく） */}
+        <div className="md:col-span-2">
+          <button
+            className="w-full rounded-xl bg-zinc-900 text-white mt-6 mb-8 py-3 text-sm font-medium shadow-sm hover:opacity-90 active:opacity-80 disabled:opacity-50 disabled:cursor-not-allowed"
+            disabled={
+              ploading ||
+              !name.trim() ||
+              !price.trim() ||
+              !stock.trim() ||
+              pickupSlotForNew === null ||
+              !mainImageFile // ★ メイン画像必須
+            }
+          >
+            追加
+          </button>
+        </div>
       </form>
+
+      {/* フォーム用：カメラ撮影モーダル（登録済みと同一コンポーネントを再利用） */}
+      {formCam && (
+        <CameraCaptureModal
+          open={true}
+          title={`${formCam.label}画像を撮影`}
+          onClose={() => setFormCam(null)}
+          onCapture={(blob) => {
+            const file = new File([blob], "camera.jpg", { type: blob.type || "image/jpeg" });
+            if (formCam.slot === "main") setMainImageFile(file);
+            if (formCam.slot === "sub1") setSubImageFile1(file);
+            if (formCam.slot === "sub2") setSubImageFile2(file);
+            setFormCam(null);
+          }}
+          facing="environment"
+        />
+      )}
+
+
       {perr ? <div className="text-sm text-red-600">{perr}</div> : null}
+
+      {/* ▼ ここで見出しを追加（商品が1件以上のとき） */}
+      {products.length > 0 && <SectionTitle>出品中の商品</SectionTitle>}
+
       <div className="grid grid-cols-1 gap-3">
         {products.map((p) => {
           return (
             <div key={p.id} className="rounded-2xl border bg-white shadow-sm overflow-hidden">
               {/* ヘッダー：商品名 + 在庫チップ（価格は下段に移動） */}
-              <div className="px-4 pt-4">
+              <div className="px-4 pt-4 mb-4">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
                     <div
@@ -675,118 +2205,195 @@ function ProductForm() {
                         のこり {p.stock} 個
                       </span>
                     </div>
+
+                    {/* 予約公開バッジ（表示のみ：既存商品の編集は不可） */}
+                    {p.publish_at ? (() => {
+                      const now = Date.now();
+                      const ts = Date.parse(p.publish_at!);
+                      const scheduled = isFinite(ts) && ts > now;
+                      return (
+                        <div className="mt-1 flex items-center gap-2">
+                          <span
+                            className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] border
+          ${scheduled ? 'bg-blue-50 text-blue-700 border-blue-200' : 'bg-zinc-100 text-zinc-600 border-zinc-200'}`}
+                          >
+                            {scheduled ? '予約公開' : '公開済（予約）'}
+                          </span>
+                          <span className="text-[11px] text-zinc-500" suppressHydrationWarning>
+                            {scheduled ? new Date(p.publish_at!).toLocaleString('ja-JP') : ''}
+                          </span>
+                        </div>
+                      );
+                    })() : null}
+
+
+                    {/* ▼ その商品の未反映内容がある場合だけ、前→後（±差）をカード上でも表示 */}
+                    {/* ▼ この商品の未反映差分（強調チップ） */}
+                    {pending[p.id] ? (() => {
+                      const it = pending[p.id];
+                      const diff = it.next - it.current;
+                      const chipTone =
+                        diff === 0 ? 'bg-zinc-200 text-zinc-800'
+                          : diff > 0 ? 'bg-emerald-600 text-white'
+                            : 'bg-red-600 text-white';
+                      return (
+                        <div className="mt-1 flex items-center gap-1 text-[12px] tabular-nums">
+                          <span className="text-zinc-600">未反映:</span>
+                          <span className="font-medium">{it.current}</span>
+                          <span>→</span>
+                          <span className="font-semibold">{it.next}</span>
+                          <span className={`ml-1 inline-flex items-center px-1.5 py-0.5 rounded-full text-[11px] ${chipTone}`}>
+                            {diff > 0 ? '＋' : diff < 0 ? '－' : '±'}{Math.abs(diff)}
+                          </span>
+                        </div>
+                      );
+                    })() : null}
+
                   </div>
-                  {/* 右側は空ける（価格表示は下段へ移動） */}
-                  <div className="shrink-0" />
+
+                  {/* 右側：価格・店側受取（ヘッダー内に配置） */}
+                  <div className="shrink-0 text-right leading-tight">
+                    <div className="text-xl font-bold tabular-nums">{yen(p.price)}</div>
+                    <div className="text-[11px] text-zinc-500">店側受取 {yen(storeTake(p.price))}</div>
+                  </div>
                 </div>
               </div>
+
+              {/* 操作UI（価格 → 受け取り時間 → ボタン2列） */}
+              <div className="px-4 pb-4 space-y-3">
+
+                {/* 1) 価格は右寄せ・独立行（はみ出し対策） */}
+
+                {/* 2) 受け取り時間（表示 + 変更ボタン → モーダルで編集） */}
+                <div>
+                  <div className="text-sm font-medium mb-1">受け取り時間</div>
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-sm text-zinc-800">{labelForSlot(p.pickup_slot_no)}</div>
+                    {/* <button
+                      className="rounded-xl border px-3 py-2 text-sm hover:bg-zinc-50"
+                      onClick={() => setPickupDlg({ id: p.id, name: p.name, current: p.pickup_slot_no ?? 1 })}
+                    >
+                      変更
+                    </button> */}
+                  </div>
+                </div>
+
+                {/* ひとこと（表示＋編集） */}
+                <div className="pt-1">
+                  <div className="text-sm font-medium mb-1">お店からのひとこと</div>
+
+                  {/* 表示部（常に数行だけ・全文は編集モーダルで開く） */}
+                  <div
+                    className="text-sm text-zinc-700 bg-zinc-50 rounded-xl p-3 line-clamp-2"
+                    title={p.note ?? undefined}
+                  >
+                    {(p.note && p.note.trim().length > 0)
+                      ? p.note
+                      : 'お店のおすすめ商品です。数量限定のため、お早めにお求めください。'}
+                  </div>
+
+
+                  {/* 編集トグル（店側UI）：タップで編集欄を開閉 */}
+                  {/* <div className="mt-2 text-right">
+                    <button
+                      type="button"
+                      className="rounded-xl border px-3 py-1.5 text-sm hover:bg-zinc-50"
+                      onClick={() => {
+                        setNoteDlg({
+                          id: p.id,
+                          name: p.name,
+                          note: String(p.note ?? "").slice(0, 300),
+                        });
+                      }}
+                    >
+                      編集（全文表示）
+                    </button>
+                  </div> */}
+                </div>
+
+
+                {/* 3) 在庫調整 / 削除（横並び） */}
+                {/* <div className="grid grid-cols-2 gap-3">
+                  <button
+                    onClick={() => setAdjust({ id: p.id, name: p.name, stock: p.stock })}
+                    className="w-full px-3 py-2 rounded-xl border text-sm hover:bg-zinc-50"
+                  >
+                    在庫調整
+                  </button>
+                  <button
+                    onClick={async () => {
+                      if (!confirm(`「${p.name}」を削除しますか？`)) return;
+                      try { await remove(p.id); } catch (e: any) { alert(`削除に失敗しました: ${e?.message ?? e}`); }
+                    }}
+                    className="w-full px-3 py-2 rounded-xl bg-red-50 text-red-600 text-sm hover:bg-red-100"
+                  >
+                    商品削除
+                  </button>
+                </div> */}
+              </div>
+
 
               {/* 3枚サムネ（メイン/サブ1/サブ2）— スマホで列幅にフィット */}
               <div className="px-4 py-3">
                 <div className="grid grid-cols-3 gap-2">
-                  {[
-                    { slot: "main" as const, label: "メイン", path: p.main_image_path },
-                    { slot: "sub1" as const, label: "サブ1", path: p.sub_image_path1 },
-                    { slot: "sub2" as const, label: "サブ2", path: p.sub_image_path2 },
-                  ].map(({ slot, label, path }) => {
-                    const inputId = `product-image-${p.id}-${slot}`;
-                    return (
-                      <div key={slot} className="flex flex-col items-center w-full">
-                        <input
-                          id={inputId}
-                          type="file"
-                          accept="image/*"
-                          className="hidden"
-                          onChange={async (e) => {
-                            const inputEl = e.currentTarget as HTMLInputElement | null;
-                            const file = inputEl?.files?.[0];
-                            if (!file) return;
-                            try {
-                              setUploadingId(p.id);
-                              await uploadProductImage(p.id, file, slot);
-                              await reload();
-                              setImgVer((v) => v + 1);
-                              alert(`${label}画像を更新しました`);
-                            } catch (err: any) {
-                              alert(`アップロードに失敗しました: ${err?.message ?? err}`);
-                            } finally {
-                              setUploadingId(null);
-                              if (inputEl) inputEl.value = "";
-                            }
-                          }}
-                          disabled={ploading || uploadingId === p.id}
-                        />
-                        <label
-                          htmlFor={inputId}
-                          className="relative block w-full aspect-square overflow-hidden rounded-xl border bg-zinc-50 cursor-pointer group"
-                          aria-label={`${p.name} の${label}画像をアップロード/変更`}
-                          title={`${label}をタップしてアップロード/変更`}
-                        >
-                          {path ? (
-                            <img
-                              src={`${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/public-images/${path}?v=${imgVer ?? 0}`}
-                              alt={`${p.name} ${label}`}
-                              className="w-full h-full object-cover transition-transform group-hover:scale-[1.02]"
-                              loading="lazy"
-                              decoding="async"
-                            />
-                          ) : (
-                            <div className="w-full h-full grid place-items-center text-[11px] text-zinc-500">
-                              画像なし
-                              <div className="text-[10px] mt-0.5">タップで追加</div>
-                            </div>
-                          )}
-                          <div className="pointer-events-none absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity bg-black/5" />
-                          {uploadingId === p.id && (
-                            <div className="absolute inset-0 grid place-items-center text-xs bg-white/70">
-                              更新中…
-                            </div>
-                          )}
-                          {path && (
-                            <span className="pointer-events-none absolute bottom-1 right-1 text-[10px] px-1 rounded bg-white/85 shadow-sm opacity-0 group-hover:opacity-100">
-                              変更
-                            </span>
-                          )}
-                        </label>
-                        <div className="mt-1 text-[10px] text-zinc-600">{label}</div>
-                      </div>
-                    );
-                  })}
+                  <ProductImageSlot
+                    mode="existing"
+                    productId={p.id}
+                    slot="main"
+                    label="メイン"
+                    path={p.main_image_path}
+                    imgVer={imgVer}
+                    onReload={reload}
+                    readonly
+                  />
+                  <ProductImageSlot
+                    mode="existing"
+                    productId={p.id}
+                    slot="sub1"
+                    label="サブ1"
+                    path={p.sub_image_path1}
+                    imgVer={imgVer}
+                    onReload={reload}
+                    readonly
+                  />
+                  <ProductImageSlot
+                    mode="existing"
+                    productId={p.id}
+                    slot="sub2"
+                    label="サブ2"
+                    path={p.sub_image_path2}
+                    imgVer={imgVer}
+                    onReload={reload}
+                    readonly
+                  />
                 </div>
               </div>
 
+              {/* 一括編集（モーダル） + 商品削除 */}
+              <div className="mt-4 mb-8 flex flex-col items-center gap-2">
+                <button
+                  onClick={() => setEditDlg(p)}
+                  className="px-4 py-2 rounded-xl border text-sm bg-white hover:bg-zinc-50
+               w-[min(90%)]"
+                >
+                  内容を変更する
+                </button>
 
-              {/* 操作ボタン列（視認性＆押しやすさUP） */}
-              {/* 操作＆金額（左=ボタン / 右=価格・店側受取） */}
-              <div className="px-4 pb-4">
-                <div className="flex items-center justify-between gap-3">
-                  {/* 左：操作ボタンを左寄せ */}
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => setAdjust({ id: p.id, name: p.name, stock: p.stock })}
-                      className="px-3 py-2 rounded-lg border text-sm hover:bg-zinc-50"
-                    >
-                      在庫調整
-                    </button>
-
-                    <button
-                      onClick={async () => {
-                        if (!confirm(`「${p.name}」を削除しますか？`)) return;
-                        try { await remove(p.id); }
-                        catch (e: any) { alert(`削除に失敗しました: ${e?.message ?? e}`); }
-                      }}
-                      className="px-3 py-2 rounded-lg bg-red-50 text-red-600 text-sm hover:bg-red-100"
-                    >
-                      削除
-                    </button>
-                  </div>
-
-                  {/* 右：価格・店側受取（強調表示） */}
-                  <div className="text-right shrink-0">
-                    <div className="text-2xl font-bold leading-none tabular-nums">{yen(p.price)}</div>
-                    <div className="text-[11px] text-zinc-500 mt-1">店側受取 {yen(storeTake(p.price))}</div>
-                  </div>
-                </div>
+                <button
+                  onClick={async () => {
+                    if (!confirm('本当に削除しますか？')) return;
+                    try {
+                      await remove(p.id);
+                    } catch (e: any) {
+                      alert(`削除に失敗しました: ${e?.message ?? e}`);
+                    }
+                  }}
+                  className="px-4 py-2 rounded-xl border text-sm
+               text-red-600 border-red-300 bg-red-50 hover:bg-red-100
+               w-[min(90%)]"
+                >
+                  商品を削除する
+                </button>
               </div>
 
             </div>
@@ -794,22 +2401,152 @@ function ProductForm() {
         })}
       </div>
 
+      {/* ▼ 軽量トースト：下部にふわっと表示 */}
+      {toastMsg && (
+        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-[80] px-3 py-2 rounded-full text-[12px] bg-zinc-900 text-white shadow-lg">
+          {toastMsg}
+        </div>
+      )}
 
-      {
-        Object.keys(pending).length > 0 && (
-          <div className="sticky bottom-4 mt-4 rounded-2xl border bg-white p-3 shadow-sm">
-            <div className="flex items-center justify-between gap-2">
-              <div className="text-sm">未反映の在庫変更 {Object.keys(pending).length} 件</div>
-              <div className="flex items-center gap-2">
-                <button className="rounded-xl border px-3 py-1.5 text-sm" onClick={() => setPending({})} disabled={ploading}>すべて取消</button>
-                <button className="rounded-xl bg-zinc-900 text-white px-3 py-1.5 text-sm disabled:opacity-50" disabled={ploading} onClick={async () => { const items = Object.values(pending); for (const it of items) { await updateStock(it.id, it.next); } setPending({}); }}>在庫を反映する</button>
-              </div>
+      {/* カメラ撮影モーダル */}
+      {cam && (
+        <CameraCaptureModal
+          open={true}
+          title={`${cam.label}画像を撮影`}
+          onClose={() => setCam(null)}
+          onCapture={async (blob) => {
+            try {
+              const file = new File([blob], "camera.jpg", { type: blob.type || "image/jpeg" });
+              setUploadingId(cam.productId);
+              await uploadProductImage(cam.productId, file, cam.slot);
+              await reload();
+              setImgVer(v => v + 1);
+              alert(`${cam.label}画像を更新しました`);
+            } catch (e: any) {
+              alert(`アップロードに失敗しました: ${e?.message ?? e}`);
+            } finally {
+              setUploadingId(null);
+              setCam(null);
+            }
+          }}
+          facing="environment"
+        />
+      )}
+
+      {Object.keys(pending).length > 0 && (
+        <div
+          className={`sticky bottom-4 mt-4 rounded-2xl border p-3 shadow-lg backdrop-blur
+            ${totalDelta.sum === 0
+              ? 'bg-white/95 border-zinc-200'
+              : totalDelta.sum > 0
+                ? 'bg-emerald-50/90 border-emerald-300 ring-1 ring-emerald-300'
+                : 'bg-red-50/90 border-red-300 ring-1 ring-red-300'}`}
+        >
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <div className="text-sm font-semibold">未反映の在庫変更</div>
+              <span className="text-[11px] px-2 py-0.5 rounded-full bg-zinc-900 text-white">
+                {totalDelta.count} 件
+              </span>
+              <span
+                className={`text-[11px] px-2 py-0.5 rounded-full font-semibold tabular-nums
+                  ${totalDelta.sum === 0
+                    ? 'bg-zinc-200 text-zinc-800'
+                    : totalDelta.sum > 0
+                      ? 'bg-emerald-600 text-white'
+                      : 'bg-red-600 text-white'}`}
+                title="合計差分"
+              >
+                {totalDelta.sum > 0 ? '＋' : totalDelta.sum < 0 ? '－' : '±'}{Math.abs(totalDelta.sum)}
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                className="rounded-xl border px-3 py-1.5 text-sm bg-white hover:bg-zinc-50"
+                onClick={() => setPending({})}
+                disabled={ploading}
+              >
+                すべて取消
+              </button>
+              <button
+                className={`rounded-xl text-white px-3 py-1.5 text-sm disabled:opacity-50
+                  ${totalDelta.sum >= 0 ? 'bg-zinc-900' : 'bg-zinc-900'}`}
+                disabled={ploading}
+                onClick={async () => {
+                  const items = Object.values(pending);
+                  for (const it of items) {
+                    await updateStock(it.id, it.next);
+                  }
+                  setPending({});
+                }}
+              >
+                在庫を反映する
+              </button>
             </div>
           </div>
-        )
-      }
+
+          {/* ▼ 一覧（行ごとに色分け＆目立つバッジ） */}
+          <ul className="mt-2 space-y-1">
+            {Object.values(pending).map((it) => {
+              const diff = it.next - it.current;
+              const diffAbs = Math.abs(diff);
+              const rowTone =
+                diff === 0 ? 'bg-white border-zinc-200'
+                  : diff > 0 ? 'bg-white border-emerald-200'
+                    : 'bg-white border-red-200';
+              const chipTone =
+                diff === 0 ? 'bg-zinc-200 text-zinc-800'
+                  : diff > 0 ? 'bg-emerald-600 text-white'
+                    : 'bg-red-600 text-white';
+              return (
+                <li key={it.id}
+                  className={`flex items-center justify-between text-sm rounded-xl border px-3 py-2 ${rowTone}`}>
+                  <div className="min-w-0">
+                    <div className="font-medium truncate">{it.name}</div>
+                    <div className="text-xs text-zinc-600 tabular-nums">
+                      {it.current} → <span className="font-semibold">{it.next}</span>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold ${chipTone}`}>
+                      {diff > 0 ? '＋' : diff < 0 ? '－' : '±'}{diffAbs}
+                    </span>
+                    <button
+                      className="text-xs rounded-lg border px-2 py-1 bg-white hover:bg-zinc-50"
+                      onClick={() => {
+                        setPending(prev => {
+                          const { [it.id]: _omit, ...rest } = prev;
+                          return rest;
+                        });
+                      }}
+                    >
+                      取り消し
+                    </button>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
+
 
       {/* ▼ 在庫調整モーダルをここで描画 */}
+      {/* ▼ 受け取り時間 変更モーダル */}
+      <PickupSlotModal
+        open={!!pickupDlg}
+        productName={pickupDlg?.name ?? ""}
+        initial={pickupDlg?.current ?? 1}
+        presets={presets}
+        disabled={ploading}
+        onClose={() => setPickupDlg(null)}
+        onCommit={async (val) => {
+          if (!pickupDlg) return;
+          await updatePickupSlot(pickupDlg.id, val);
+          setPickupDlg(null);
+        }}
+      />
+
       <StockAdjustModal
         open={!!adjust}
         initial={adjust?.stock ?? 0}
@@ -832,6 +2569,35 @@ function ProductForm() {
         }}
       />
 
+      {/* ひとこと編集モーダル */}
+      <NoteEditModal
+        open={!!noteDlg}
+        productName={noteDlg?.name ?? ""}
+        initial={noteDlg?.note ?? ""}
+        disabled={ploading}
+        onClose={() => setNoteDlg(null)}
+        onCommit={async (next) => {
+          if (!noteDlg) return;
+          await updateNote(noteDlg.id, next);
+          setNoteDlg(null);
+          alert('「ひとこと」を更新しました');
+        }}
+      />
+      {/* 登録済み商品のフル編集モーダル */}
+      {editDlg && (
+        <EditProductModal
+          open={true}
+          product={editDlg}
+          presets={presets}
+          disabled={ploading}
+          onClose={() => setEditDlg(null)}
+          onCommit={async (patch) => {
+            await updateProduct(editDlg.id, patch);
+            setEditDlg(null);
+            alert('商品内容を更新しました');
+          }}
+        />
+      )}
 
     </div>
   )
@@ -963,12 +2729,234 @@ function ProductsPage() {
   );
 }
 
+// === 受取時間プリセット設定（店側） =====================================
+function PickupPresetPage() {
+  const supabase = (() => {
+    // 既存 useSupabase と同等のクライアントを取る（window.__supabase 優先）
+    const w = typeof window !== 'undefined' ? (window as any) : null;
+    if (w?.__supabase) return w.__supabase;
+    const url = w?.NEXT_PUBLIC_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const key = w?.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    if (!url || !key) return null;
+    return createClient<any>(url, key, { global: { headers: { 'x-store-id': String(getStoreId() || '') } } });
+  })();
+
+
+  type SlotNo = 1 | 2 | 3;
+  type PresetRow = {
+    slot_no: SlotNo;
+    name: string;
+    start_time: string;    // "HH:MM:SS"
+    end_time: string;      // "HH:MM:SS"
+    slot_minutes: number;  // 10固定
+  };
+
+  const SLOT_NUMBERS: SlotNo[] = [1, 2, 3];
+  const hhmm = (t: string) => t.slice(0, 5);
+  const hhmmss = (t: string) => (t.length === 5 ? `${t}:00` : t);
+
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [current, setCurrent] = useState<SlotNo | null>(1);
+  const [rows, setRows] = useState<Record<SlotNo, PresetRow>>({
+    1: { slot_no: 1, name: "通常", start_time: "10:00:00", end_time: "14:00:00", slot_minutes: 10 },
+    2: { slot_no: 2, name: "短縮1", start_time: "16:00:00", end_time: "20:00:00", slot_minutes: 10 },
+    3: { slot_no: 3, name: "短縮2", start_time: "18:00:00", end_time: "22:00:00", slot_minutes: 10 },
+  });
+
+  // 初期読み込み
+  useEffect(() => {
+    (async () => {
+      if (!supabase) return;
+      setLoading(true);
+      setMsg(null);
+
+      // 現在のスロット番号
+      const { data: store } = await (supabase as any)
+        .from('stores')
+        .select('id,current_pickup_slot_no')
+        .eq('id', getStoreId())
+        .single();
+      // any 経由で never 回避
+      const cur = (((store as any)?.current_pickup_slot_no) ?? 1) as SlotNo;
+
+      setCurrent(cur);
+
+      // 既存プリセット
+      const { data: presets } = await supabase
+        .from('store_pickup_presets')
+        .select('slot_no,name,start_time,end_time,slot_minutes')
+        .eq('store_id', getStoreId())
+        .order('slot_no', { ascending: true });
+
+      if (presets && presets.length) {
+        const m = { ...rows };
+        for (const p of presets as PresetRow[]) {
+          m[p.slot_no] = {
+            slot_no: p.slot_no,
+            name: p.name ?? '',
+            start_time: p.start_time ?? '10:00:00',
+            end_time: p.end_time ?? '14:00:00',
+            slot_minutes: Number(p.slot_minutes ?? 10),
+          };
+        }
+        setRows(m);
+      }
+
+      setLoading(false);
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const setRow = (slot: SlotNo, patch: Partial<PresetRow>) => {
+    setRows(prev => ({ ...prev, [slot]: { ...prev[slot], ...patch } }));
+  };
+
+  const errors = useMemo(() => {
+    const list: string[] = [];
+    for (const s of SLOT_NUMBERS) {
+      const r = rows[s];
+      if (!r.name.trim()) list.push(`プリセット${s}: 名称を入力してください`);
+      if (hhmm(r.start_time) >= hhmm(r.end_time)) list.push(`プリセット${s}: 開始は終了より前にしてください`);
+    }
+    return list;
+  }, [rows]);
+
+  const save = async () => {
+    if (!supabase) return;
+    setMsg(null);
+    if (errors.length) { setMsg(errors[0]); return; }
+    setSaving(true);
+    try {
+      // 3枠まとめて UPSERT（store_id も明示）※ onConflict は「store_id,slot_no」
+      const payload = SLOT_NUMBERS.map((s) => ({
+        store_id: getStoreId(),
+        slot_no: rows[s].slot_no,
+        name: rows[s].name.trim(),
+        start_time: hhmmss(hhmm(rows[s].start_time)),
+        end_time: hhmmss(hhmm(rows[s].end_time)),
+        slot_minutes: 10,
+      }));
+      // any 経由で never 回避
+      const up = await (supabase as any)
+        .from('store_pickup_presets')
+        .upsert(payload, { onConflict: 'store_id,slot_no' });
+
+      if (up.error) throw up.error;
+
+      // “今使う”スロットを stores に反映
+      if (current) {
+        const st = await (supabase as any)
+          .from('stores')
+          .update({ current_pickup_slot_no: current })
+          .eq('id', getStoreId());
+
+        if (st.error) throw st.error;
+      }
+
+      setMsg('保存しました。ユーザーアプリに即時反映されます。');
+    } catch (e: any) {
+      setMsg(`保存に失敗しました: ${e?.message ?? e}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading) return <main className="mx-auto max-w-[448px] px-4 py-5"><div className="rounded-xl border bg-white p-4 text-sm text-zinc-600">読み込み中…</div></main>;
+
+  return (
+    <main className="mx-auto max-w-[448px] px-4 py-5 space-y-6">
+      <div className="mb-1">
+        <h1 className="text-lg font-semibold">受取時間プリセット設定</h1>
+        <p className="text-sm text-zinc-600">最大3つのプリセットを編集し、「今使う」を選択してください（10分刻み）。</p>
+      </div>
+
+      <section className="space-y-4">
+        {[1, 2, 3].map((slot) => {
+          const r = rows[slot as SlotNo];
+          return (
+            <div key={slot} className="rounded-2xl border bg-white p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="font-medium">プリセット {slot}</div>
+                <label className="inline-flex items-center gap-2 text-sm">
+                  <input
+                    type="radio"
+                    name="current"
+                    checked={current === slot}
+                    onChange={() => setCurrent(slot as SlotNo)}
+                  />
+                  今使う
+                </label>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div>
+                  <label className="block text-xs text-zinc-500 mb-1">名称</label>
+                  <input
+                    className="w-full rounded-xl border px-3 py-2"
+                    maxLength={20}
+                    placeholder={`通常 / 短縮${slot - 1} など`}
+                    value={r.name}
+                    onChange={(e) => setRow(slot as SlotNo, { name: e.target.value })}
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs text-zinc-500 mb-1">開始</label>
+                  <input
+                    type="time"
+                    step={600}
+                    className="w-full rounded-xl border px-3 py-2"
+                    value={hhmm(r.start_time)}
+                    onChange={(e) => setRow(slot as SlotNo, { start_time: hhmmss(e.target.value) })}
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs text-zinc-500 mb-1">終了</label>
+                  <input
+                    type="time"
+                    step={600}
+                    className="w-full rounded-xl border px-3 py-2"
+                    value={hhmm(r.end_time)}
+                    onChange={(e) => setRow(slot as SlotNo, { end_time: hhmmss(e.target.value) })}
+                  />
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </section>
+
+      {msg && <div className="text-sm text-zinc-700">{msg}</div>}
+
+      <div className="flex justify-end">
+        <button
+          type="button"
+          onClick={save}
+          disabled={saving}
+          className={`px-4 py-2 rounded-2xl text-white ${saving ? 'bg-zinc-400' : 'bg-zinc-900 hover:bg-zinc-800'}`}
+        >
+          {saving ? '保存中…' : '保存する'}
+        </button>
+      </div>
+    </main>
+  );
+}
+
+
 
 export default function StoreApp() {
   const mounted = useMounted();
-  const [route, setRoute] = useState<'orders' | 'products'>('orders');
+  const [route, setRoute] = useState<'orders' | 'products' | 'pickup'>('orders');
+
   useEffect(() => {
-    const read = () => { const h = (typeof window !== 'undefined' ? window.location.hash.replace('#/', '') : '') as 'orders' | 'products'; setRoute(h === 'products' ? 'products' : 'orders'); };
+    const read = () => {
+      const h = (typeof window !== 'undefined' ? window.location.hash.replace('#/', '') : '') as 'orders' | 'products' | 'pickup';
+      setRoute(h === 'products' ? 'products' : h === 'pickup' ? 'pickup' : 'orders');
+    };
+
     read(); window.addEventListener('hashchange', read); return () => window.removeEventListener('hashchange', read);
   }, []);
   const routeForUI = mounted ? route : 'orders';
@@ -977,14 +2965,30 @@ export default function StoreApp() {
     <div className="min-h-screen bg-zinc-50">
       <header className="sticky top-0 z-40 bg-white/80 backdrop-blur supports-[backdrop-filter]:bg-white/60 border-b">
         <div className="mx-auto max-w-[448px] px-4 py-3 flex items-center justify-between gap-2">
-          <div className="text-base font-semibold tracking-tight shrink-0">店側アプリ</div>
+          {/* <div className="text-base font-semibold tracking-tight shrink-0">店側アプリ</div> */}
           <nav className="flex flex-wrap items-center gap-1 gap-y-1 text-sm">
             <a href="#/orders" className={`px-3 py-1.5 rounded-lg border shrink-0 ${routeForUI === 'orders' ? 'bg-zinc-900 text-white border-zinc-900' : 'bg-white text-zinc-700 hover:bg-zinc-50'}`} suppressHydrationWarning>注文管理</a>
             <a href="#/products" className={`px-3 py-1.5 rounded-lg border shrink-0 ${routeForUI === 'products' ? 'bg-zinc-900 text-white border-zinc-900' : 'bg-white text-zinc-700 hover:bg-zinc-50'}`} suppressHydrationWarning>商品管理</a>
+            <a
+              href="#/pickup"
+              className={`px-3 py-1.5 rounded-lg border shrink-0 ${routeForUI === 'pickup' ? 'bg-zinc-900 text-white border-zinc-900' : 'bg-white text-zinc-700 hover:bg-zinc-50'
+                }`}
+              suppressHydrationWarning
+            >
+              受取時間
+            </a>
+
+            <a
+              href="/analytics"
+              className="px-3 py-1.5 rounded-lg border shrink-0 bg-white text-zinc-700 hover:bg-zinc-50"
+            >
+              売上・分析
+            </a>
+
           </nav>
         </div>
       </header>
-      {routeForUI === 'orders' ? <OrdersPage /> : <ProductsPage />}
+      {routeForUI === 'orders' ? <OrdersPage /> : routeForUI === 'products' ? <ProductsPage /> : <PickupPresetPage />}
     </div>
   );
 }

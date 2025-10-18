@@ -2359,6 +2359,9 @@ export default function UserPilotApp() {
             emitToast("error", "カートが空です");
             return;
         }
+        // カートで選択された受取時間（グループ単位）
+        const sel = pickupByGroup[key] ?? null;
+        const pickupLabel = sel ? `${sel.start}〜${sel.end}` : "";
         // セッションペイロード（サーバへ渡す簡易スナップショット）
         const linesPayload = g.lines.map(l => ({
             id: l.item.id,
@@ -2381,6 +2384,8 @@ export default function UserPilotApp() {
                     storeId: g.storeId,
                     userEmail,
                     lines: linesPayload,
+                    // Stripe 決済画面に表示するため、受取予定時間を渡す
+                    pickup: pickupLabel,
                 }),
             });
             const json = await res.json();
@@ -2399,7 +2404,7 @@ export default function UserPilotApp() {
             setIsPaying(false);
         }
         // 依存は orderTarget ではなく targetKey を優先的に使う
-    }, [orderTarget, cartGroups, userEmail, setIsPaying]);
+    }, [orderTarget, cartGroups, userEmail, setIsPaying, pickupByGroup]);
 
 
     // --- 開発用：この店舗の注文をすべてリセット（削除） ---

@@ -14,10 +14,12 @@ export async function POST(req: Request) {
       storeId,
       userEmail,
       lines, // [{ id,name, price, qty }]
+      pickup,
     } = body as {
       storeId: string;
       userEmail?: string;
       lines: Array<{ id: string; name: string; price: number; qty: number }>;
+      pickup?: string; // "HH:MM〜HH:MM"
     };
 
     if (!lines?.length) {
@@ -25,13 +27,23 @@ export async function POST(req: Request) {
     }
 
     // StripeはJPYが“ゼロ小数通貨”。unit_amount は「円の整数」でOK（×100しない！）
+    const pickupLabel = typeof pickup === "string" ? pickup.trim() : "";
+
     const line_items: Stripe.Checkout.SessionCreateParams.LineItem[] =
-      lines.map((l) => ({
+      lines.map((l, idx) => ({
         quantity: l.qty,
         price_data: {
           currency: "jpy",
           unit_amount: Math.max(0, Math.trunc(l.price)), // 円
-          product_data: { name: l.name || "商品" },
+          product_data: {
+            name: l.name || "商品",
+            // 決済画面の注文詳細に受取予定時間を表示（先頭アイテムに説明として付与）
+            ...(pickupLabel
+              ? (idx === 0
+                  ? { description: `受取予定時間: ${pickupLabel}` }
+                  : {})
+              : {}),
+          },
         },
       }));
 
@@ -55,7 +67,12 @@ export async function POST(req: Request) {
           }))
         ),
         email: userEmail || "guest@example.com",
+        ...(pickupLabel ? { pickup_label: pickupLabel } : {}),
       },
+      // Stripe 決済画面のフッター付近にカスタムテキストを表示
+      ...(pickupLabel
+        ? { custom_text: { submit: { message: `受取予定時間: ${pickupLabel}` } } }
+        : {}),
     });
 
     return NextResponse.json({ id: session.id, url: session.url });

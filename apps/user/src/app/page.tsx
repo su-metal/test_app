@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 import React, { useEffect, useMemo, useRef, useState, startTransition, useCallback } from "react";
 import { createClient, type RealtimeChannel } from "@supabase/supabase-js";
 import type { SupabaseClient } from '@supabase/supabase-js';
@@ -2816,11 +2816,18 @@ export default function UserPilotApp() {
                         aria-disabled={isSoldOut}
                     >
                         {it.main_image_path ? (
-                            <BgImage
-                                path={it.main_image_path}
-                                alt={it.name}
-                                className="absolute inset-0 pointer-events-none transition-transform group-hover:scale-[1.02] w-full h-full rounded-xl"
-                                eager={false}  // 一覧はスクロール表示なので遅延でOK
+                            <div
+                                aria-hidden="true"
+                                className="absolute inset-0 pointer-events-none transition-transform group-hover:scale-[1.02]"
+                                style={{
+                                    backgroundImage: `url(${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/public-images/${it.main_image_path})`,
+                                    backgroundSize: 'cover',
+                                    backgroundPosition: 'center',
+                                    backgroundColor: '#f4f4f5',
+                                    transform: 'translateZ(0)',
+                                    backfaceVisibility: 'hidden',
+                                    willChange: 'transform'
+                                }}
                             />
                         ) : (
                             <span className="text-4xl pointer-events-none">{it.photo ?? "🛍️"}</span>

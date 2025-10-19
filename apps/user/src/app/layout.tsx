@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
+import LiffBoot from "./LiffBoot";
 // import "leaflet/dist/leaflet.css";
 
 
@@ -25,10 +26,12 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
+    <html lang="ja">
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
+        {/* LIFF 起動（LINE アプリ内/外の双方を考慮） */}
+        <LiffBoot />
         {children}
       </body>
     </html>

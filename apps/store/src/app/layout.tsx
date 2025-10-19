@@ -1,9 +1,13 @@
+// apps/store/src/app/layout.tsx
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
-// 先頭の他の import の下あたりに追加
-import SupabaseBoot from "./SupabaseBoot";
 
+// 追加：LINE 用ブートストラップ（クライアント）
+import LiffBoot from "./LiffBoot";
+
+// 既存：Supabase 初期化（クライアント）
+import SupabaseBoot from "./SupabaseBoot";
 
 const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
 const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] });
@@ -14,7 +18,7 @@ export const metadata: Metadata = {
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
-  // サーバー側で .env の公開値を window にブリッジ
+  // サーバ側で公開用 .env を window にブリッジ（既存ロジックを維持）
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
   const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "";
   const storeId = process.env.NEXT_PUBLIC_STORE_ID ?? "";
@@ -25,9 +29,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         {/* favicon */}
         <link rel="icon" href="/favicon.ico" />
 
-        {/* 必要なら他の meta/link もここに */}
-
-        {/* 公開用の環境変数を window に渡す（クライアントで useSupabase が拾う） */}
+        {/* 公開用の環境変数を window に渡す（既存ロジック） */}
         <script
           dangerouslySetInnerHTML={{
             __html: `
@@ -57,8 +59,13 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           }}
         />
       </head>
+
       <body className={`${geistSans.variable} ${geistMono.variable} antialiased`}>
+        {/* ▼▼ ここで一度だけ LIFF を初期化（LINE内では自動ログイン、外部ブラウザでは非ログイン） ▼▼ */}
+        <LiffBoot />
+        {/* ▼ Supabase の初期化（既存のまま） */}
         <SupabaseBoot />
+
         {children}
       </body>
     </html>

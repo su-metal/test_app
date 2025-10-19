@@ -243,6 +243,13 @@ function haversineKm(a: { lat: number; lng: number }, b: { lat: number; lng: num
     return R * c;
 }
 
+// === Supabase Storage の public 画像 URL を作る（クエリ無し・安定） ===
+function publicImageUrl(path: string | null | undefined): string | null {
+    if (!path) return null;
+    const base = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+    return `${base}/storage/v1/object/public/public-images/${path}`;
+}
+
 // --- ルート距離（km, OSRM）---
 // TODO(req v2): 交通手段（徒歩/自転車/車）の選択を UI 設定化する
 async function routeDistanceKm(
@@ -2990,7 +2997,7 @@ export default function UserPilotApp() {
                                                     <img
                                                         src={
                                                             s.cover_image_path
-                                                                ? `${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/public-images/${s.cover_image_path}`
+                                                                ? publicImageUrl(s.cover_image_path)!
                                                                 : idx % 3 === 0
                                                                     ? "https://images.unsplash.com/photo-1495474472287-4d71bcdd2085?q=80&w=1200&auto=format&fit=crop"
                                                                     : idx % 3 === 1
@@ -2999,6 +3006,10 @@ export default function UserPilotApp() {
                                                         }
                                                         alt={s.name}
                                                         className="w-full h-44 object-cover rounded-2xl"
+                                                        loading="lazy"
+                                                        decoding="async"
+                                                        width={1200}
+                                                        height={176}  /* h-44 ≒ 44 * 4 = 176px */
                                                     />
                                                     <div className="absolute left-3 top-3 px-2 py-1 rounded bg-black/60 text-white text-sm">
                                                         {s.name}
@@ -3716,12 +3727,14 @@ export default function UserPilotApp() {
                                                 {loopImages.map((path, i) => (
                                                     <div key={`slide-${i}-${path}`} style={{ width: `${100 / (imgCount + 2)}%`, height: '100%', flex: `0 0 ${100 / (imgCount + 2)}%` }}>
                                                         <img
-                                                            src={`${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/public-images/${path}`}
+                                                            src={publicImageUrl(path)!}
                                                             alt={i === pos ? `${detail.item.name} 画像 ${gIndex + 1}/${imgCount}` : ''}
                                                             className="w-full h-full object-cover select-none"
                                                             draggable={false}
                                                             loading={i === pos ? 'eager' : 'lazy'}
                                                             decoding="async"
+                                                            width={1280}
+                                                            height={720}  /* aspect-[16/9] の枠に合わせた目安 */
                                                         />
                                                     </div>
                                                 ))}

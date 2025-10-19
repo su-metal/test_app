@@ -139,6 +139,32 @@ function mapProduct(r: ProductsRow): Product {
   };
 }
 
+// === 画像縮小ユーティリティ（最大長辺 max、JPEG品質 quality） =================
+async function downscaleFile(
+  file: File,
+  { max = 1080, quality = 0.9 }: { max?: number; quality?: number } = {}
+): Promise<File> {
+  if (!/^image\//.test(file.type)) return file; // 画像以外はそのまま
+  const bmp = await createImageBitmap(file);
+  const scale = Math.min(1, max / Math.max(bmp.width, bmp.height));
+  if (scale >= 1) return file; // 既に十分小さい
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(bmp.width * scale);
+  canvas.height = Math.round(bmp.height * scale);
+  const ctx = canvas.getContext('2d')!;
+  ctx.drawImage(bmp, 0, 0, canvas.width, canvas.height);
+  const blob: Blob = await new Promise((resolve, reject) =>
+    canvas.toBlob(
+      b => (b ? resolve(b) : reject(new Error('toBlob failed'))),
+      'image/jpeg',
+      quality
+    )
+  );
+  const base = file.name.replace(/\.\w+$/, '');
+  return new File([blob], `${base}.jpg`, { type: 'image/jpeg' });
+}
+
+
 // ===== Supabase クライアント =====
 function useSupabase() {
   return useMemo(() => {
@@ -605,7 +631,7 @@ function useOrders() {
   const fetchAndSubscribe = useCallback(async () => {
     if (!supabase) { setReady(true); return; }
     setErr(null); cleanup();
-    const { data, error } = await supabase.from('orders').select('*').eq('store_id', getStoreId()).order('placed_at', { ascending: false });
+    const { data, error } = await supabase.from('orders').select('id,store_id,code,customer,items,total,placed_at,status').eq('store_id', getStoreId()).order('placed_at', { ascending: false });
     if (error) setErr(error.message || 'データ取得に失敗しました'); else setOrders(((data ?? []) as OrdersRow[]).map(mapOrder));
     try {
       const sid = getStoreId();
@@ -1462,7 +1488,7 @@ function useImageUpload() {
 
     // 1) Storage へアップロード
     const up = await supabase.storage.from("public-images").upload(path, file, {
-      cacheControl: "3600",
+      cacheControl: "31536000",
       upsert: true,
     });
     if (up.error) {
@@ -1621,11 +1647,13 @@ function ProductImageSlot(props: StagedProps | ExistingProps) {
       const effectivePath = currentPath ?? props.path!;
       imgEl = (
         <img
-          src={`${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/public-images/${effectivePath}?v=${(props as any).imgVer ?? localVer}`}
+          src={`${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/public-images/${effectivePath}`}
           alt={label}
           className="w-full h-full object-cover transition-transform group-hover:scale-[1.02]"
           loading="lazy"
           decoding="async"
+          width={800}
+          height={800}
         />
       );
     }
@@ -1657,11 +1685,16 @@ function ProductImageSlot(props: StagedProps | ExistingProps) {
     e.currentTarget.value = "";
     if (props.mode === "staged") {
       props.onChange(f);
+      (async () => {
+        const small = f ? await downscaleFile(f, { max: 1080, quality: 0.9 }) : null;
+        props.onChange(small);
+      })();
     } else if (props.mode === "existing" && f) {
       (async () => {
         try {
           setLoading(true);
-          const newPath = await uploadProductImage(props.productId, f, props.slot);
+          const small = await downscaleFile(f, { max: 1080, quality: 0.9 });
+          const newPath = await uploadProductImage(props.productId, small, props.slot);
           setCurrentPath(String(newPath || null));
           setLocalVer(v => v + 1);
           await props.onReload();
@@ -1677,12 +1710,16 @@ function ProductImageSlot(props: StagedProps | ExistingProps) {
   const onCaptured = (blob: Blob) => {
     const file = new File([blob], "camera.jpg", { type: blob.type || "image/jpeg" });
     if (props.mode === "staged") {
-      props.onChange(file);
+      (async () => {
+        const small = await downscaleFile(file, { max: 1080, quality: 0.9 });
+        props.onChange(small);
+      })();
     } else if (props.mode === "existing") {
       (async () => {
         try {
           setLoading(true);
-          const newPath = await uploadProductImage(props.productId, file, props.slot);
+          const small = await downscaleFile(file, { max: 1080, quality: 0.9 });
+          const newPath = await uploadProductImage(props.productId, small, props.slot);
           // モーダル内サムネを即時更新
           setCurrentPath(String(newPath || null));
           setLocalVer(v => v + 1);

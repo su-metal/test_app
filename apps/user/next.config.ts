@@ -3,8 +3,8 @@ import type { NextConfig } from "next";
 
 /**
  * Content-Security-Policy
- * - img-src はまず https: を許可して動作を安定化（後で必要ドメインに絞ってOK）
- * - Stripe (Embedded), Supabase, Google Maps を想定
+ * - まずは動作優先で緩め、段階的に絞り込みます。
+ * - Stripe (Embedded), Supabase, Google Maps, LIFF を想定。
  */
 const buildCSP = () => {
   const directives = [
@@ -15,16 +15,16 @@ const buildCSP = () => {
     // 画像：動作優先（後で絞ってOK）
     "img-src 'self' data: blob: https:",
 
-    // フォント（Stripe）
+    // フォント（Stripe を許可）
     "font-src 'self' https://*.stripe.com data:",
 
-    // スタイル（UI都合で inline 許可）
+    // スタイル：実装都合で inline 許可
     "style-src 'self' 'unsafe-inline'",
 
-    // スクリプト（Stripe/Maps、開発の eval を許容）
+    // スクリプト：Stripe/Maps を許可（開発で eval を許容）
     "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://js.stripe.com https://maps.googleapis.com https://maps.gstatic.com",
 
-    // iframe 埋め込み（Stripe/Google）
+    // iframe 埋め込み：Stripe / Google
     "frame-src 'self' https://*.stripe.com https://*.google.com",
 
     // API / WSS
@@ -39,7 +39,10 @@ const buildCSP = () => {
       "wss://*.supabase.co",
       "https://maps.googleapis.com",
       "https://maps.gstatic.com",
-      // ルート距離取得（OSRM）。これが無いと fetch がブロックされ「距離算定中」のままになります。
+      // LIFF API エンドポイント（ログイン/プロフィール取得など）
+      "https://api.line.me",
+      "https://access.line.me",
+      // ルート距離取得（OSRM）
       "https://router.project-osrm.org",
     ].join(" "),
 
@@ -65,11 +68,7 @@ const nextConfig: NextConfig = {
           { key: "X-Frame-Options", value: "SAMEORIGIN" },
           { key: "X-Content-Type-Options", value: "nosniff" },
 
-          /**
-           * ✅ ここがポイント：Geolocation を許可
-           *   - 以前の geolocation=() は「常に拒否」で現在地取得が失敗していました。
-           *   - geolocation=(self) なら同一オリジンのページで有効になります。
-           */
+          // Geolocation を許可（同一オリジン）
           {
             key: "Permissions-Policy",
             value: "camera=(), microphone=(), geolocation=(self)",
@@ -81,3 +80,4 @@ const nextConfig: NextConfig = {
 };
 
 export default nextConfig;
+

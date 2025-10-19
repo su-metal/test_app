@@ -1269,7 +1269,7 @@ function BottomSheet({
  */
 function TinyQR({
     seed,
-    size = 192,                 // 見た目サイズ（CSSピクセル）
+    size = 192,               // “最大”サイズ（上限）。親が狭ければ自動で縮む
     ecc = "quartile",           // エラー訂正: 'low' | 'medium' | 'quartile' | 'high'
     bg = "#ffffff",
     fg = "#111111",
@@ -1282,8 +1282,10 @@ function TinyQR({
     fg?: string;
     className?: string;
 }) {
+    const wrapRef = React.useRef<HTMLDivElement | null>(null);
     const ref = React.useRef<HTMLCanvasElement | null>(null);
     const [ready, setReady] = React.useState(false);
+    const [cssSide, setCssSide] = React.useState<number>(size); // 実際のCSS上の一辺(px)
 
     // ペイロードは将来互換性のためバージョニング
     // ※ バックエンドは oid で注文を照合する運用を前提にしてください
@@ -1298,24 +1300,36 @@ function TinyQR({
         [seed]
     );
 
+    // 親幅に追従（ResizeObserver）
+    React.useEffect(() => {
+        if (!wrapRef.current) return;
+        const el = wrapRef.current;
+        const ro = new ResizeObserver((entries) => {
+            const w = Math.max(0, Math.floor(entries[0].contentRect.width));
+            setCssSide(Math.max(64, Math.min(size, w))); // 64px未満にならない程度に保険
+        });
+        ro.observe(el);
+        // 初期計測
+        setCssSide(Math.max(64, Math.min(size, Math.floor(el.clientWidth))));
+        return () => ro.disconnect();
+    }, [size]);
+
+
     React.useEffect(() => {
         let disposed = false;
         (async () => {
             if (!ref.current) return;
             try {
                 const QR = await import("qrcode"); // SSR回避のため動的import
-                // 物理ピクセルを確保（Retinaでも滲まない）
-                const scale = 4;                        // ドットスケール（高解像度）
-                const px = size * (window.devicePixelRatio || 1);
+                // 物理ピクセルを確保（親幅に合わせつつRetinaでも滲まない）
+                const dpr = (typeof window !== "undefined" ? window.devicePixelRatio : 1) || 1;
+                const px = Math.max(64, Math.floor(cssSide * dpr));
                 ref.current.width = px;
                 ref.current.height = px;
-                ref.current.style.width = `${size}px`;
-                ref.current.style.height = `${size}px`;
 
                 const opts: QRCodeRenderersOptions = {
                     errorCorrectionLevel: ecc,            // 本番は "quartile" 以上が安心
                     margin: 2,                            // 静かな余白（Quiet Zone）
-                    scale,                                // ドットスケール
                     color: { dark: fg, light: bg },
                 };
 
@@ -1327,14 +1341,14 @@ function TinyQR({
                 if (ref.current) {
                     const ctx = ref.current.getContext("2d");
                     if (ctx) {
-                        ref.current.width = size;
-                        ref.current.height = size;
+                        ref.current.width = cssSide;
+                        ref.current.height = cssSide;
                         ctx.fillStyle = "#fff";
-                        ctx.fillRect(0, 0, size, size);
+                        ctx.fillRect(0, 0, cssSide, cssSide);
                         ctx.fillStyle = "#000";
                         ctx.font = "12px system-ui, sans-serif";
                         ctx.textAlign = "center";
-                        ctx.fillText("QR生成に失敗しました", size / 2, size / 2);
+                        ctx.fillText("QR生成に失敗しました", cssSide / 2, cssSide / 2);
                     }
                 }
             }
@@ -1342,10 +1356,15 @@ function TinyQR({
         return () => {
             disposed = true;
         };
-    }, [payload, size, bg, fg, ecc]);
+    }, [payload, cssSide, bg, fg, ecc]);
 
     return (
-        <div className={className} aria-busy={!ready}>
+        <div
+            ref={wrapRef}
+            className={["w-full", className].filter(Boolean).join(" ")}
+            aria-busy={!ready}
+            style={{ width: "100%", maxWidth: `${size}px` }}  // ★ ここで上限をハードに適用
+        >
             <canvas
                 ref={ref}
                 role="img"
@@ -1353,6 +1372,9 @@ function TinyQR({
                 // 印刷時も綺麗に出るよう背景は白に
                 style={{
                     display: "block",
+                    width: "100%",
+                    height: "auto",
+                    aspectRatio: "1 / 1",// 正方形を維持
                     background: "#fff",
                     imageRendering: "pixelated",
                     borderRadius: 8,
@@ -1362,7 +1384,7 @@ function TinyQR({
             <div
                 aria-hidden
                 className="mt-1 text-center text-[10px] text-zinc-500 select-all break-all"
-                style={{ maxWidth: size }}
+                style={{ maxWidth: "100%" }}
             >
                 {String(seed)}
             </div>
@@ -3757,20 +3779,33 @@ export default function UserPilotApp() {
                                                 </button>
                                                 {isOpen && (
                                                     <div id={`ticket-${o.id}`}>
-                                                        <div className="grid grid-cols-2 gap-4 items-center mt-3">
+                                                        {/* 1段目：左=引換コード／右=合計 */}
+                                                        <div className="grid grid-cols-2 gap-3 items-end mt-3">
+                                                            {/* 左カラム */}
                                                             <div>
-
-                                                                <div className="text-xs text-zinc-500 mb-1">引換コード</div>
-                                                                <div className="text-2xl font-mono tracking-widest">{o.code6}</div>
-                                                                <div className="text-xs text-zinc-500 mt-2">合計</div>
-                                                                <div className="text-base font-semibold">{currency(o.amount)}</div>
-                                                                <div className="text-[11px] text-zinc-500 mt-1">{new Date(o.createdAt).toLocaleString()}</div>
-                                                                <div className="mt-2">
-                                                                    <button type="button" className="text-xs px-2 py-1 rounded border cursor-pointer" onClick={async () => { const ok = await safeCopy(o.code6); emitToast(ok ? 'success' : 'error', ok ? 'コピーしました' : 'コピーに失敗しました'); }}>コードをコピー</button>
-                                                                </div>
+                                                                <div className="text-xs text-zinc-500">引換コード</div>
+                                                                <div className="mt-1 text-2xl font-mono tracking-widest">{o.code6}</div>
+                                                                {/* <div className="mt-2">
+                                                                    <button
+                                                                        type="button"
+                                                                        className="text-xs px-2 py-1 rounded border cursor-pointer"
+                                                                        onClick={async () => {
+                                                                            const ok = await safeCopy(o.code6);
+                                                                            emitToast(ok ? 'success' : 'error', ok ? 'コピーしました' : 'コピーに失敗しました');
+                                                                        }}
+                                                                    >
+                                                                        コードをコピー
+                                                                    </button>
+                                                                </div> */}
                                                             </div>
-                                                            <div className="justify-self-center">
-                                                                <div className="p-2 rounded bg-white shadow"><TinyQR seed={o.id} /></div>
+
+                                                        </div>
+
+                                                        {/* 2段目：中央にQR（大きな枠） */}
+                                                        <div className="mt-4 flex justify-center">
+                                                            <div className="p-3 rounded bg-white shadow">
+                                                                {/* 上限サイズは必要に応じて変更（例: 168 / 192） */}
+                                                                <TinyQR seed={o.id} size={192} className="w-full" />
                                                             </div>
                                                         </div>
                                                         <div className="mt-4">
@@ -3783,6 +3818,14 @@ export default function UserPilotApp() {
                                                                     </li>
                                                                 ))}
                                                             </ul>
+                                                        </div>
+                                                        {/* 右カラム（右寄せで合計と日時） */}
+                                                        <div className="mt-3 text-right">
+                                                            <div className="text-xs text-zinc-500">合計</div>
+                                                            <div className="mt-1 text-xl font-extrabold">{currency(o.amount)}</div>
+                                                            <div className="mt-2 text-[11px] text-zinc-500">
+                                                                {new Date(o.createdAt).toLocaleString()}
+                                                            </div>
                                                         </div>
                                                         {/* TODO(req v2): 本番ではこの削除機能を無効化/非表示にする（テスト運用限定） */}
                                                         <div className="mt-3 flex items-center gap-2">
@@ -4442,8 +4485,8 @@ function AccountView({
 
                                 {/* オープン時のみ詳細描画（QRは常時1枚） */}
                                 {isOpen && (
-                                    <div id={`ticket-${o.id}`}>
-                                        <div className="grid grid-cols-2 gap-4 items-center mt-3">
+                                    <div id={`ticket-${o.id}`} className="w-full overflow-hidden">
+                                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-center mt-3">
                                             <div>
                                                 <div className="text-xs text-zinc-500">6桁コード</div>
                                                 <div className="text-2xl font-mono tracking-widest">{o.code6}</div>
@@ -4454,8 +4497,10 @@ function AccountView({
                                                     <button type="button" className="text-xs px-2 py-1 rounded border cursor-pointer" onClick={async () => { const ok = await safeCopy(o.code6); emitToast(ok ? 'success' : 'error', ok ? 'コピーしました' : 'コピーに失敗しました'); }}>コードをコピー</button>
                                                 </div>
                                             </div>
-                                            <div className="justify-self-center">
-                                                <div className="p-2 rounded bg-white shadow"><TinyQR seed={o.id} /></div>
+                                            <div className="justify-self-stretch sm:justify-self-center">
+                                                <div className="p-2 rounded bg-white shadow w-full max-w-full overflow-hidden box-border">
+                                                    <TinyQR seed={o.id} />
+                                                </div>
                                             </div>
                                         </div>
                                         <div className="mt-4">

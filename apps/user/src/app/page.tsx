@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 import React, { useEffect, useMemo, useRef, useState, startTransition, useCallback } from "react";
 import { createClient, type RealtimeChannel } from "@supabase/supabase-js";
 import type { SupabaseClient } from '@supabase/supabase-js';
@@ -1263,6 +1263,8 @@ export default function UserPilotApp() {
 
     // ▼「カートを見る」から目的店舗へスクロールするための待ち合わせ用
     const [pendingScrollShopId, setPendingScrollShopId] = useState<string | null>(null);
+    // 直近でフォーカス対象となった店舗ID（補正スクロール用）
+    const lastCartTargetIdRef = useRef<string | null>(null);
     // ▼ カート内の各「店舗先頭グループ」を指すアンカー（storeId -> 要素）
     const cartStoreAnchorRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
@@ -1306,6 +1308,13 @@ export default function UserPilotApp() {
         }
         prevTabRef.current = tab;
     }, [tab, setCart]);
+
+    // 補正スクロール向けに、最後に指定された店舗IDを保持
+    useEffect(() => {
+        if (pendingScrollShopId) {
+            lastCartTargetIdRef.current = pendingScrollShopId;
+        }
+    }, [pendingScrollShopId]);
 
     // 販売時間切れのカート行を間引く（60秒ごと + 即時1回）
     useEffect(() => {
@@ -1359,6 +1368,32 @@ export default function UserPilotApp() {
         requestAnimationFrame(() => requestAnimationFrame(run));
         return;
     }, [tab, pendingScrollShopId]);
+
+    // Cart view scroll correction: re-align target anchor after late layout shifts
+    useEffect(() => {
+        if (tab !== 'cart') return;
+        const correct = () => {
+            const anchors = Object.values(cartStoreAnchorRefs.current).filter(Boolean) as HTMLDivElement[];
+            if (anchors.length === 0) return;
+            const header = document.querySelector('header') as HTMLElement | null;
+            const headerH = header ? header.getBoundingClientRect().height : 0;
+            const GAP = 8;
+            // 可能なら直近ターゲットのアンカーを優先
+            const preferred = lastCartTargetIdRef.current ? cartStoreAnchorRefs.current[lastCartTargetIdRef.current] : null;
+            const targetEl = preferred || anchors.reduce<HTMLDivElement | null>((acc, el) => {
+                if (!acc) return el;
+                const a = Math.abs(el.getBoundingClientRect().top - (headerH + GAP));
+                const b = Math.abs(acc.getBoundingClientRect().top - (headerH + GAP));
+                return a < b ? el : acc;
+            }, null);
+            if (!targetEl) return;
+            const y = targetEl.getBoundingClientRect().top + window.scrollY - headerH - GAP;
+            window.scrollTo({ top: Math.max(0, y), behavior: 'auto' });
+        };
+        const t1 = window.setTimeout(correct, 320);
+        const t2 = window.setTimeout(correct, 950);
+        return () => { window.clearTimeout(t1); window.clearTimeout(t2); };
+    }, [tab]);
 
 
     const [focusedShop, setFocusedShop] = useState<string | undefined>(undefined);

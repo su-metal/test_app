@@ -197,12 +197,61 @@ Supabase データベース構成（現行実装に基づく）
 - RLS/ポリシー（最小）
 
   - anon で `products`/`orders` の必要な範囲の `select` を許可。
-  - `orders` の更新は店側アプリ（store）からのみ行う想定。必要に応じて `eq(store_id, :store)` 条件を課す。
+ - `orders` の更新は店側アプリ（store）からのみ行う想定。必要に応じて `eq(store_id, :store)` 条件を課す。
 
 - 既知の差分吸収（互換）
   - 在庫列名のゆらぎ: user 側は `stock ?? quantity ?? stock_count` を吸収。DB は最終的に `stock` に統一してください。
   - `orders.id` の型: uuid 推奨。UI 側は文字列で扱えるため text でも動作しますが、将来は uuid で統一。
   - `orders.status` の値: 店側 `PENDING`/`FULFILLED`、ユーザー側 UI は `paid`/`redeemed` にマップして表示。
+
+---
+
+現行リポジトリの補足（依存・構成）
+
+- ルートスクリプト/ツール
+  - `pnpm dev`（store:3001 + user:3002 同時起動）、`pnpm dev:store`、`pnpm dev:user`。
+  - シード: `pnpm seed:stores:locations`（`scripts/seed-stores-locations.mjs`）。
+  - 共有依存: `@supabase/supabase-js@^2.74.0`、`leaflet@^1.9.4`、Tailwind CSS 4、PostCSS、Autoprefixer、TypeScript 5。
+
+- 各アプリ主要依存
+  - store（`apps/store`）: `next@15.5.x`、`react@19`、`react-dom@19`。
+  - user（`apps/user`）: `next@15.5.x`、`react@19`、`react-dom@19`、`@stripe/react-stripe-js`、`@stripe/stripe-js`、`stripe`、`react-leaflet`。
+  - LIFF: `@line/liff` をルート依存として利用（`LiffBoot.tsx` 参照）。
+
+- API/機能の配置（user）
+  - Stripe 関連 API ルート:
+    - `apps/user/src/app/api/stripe/create-checkout-session/route.ts`
+    - `apps/user/src/app/api/stripe/create-intent/route.ts`
+    - `apps/user/src/app/api/stripe/checkout/route.ts`
+    - `apps/user/src/app/api/stripe/fulfill/route.ts`
+    - `apps/user/src/app/api/checkout/embedded/route.ts`
+    - `apps/user/src/app/api/create-checkout-session/route.ts`（互換/移行用）
+  - チェックアウト結果画面: `apps/user/src/app/checkout/success/page.tsx` / `cancel/page.tsx`。
+
+- 地図/店舗表示
+  - `apps/user/src/components/MapView.tsx` で Leaflet/React-Leaflet を使用。店舗の緯度経度は `public.stores(lat,lng)` を参照。
+  - 位置情報シード/更新は `scripts/seed-stores-locations.mjs` を利用（必要に応じて DB 側を更新）。
+
+- 受け渡し/時間帯
+  - 受け取り時間 UI は `apps/user/src/components/PickupTimeSelector.tsx`、ロジックは `apps/user/src/lib/pickupSlots.ts`。
+
+- Supabase 構成ファイル
+  - `supabase/` 配下にローカルプロジェクト設定あり（DB/ポリシー確認時の参照用）。
+
+- Next.js 設定
+  - `apps/store/next.config.ts` / `apps/user/next.config.ts` を各アプリで管理。
+
+- ブート/環境変数ブリッジ
+  - store: `apps/store/src/app/SupabaseBoot.tsx` と `apps/store/src/app/layout.tsx` で `window` へブリッジし、`window.__STORE_ID__` を利用。
+  - user: `apps/user/src/lib/supabase.ts` でクライアント単一生成、`apps/user/src/app/layout.tsx` でグローバル設定。
+
+注意（整合のための実装上の約束事）
+
+- UI 文言は日本語で統一（「未引換」「引換済み」「返金済み」）。
+- 6 桁コード比較は必ず `normalizeCode6` を使用（store/user 双方に実装あり）。
+- Realtime が不安定な環境では user 側のポーリングで整合を取る（`id, code, status`）。
+- env 不整合（URL/ANON_KEY/STORE_ID）は同期不達の主因。両アプリで同一値を必ず設定。
+
 
 注意
 

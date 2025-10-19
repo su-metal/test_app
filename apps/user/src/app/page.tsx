@@ -250,6 +250,83 @@ function publicImageUrl(path: string | null | undefined): string | null {
     return `${base}/storage/v1/object/public/public-images/${path}`;
 }
 
+
+// === 背景画像を IntersectionObserver で遅延ロードし、白フラッシュ無しでフェード表示 ===
+function BgImage({
+    path,
+    alt,
+    className,
+    eager = false,               // 先頭スライドなど即表示したい時に true
+}: {
+    path: string | null | undefined;
+    alt: string;
+    className?: string;
+    eager?: boolean;
+}) {
+    const ref = React.useRef<HTMLDivElement | null>(null);
+    const [ready, setReady] = React.useState(false);
+    const url = publicImageUrl(path);
+
+    React.useEffect(() => {
+        if (!url || !ref.current) return;
+
+        const el = ref.current;
+        const load = () => {
+            // 先に Image オブジェクトで読み込み → onload 後に backgroundImage を差し替え（白フラッシュ回避）
+            const img = new Image();
+            img.decoding = 'async';
+            img.src = url;
+            img.onload = () => {
+                if (!el) return;
+                el.style.backgroundImage = `url(${url})`;
+                setReady(true);
+            };
+        };
+
+        if (eager) {
+            load();
+            return;
+        }
+
+        const io = new IntersectionObserver(
+            entries => {
+                entries.forEach(e => {
+                    if (e.isIntersecting) {
+                        load();
+                        io.disconnect();
+                    }
+                });
+            },
+            { rootMargin: '200px' } // 少し手前でプリロード
+        );
+
+        io.observe(el);
+        return () => io.disconnect();
+    }, [url, eager]);
+
+    // 低コストのプレースホルダ（薄いグラデ＋色）
+    return (
+        <div
+            ref={ref}
+            role="img"
+            aria-label={alt}
+            className={[
+                "bg-zinc-100",
+                "bg-[length:cover] bg-center",
+                "transition-opacity duration-200",
+                ready ? "opacity-100" : "opacity-0",
+                className ?? ""
+            ].join(" ")}
+            style={{
+                // プレースホルダとして淡いグラデ（読み込み完了まで表示）
+                backgroundImage:
+                    "linear-gradient(180deg, rgba(244,244,245,1) 0%, rgba(228,228,231,1) 100%)",
+            }}
+        />
+    );
+}
+
+
 // --- ルート距離（km, OSRM）---
 // TODO(req v2): 交通手段（徒歩/自転車/車）の選択を UI 設定化する
 async function routeDistanceKm(
@@ -2704,18 +2781,11 @@ export default function UserPilotApp() {
                         aria-disabled={isSoldOut}
                     >
                         {it.main_image_path ? (
-                            <div
-                                aria-hidden="true"
-                                className="absolute inset-0 pointer-events-none transition-transform group-hover:scale-[1.02]"
-                                style={{
-                                    backgroundImage: `url(${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/public-images/${it.main_image_path})`,
-                                    backgroundSize: 'cover',
-                                    backgroundPosition: 'center',
-                                    backgroundColor: '#f4f4f5',
-                                    transform: 'translateZ(0)',
-                                    backfaceVisibility: 'hidden',
-                                    willChange: 'transform'
-                                }}
+                            <BgImage
+                                path={it.main_image_path}
+                                alt={it.name}
+                                className="absolute inset-0 pointer-events-none transition-transform group-hover:scale-[1.02] w-full h-full rounded-xl"
+                                eager={false}  // 一覧はスクロール表示なので遅延でOK
                             />
                         ) : (
                             <span className="text-4xl pointer-events-none">{it.photo ?? "🛍️"}</span>

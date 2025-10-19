@@ -1110,6 +1110,49 @@ const IconExternal = ({ className = "" }: { className?: string }) => (
     </svg>
 );
 
+// ▼▼ ここから追記：ギャラリー左右ボタン用 ▼▼
+const IconChevron = ({ dir = "right", className = "" }: { dir?: "left" | "right"; className?: string }) => (
+    <svg viewBox="0 0 24 24" aria-hidden="true" className={className}>
+        <path
+            d={dir === "right" ? "M9 6l6 6-6 6" : "M15 6l-6 6 6 6"}
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+        />
+    </svg>
+);
+
+const GalleryNavBtn = ({
+    side,
+    onClick,
+    label,
+}: {
+    side: "left" | "right";
+    onClick: () => void;
+    label: string;
+}) => (
+    <button
+        type="button"
+        onClick={onClick}
+        aria-label={label}
+        className={[
+            "absolute top-1/2 -translate-y-1/2",
+            side === "left" ? "left-2" : "right-2",
+            // 丸い黒ボタン（スクショ準拠）
+            "w-10 h-10 rounded-full bg-[#3A3A3A]/60 text-white shadow-md",
+            // 触感
+            "hover:bg-black focus:outline-none focus:ring-2 focus:ring-white/60 active:scale-95",
+            "grid place-items-center"
+        ].join(" ")}
+    >
+        <IconChevron dir={side} className="w-5 h-5" />
+    </button>
+);
+// ▲▲ ここまで追記 ▲▲
+
+
 
 function BottomSheet({
     open,
@@ -3903,20 +3946,11 @@ export default function UserPilotApp() {
                                     {/* 左右ナビ（2枚以上） */}
                                     {imgCount > 1 && (
                                         <>
-                                            <button
-                                                type="button"
-                                                className="absolute left-2 top-1/2 -translate-y-1/2 px-3 py-2 rounded-full bg-white/90 border shadow hover:bg-white"
-                                                onClick={goPrev}
-                                                aria-label="前の画像"
-                                            >‹</button>
-                                            <button
-                                                type="button"
-                                                className="absolute right-2 top-1/2 -translate-y-1/2 px-3 py-2 rounded-full bg-white/90 border shadow hover:bg-white"
-                                                onClick={goNext}
-                                                aria-label="次の画像"
-                                            >›</button>
+                                            <GalleryNavBtn side="left" onClick={goPrev} label="前の画像" />
+                                            <GalleryNavBtn side="right" onClick={goNext} label="次の画像" />
                                         </>
                                     )}
+
 
                                     {/* 閉じる */}
                                     <button

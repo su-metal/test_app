@@ -1,10 +1,15 @@
+// apps/store/next.config.ts
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  // 本番ビルド時に ESLint エラーで失敗しない（Phase 0 の暫定設定）
+  // monorepo のローカルパッケージを使用する場合はここでトランスパイル
+  transpilePackages: ["@shared"],
+
+  // Vercel の本番/プレビューで ESLint エラーでは落とさない（先に公開を優先）
   eslint: { ignoreDuringBuilds: true },
-  // TODO(req v2): 正式化時は false に戻し、型エラーを解消する
-  typescript: { ignoreBuildErrors: true },
+
+  // 型エラーでは落とす（必要なら下をコメント解除して無視可能）
+  // typescript: { ignoreBuildErrors: true },
 };
 
 export default nextConfig;

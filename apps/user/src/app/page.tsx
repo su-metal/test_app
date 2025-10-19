@@ -12,7 +12,14 @@ import type { QRCodeRenderersOptions } from "qrcode";
 // Stripe（ブラウザ用 SDK）
 import { loadStripe } from "@stripe/stripe-js";
 
-const stripePromise = loadStripe(process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY!);
+// 新: ロード失敗時は null を返す
+const stripePromise = (async () => {
+    try {
+        return await loadStripe(process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY!);
+    } catch {
+        return null;
+    }
+})();
 
 
 // ===== debug switch =====

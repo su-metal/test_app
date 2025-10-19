@@ -1,64 +1,65 @@
 "use client";
 
 import { useEffect } from "react";
-import { ensureLiffInitialized, loginIfNeeded } from "@/lib/liffClient";
+import liff from "@line/liff";
 
 /**
- * LIFF ブートコンポーネント（安全設計）
+ * LiffBoot.tsx（全文置き換え版）
  *
- * - ローカル/開発フラグ時は LIFF を完全スキップ（UIの挙動確認を阻害しない）
- *   - 条件: hostname が 'localhost' または NEXT_PUBLIC_DEV_SKIP_LIFF === '1'
- * - 本番/検証環境では liff.init() だけ実行
- *   - 既定で自動ログイン（NEXT_PUBLIC_LIFF_AUTO_LOGIN='0' で無効化）
- * - NEXT_PUBLIC_DEBUG='1' で初期化ログを出します
+ * 目的：
+ *  - ローカルや開発フラグ時は LIFF をスキップして通常開発を快適に
+ *  - 本番/プレビューでは LIFF を初期化
+ *  - LINE アプリ内(WebView)のときだけ自動で LINE ログインを実行
+ *  - 外部ブラウザ（PC/Safari/Chrome）では自動ログインさせない
  *
- * 必要な環境変数（本番/検証）:
- *   - NEXT_PUBLIC_LIFF_ID               ... LIFF ID（例: 2008314807-xxxxxx）
- * オプション:
- *   - NEXT_PUBLIC_DEV_SKIP_LIFF='1'     ... ローカルなどで LIFF を強制スキップ
- *   - NEXT_PUBLIC_LIFF_AUTO_LOGIN='0'   ... 自動ログインを無効化（既定は有効）
- *   - NEXT_PUBLIC_DEBUG='1'             ... デバッグログを出力
+ * 必要な環境変数：
+ *  - NEXT_PUBLIC_LIFF_ID                … 例: 2008314807-xxxxxx
+ * 任意の環境変数：
+ *  - NEXT_PUBLIC_DEV_SKIP_LIFF=1        … ローカル等で LIFF を完全スキップ
+ *  - NEXT_PUBLIC_DEBUG=1                … デバッグログ出力
  */
 export default function LiffBoot() {
   useEffect(() => {
     let mounted = true;
 
-    // --- 1) ローカル/開発フラグ時は何もしない ---
+    const debug = process.env.NEXT_PUBLIC_DEBUG === "1";
     const isLocalhost =
       typeof window !== "undefined" && location.hostname === "localhost";
-    const skipLiff = process.env.NEXT_PUBLIC_DEV_SKIP_LIFF === "1";
+    const skip = process.env.NEXT_PUBLIC_DEV_SKIP_LIFF === "1";
+    const isLineWebView =
+      typeof navigator !== "undefined" && /Line/i.test(navigator.userAgent);
 
-    if (isLocalhost || skipLiff) {
-      if (process.env.NEXT_PUBLIC_DEBUG === "1") {
-        console.info("[LIFF] skipped (localhost or DEV_SKIP flag)");
-      }
+    // 1) ローカル or 明示スキップ → 何もしない
+    if (isLocalhost || skip) {
+      if (debug) console.info("[LIFF] skipped (localhost or DEV_SKIP flag)");
       return;
     }
 
-    // --- 2) 本番/検証: LIFF 初期化 → 任意で自動ログイン ---
+    // 2) 本番/プレビュー：LIFF 初期化
     (async () => {
       try {
-        const debug = process.env.NEXT_PUBLIC_DEBUG === "1";
-        const autoLogin = process.env.NEXT_PUBLIC_LIFF_AUTO_LOGIN !== "0";
-
-        // あなたの liffClient 実装がオプションオブジェクトを受け取れる想定
-        // （受け取らない実装でも追加プロパティは無視されます）
-        const opts: Partial<{ debug: boolean; liffId: string }> = {
-          debug,
-        };
-        if (process.env.NEXT_PUBLIC_LIFF_ID) {
-          opts.liffId = process.env.NEXT_PUBLIC_LIFF_ID!;
+        const liffId = process.env.NEXT_PUBLIC_LIFF_ID;
+        if (!liffId) {
+          console.warn("[LIFF] NEXT_PUBLIC_LIFF_ID is empty. Skip init.");
+          return;
         }
 
-        await ensureLiffInitialized(opts);
+        await liff.init({ liffId });
+        if (!mounted) return;
 
-        if (autoLogin) {
-          await loginIfNeeded();
+        if (debug) console.info("[LIFF] init done", { isLineWebView });
+
+        // 3) 自動ログインは「LINE アプリ内のみ」
+        if (isLineWebView && !liff.isLoggedIn()) {
+          if (debug) console.info("[LIFF] login (LINE WebView)");
+          liff.login();
+        } else if (debug) {
+          console.info(
+            "[LIFF] auto login suppressed (external browser or already logged in)"
+          );
         }
-
-        if (debug && mounted) console.info("[LIFF] boot ok");
       } catch (err) {
-        if (mounted) console.error("[LIFF] 初期化に失敗しました:", err);
+        if (mounted) console.error("[LIFF] init/login failed:", err);
       }
     })();
 
@@ -68,20 +69,4 @@ export default function LiffBoot() {
   }, []);
 
   return null;
-}
-
-// 追加：LINE WebView 判定
-const isLineWebView =
-  typeof navigator !== 'undefined' && /Line/i.test(navigator.userAgent);
-
-// LIFF 初期化後に自動ログインするなら、LINE内だけで実行
-import liff from '@line/liff';
-
-await liff.init({ liffId: process.env.NEXT_PUBLIC_LIFF_ID! });
-
-if (isLineWebView) {
-  if (!liff.isLoggedIn()) liff.login();
-} else {
-  // ここには Google / NextAuth など“外部ブラウザでのみ許可するログイン”を置く
-  // handleGoogleLogin();  // ← LINE内では呼ばない
 }

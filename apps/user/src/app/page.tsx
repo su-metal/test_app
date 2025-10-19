@@ -1212,6 +1212,8 @@ function BottomSheet({
 
 export default function UserPilotApp() {
 
+
+
     // 保存済みカードの一覧（必要に応じてAPI連携に差し替え可：いまはデモ用）
     const savedCards = useMemo(
         () => [
@@ -1223,7 +1225,6 @@ export default function UserPilotApp() {
 
     // 「別のカードを使う」クリックで従来フォームを開くトグル
     const [showCardFullForm, setShowCardFullForm] = useState(false);
-
 
     const [checkoutClientSecret, setCheckoutClientSecret] = useState<string | null>(null);
     const [isCheckoutOpen, setIsCheckoutOpen] = useState(false);
@@ -1257,7 +1258,35 @@ export default function UserPilotApp() {
     const [userEmail] = useLocalStorageState<string>(K.user, "");
     const [tab, setTab] = useState<"home" | "cart" | "order" | "account">("home");
 
+    // ヘッダー隠し（ホーム画面専用）
+    const [hideHeader, setHideHeader] = useState(false);
+    const lastScrollYRef = useRef(0);
 
+    useEffect(() => {
+        if (tab !== 'home') {
+            // ホーム以外では必ず見せる
+            setHideHeader(false);
+            return;
+        }
+
+        // ホーム：スクロール開始で隠す／ほぼ最上部なら表示
+        const onScroll = () => {
+            const y = window.scrollY || 0;
+            if (y <= 4) {
+                setHideHeader(false);
+            } else {
+                // 「スクロールを開始したら」隠す（方向判定なしのシンプル仕様）
+                setHideHeader(true);
+            }
+            lastScrollYRef.current = y;
+        };
+
+        // 初期判定（例：復帰時に位置が下のままなら隠す）
+        onScroll();
+
+        window.addEventListener('scroll', onScroll, { passive: true });
+        return () => window.removeEventListener('scroll', onScroll);
+    }, [tab]);
 
 
 
@@ -2754,7 +2783,7 @@ export default function UserPilotApp() {
             <div className="inline-flex items-center rounded-full px-0 py-1 text-sm select-none">
                 <button
                     type="button"
-                    className="w-7 h-7 text-[10px] leading-none rounded-full border cursor-pointer disabled:opacity-40 flex items-center justify-center"
+                    className="w-9 h-9 text-[10px] leading-none rounded-full border cursor-pointer disabled:opacity-40 flex items-center justify-center"
                     disabled={reserved <= 0}
                     onClick={() => changeQty(sid, it, -1)}
                     aria-label="数量を減らす"
@@ -2762,7 +2791,7 @@ export default function UserPilotApp() {
                 <span className="mx-1 min-w-[1.5rem] text-center tabular-nums">{reserved}</span>
                 <button
                     type="button"
-                    className="w-7 h-7 text-[10px] leading-none rounded-full border cursor-pointer disabled:opacity-40 flex items-center justify-center"
+                    className="w-9 h-9 text-[10px] leading-none rounded-full border cursor-pointer disabled:opacity-40 flex items-center justify-center"
                     disabled={remain <= 0}
                     onClick={() => changeQty(sid, it, +1)}
                     aria-label="数量を増やす"
@@ -2928,7 +2957,14 @@ export default function UserPilotApp() {
     return (
         <MinimalErrorBoundary>
             <div className="min-h-screen bg-[#f6f1e9]">{/* 柔らかいベージュ背景 */}
-                <header className="sticky top-0 z-20 bg-white/85 backdrop-blur border-b">
+                <header
+                    className={[
+                        "sticky top-0 z-20 bg-white/85 backdrop-blur border-b",
+                        "transform-gpu transition-transform duration-200 will-change-transform",
+                        (tab === "home" && hideHeader) ? "-translate-y-full" : "translate-y-0",
+                    ].join(" ")}
+                >
+
                     <div className="max-w-[448px] mx-auto px-4 py-3 flex items-center justify-between" suppressHydrationWarning>
                         {/* ← 左：戻るボタン（home以外で表示） */}
                         <div className="min-w-[40px]">

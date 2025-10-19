@@ -5,6 +5,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 // 追加：受取時間の表示コンポーネント
 import PickupTimeSelector, { type PickupSlot } from "@/components/PickupTimeSelector";
 import { EmbeddedCheckoutProvider, EmbeddedCheckout, useStripe, useElements, PaymentElement } from "@stripe/react-stripe-js";
+import type { QRCodeRenderersOptions } from "qrcode";
 
 
 
@@ -1252,6 +1253,115 @@ function BottomSheet({
     );
 }
 
+/**
+ * TinyQR (production)
+ * - 依存: qrcode
+ * - 高エラー訂正 / 余白 / スケール / ダークライト色を統一
+ * - JSONペイロード(v=1)で将来拡張しやすく
+ * - SSR安全（クライアントでのみ描画）
+ */
+function TinyQR({
+    seed,
+    size = 192,                 // 見た目サイズ（CSSピクセル）
+    ecc = "quartile",           // エラー訂正: 'low' | 'medium' | 'quartile' | 'high'
+    bg = "#ffffff",
+    fg = "#111111",
+    className = "",
+}: {
+    seed: string;               // 既存呼び出し互換: 注文IDなど
+    size?: number;
+    ecc?: QRCodeRenderersOptions["errorCorrectionLevel"];
+    bg?: string;
+    fg?: string;
+    className?: string;
+}) {
+    const ref = React.useRef<HTMLCanvasElement | null>(null);
+    const [ready, setReady] = React.useState(false);
+
+    // ペイロードは将来互換性のためバージョニング
+    // ※ バックエンドは oid で注文を照合する運用を前提にしてください
+    const payload = React.useMemo(
+        () =>
+            JSON.stringify({
+                v: 1,            // version
+                typ: "order",    // type
+                oid: String(seed), // order id (UUID/ULID推奨)
+                iat: Date.now(),   // issued at (ms)
+            }),
+        [seed]
+    );
+
+    React.useEffect(() => {
+        let disposed = false;
+        (async () => {
+            if (!ref.current) return;
+            try {
+                const QR = await import("qrcode"); // SSR回避のため動的import
+                // 物理ピクセルを確保（Retinaでも滲まない）
+                const scale = 4;                        // ドットスケール（高解像度）
+                const px = size * (window.devicePixelRatio || 1);
+                ref.current.width = px;
+                ref.current.height = px;
+                ref.current.style.width = `${size}px`;
+                ref.current.style.height = `${size}px`;
+
+                const opts: QRCodeRenderersOptions = {
+                    errorCorrectionLevel: ecc,            // 本番は "quartile" 以上が安心
+                    margin: 2,                            // 静かな余白（Quiet Zone）
+                    scale,                                // ドットスケール
+                    color: { dark: fg, light: bg },
+                };
+
+                await QR.toCanvas(ref.current, payload, opts);
+                if (!disposed) setReady(true);
+            } catch (e) {
+                console.error("[TinyQR] render failed", e);
+                // フォールバック: テキストを表示（最低限の回避）
+                if (ref.current) {
+                    const ctx = ref.current.getContext("2d");
+                    if (ctx) {
+                        ref.current.width = size;
+                        ref.current.height = size;
+                        ctx.fillStyle = "#fff";
+                        ctx.fillRect(0, 0, size, size);
+                        ctx.fillStyle = "#000";
+                        ctx.font = "12px system-ui, sans-serif";
+                        ctx.textAlign = "center";
+                        ctx.fillText("QR生成に失敗しました", size / 2, size / 2);
+                    }
+                }
+            }
+        })();
+        return () => {
+            disposed = true;
+        };
+    }, [payload, size, bg, fg, ecc]);
+
+    return (
+        <div className={className} aria-busy={!ready}>
+            <canvas
+                ref={ref}
+                role="img"
+                aria-label="注文確認用QRコード"
+                // 印刷時も綺麗に出るよう背景は白に
+                style={{
+                    display: "block",
+                    background: "#fff",
+                    imageRendering: "pixelated",
+                    borderRadius: 8,
+                }}
+            />
+            {/* 端末トラブル時に人手照合できるよう小さく注文IDを表示 */}
+            <div
+                aria-hidden
+                className="mt-1 text-center text-[10px] text-zinc-500 select-all break-all"
+                style={{ maxWidth: size }}
+            >
+                {String(seed)}
+            </div>
+        </div>
+    );
+}
 
 export default function UserPilotApp() {
 
@@ -4219,16 +4329,6 @@ function PayWithElementButton({ onSuccess, onError }: { onSuccess: () => void; o
 }
 
 
-
-
-function TinyQR({ seed }: { seed: string }) {
-    const size = 21, dot = 6, pad = 4; let h = Array.from(seed).reduce((a, c) => ((a << 5) - a) + c.charCodeAt(0), 0) >>> 0; const bits: number[] = [];
-    for (let i = 0; i < size * size; i++) { h = (1103515245 * h + 12345) >>> 0; bits.push((h >> 15) & 1); }
-    const w = size * dot + pad * 2;
-    return (
-        <svg width={w} height={w} className="rounded bg-white shadow"><rect x={0} y={0} width={w} height={w} fill="white" />{bits.map((b, i) => b ? <rect key={i} x={pad + (i % size) * dot} y={pad + Math.floor(i / size) * dot} width={dot - 1} height={dot - 1} /> : null)}</svg>
-    );
-}
 
 function AccountView({
     orders,

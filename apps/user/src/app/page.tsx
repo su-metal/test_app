@@ -2780,7 +2780,7 @@ export default function UserPilotApp() {
         const reserved = getReserved(sid, it.id);
         const remain = Math.max(0, it.stock - reserved);
         return (
-            <div className="inline-flex items-center rounded-full px-0 py-1 text-sm select-none">
+            <div className="inline-flex items-center rounded-full px-2 py-1 text-sm select-none">
                 <button
                     type="button"
                     className="w-9 h-9 text-[10px] leading-none rounded-full border cursor-pointer disabled:opacity-40 flex items-center justify-center"
@@ -2788,7 +2788,7 @@ export default function UserPilotApp() {
                     onClick={() => changeQty(sid, it, -1)}
                     aria-label="数量を減らす"
                 >−</button>
-                <span className="mx-1 min-w-[1.5rem] text-center tabular-nums">{reserved}</span>
+                <span className="mx-2 min-w-[1.5rem] text-center tabular-nums">{reserved}</span>
                 <button
                     type="button"
                     className="w-9 h-9 text-[10px] leading-none rounded-full border cursor-pointer disabled:opacity-40 flex items-center justify-center"
@@ -2901,12 +2901,12 @@ export default function UserPilotApp() {
                                 ありがとうございました！またのご利用をお待ちしています。
                             </div>
                         ) : (
-                            <div className="mt-2 text-xs text-zinc-500 flex items-center gap-1 w-full">
+                            <div className="mb-3 text-xs text-zinc-500 flex items-center gap-1 w-full">
                                 <span>⏰</span>
                                 <span className="truncate">受取 {it.pickup}</span>
                             </div>
                         )}
-                        <div className="mt-2 text-base font-semibold">{currency(it.price)}</div>
+                        <div className="mt-2 text-base text-lg font-semibold">{currency(it.price)}</div>
                     </button>
 
                 </div>

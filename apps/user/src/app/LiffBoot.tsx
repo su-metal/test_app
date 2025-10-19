@@ -69,3 +69,19 @@ export default function LiffBoot() {
 
   return null;
 }
+
+// 追加：LINE WebView 判定
+const isLineWebView =
+  typeof navigator !== 'undefined' && /Line/i.test(navigator.userAgent);
+
+// LIFF 初期化後に自動ログインするなら、LINE内だけで実行
+import liff from '@line/liff';
+
+await liff.init({ liffId: process.env.NEXT_PUBLIC_LIFF_ID! });
+
+if (isLineWebView) {
+  if (!liff.isLoggedIn()) liff.login();
+} else {
+  // ここには Google / NextAuth など“外部ブラウザでのみ許可するログイン”を置く
+  // handleGoogleLogin();  // ← LINE内では呼ばない
+}

@@ -2901,12 +2901,12 @@ export default function UserPilotApp() {
                                 ありがとうございました！またのご利用をお待ちしています。
                             </div>
                         ) : (
-                            <div className="mb-3 text-xs text-zinc-500 flex items-center gap-1 w-full">
+                            <div className="mb-3 mt-0.5 text-xs text-zinc-500 flex items-center gap-1 w-full">
                                 <span>⏰</span>
                                 <span className="truncate">受取 {it.pickup}</span>
                             </div>
                         )}
-                        <div className="mt-2 text-base text-lg font-semibold">{currency(it.price)}</div>
+                        <div className="mt-2 text-base text-xl font-extrabold">{currency(it.price)}</div>
                     </button>
 
                 </div>

@@ -2780,7 +2780,7 @@ export default function UserPilotApp() {
         const reserved = getReserved(sid, it.id);
         const remain = Math.max(0, it.stock - reserved);
         return (
-            <div className="inline-flex items-center rounded-full px-2 py-1 text-sm select-none">
+            <div className="inline-flex items-center rounded-full px-0 py-1 text-sm select-none">
                 <button
                     type="button"
                     className="w-9 h-9 text-[10px] leading-none rounded-full border cursor-pointer disabled:opacity-40 flex items-center justify-center"
@@ -3932,10 +3932,11 @@ export default function UserPilotApp() {
 
                                     <div className="text-lg font-semibold leading-tight break-words">{detail.item.name}</div>
                                     <div className="text-sm text-zinc-600 flex items-center gap-3">
-                                        <span className="inline-flex items-center gap-1"><span>⏰</span><span>受取 {detail.item.pickup}</span></span>
-                                        <span className="inline-flex items-center gap-1"><span>🏷️</span><span className="tabular-nums">{currency(detail.item.price)}</span></span>
-                                        <span className="ml-auto">
-                                            <RemainChip remain={Math.max(0, detail.item.stock - getReserved(detail.shopId, detail.item.id))} />
+                                        <span className="inline-flex items-center gap-1">
+                                            <span>⏰</span><span>受取 {detail.item.pickup}</span>
+                                        </span>
+                                        <span className="ml-auto text-xl font-extrabold tabular-nums text-zinc-900">
+                                            {currency(detail.item.price)}
                                         </span>
                                     </div>
                                     <div className="text-sm text-zinc-700 bg-zinc-50 rounded-xl p-3">
@@ -3957,11 +3958,18 @@ export default function UserPilotApp() {
                                             <span>アレルギー・原材料について</span>
                                         </button>
                                     </div>
+
+                                    {/* ▼ 追加：中央揃えの増減チップ */}
+                                    <div className="pt-3 flex justify-center">
+                                        <QtyChip sid={detail.shopId} it={detail.item} />
+                                    </div>
+
+                                    {/* ▼ 追加：その直下に残数 */}
+                                    <div className="mt-2 flex justify-center">
+                                        <RemainChip remain={Math.max(0, detail.item.stock - getReserved(detail.shopId, detail.item.id))} />
+                                    </div>
                                     <div className="flex items-center justify-between pt-2">
-                                        <div className="text-xl font-extrabold">{currency(detail.item.price)}</div>
-                                        <div className="rounded-full  px-2 py-1">
-                                            <QtyChip sid={detail.shopId} it={detail.item} />
-                                        </div>
+
                                     </div>
                                     {/* モーダルのフッター：閉じるのみ（「カートに追加」は削除） */}
                                     <div className="pt-1">

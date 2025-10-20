@@ -3807,7 +3807,7 @@ export default function UserPilotApp() {
                                                         <div className="mt-4 flex justify-center">
                                                             <div className="p-3 rounded bg-white shadow">
                                                                 {/* 上限サイズは必要に応じて変更（例: 168 / 192） */}
-
+                                                                <TinyQR seed={o.code6} size={192} className="w-full" />
                                                             </div>
                                                         </div>
                                                         <div className="mt-4">

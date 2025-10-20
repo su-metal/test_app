@@ -1560,6 +1560,39 @@ export default function UserPilotApp() {
         });
     }, [tab, setCart]);
 
+    // ★ 追加：Embedded Checkout 成功ページから戻ったら、購入済み商品をカートから削除
+    useEffect(() => {
+        // /checkout/success でのみ動く
+        if (typeof window === 'undefined') return;
+        if (!location.pathname.startsWith('/checkout/success')) return;
+
+        try {
+            const gkey = sessionStorage.getItem('checkout_target_group');
+            const raw = sessionStorage.getItem('checkout_group_itemKeys');
+            const itemKeys: string[] = raw ? JSON.parse(raw) : [];
+
+            if (!gkey || itemKeys.length === 0) return;
+
+            // 該当商品だけをカートから除去
+            setCart(cs => cs.filter(l => !itemKeys.includes(`${l.shopId}:${l.item.id}`)));
+
+            // 決済UIの後始末（開いていたら閉じる）
+            try { setIsCheckoutOpen(false); } catch { }
+            try { setCheckoutClientSecret(null); } catch { }
+            try { setOrderTarget(undefined); } catch { }
+
+            // 使い終わったフラグを掃除
+            sessionStorage.removeItem('checkout_target_group');
+            sessionStorage.removeItem('checkout_group_itemKeys');
+
+            emitToast('success', '決済済みの商品をカートから削除しました');
+        } catch {
+            // noop
+        }
+        // 1度だけで良いので依存は setCart など最低限でOK
+    }, [setCart]);
+
+
 
     // ★ 追加: ポップアップ経由のときは、まずカート画面の先頭に固定
     useEffect(() => {
@@ -2927,6 +2960,12 @@ export default function UserPilotApp() {
             if (!cs) throw new Error("client_secret がありません");
             setCheckoutClientSecret(cs);
             setIsCheckoutOpen(true);
+            // ▼ 追加：購入対象グループと商品キーを保存
+            try {
+                const itemKeys = g.lines.map(l => `${l.shopId}:${l.item.id}`);
+                sessionStorage.setItem('checkout_target_group', key);
+                sessionStorage.setItem('checkout_group_itemKeys', JSON.stringify(itemKeys));
+            } catch { /* noop */ }
         } catch (e: any) {
             console.error(e);
             emitToast("error", e?.message || "Stripe セッション作成に失敗しました");

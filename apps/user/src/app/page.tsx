@@ -3152,25 +3152,21 @@ export default function UserPilotApp() {
                         <div className="max-w-[448px] mx-auto px-4 py-3 flex items-center justify-between" suppressHydrationWarning>
                             {/* ← 左：戻るボタン（home以外で表示） */}
                             <div className="min-w-[40px]">
-                                {tab !== 'home' ? (
-                                    <button
-                                        type="button"
-                                        onClick={goBack}
-                                        aria-label="戻る"
-                                        className="inline-flex items-center justify-center w-9 h-9 rounded-full border bg-white hover:bg-zinc-50"
-                                        title="戻る"
-                                    >
-                                        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2"
-                                            strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                                            <polyline points="15 18 9 12 15 6"></polyline>
-                                        </svg>
-                                        <span className="sr-only">戻る</span>
-                                    </button>
-                                ) : (
-                                    /* ※ home のときは幅合わせのダミー */
-                                    <span className="inline-block w-9 h-9" aria-hidden="true" />
-                                )}
+                                <button
+                                    type="button"
+                                    onClick={goBack}
+                                    aria-label="戻る"
+                                    className="inline-flex items-center justify-center w-9 h-9 rounded-full border bg-white hover:bg-zinc-50"
+                                    title="戻る"
+                                >
+                                    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2"
+                                        strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                        <polyline points="15 18 9 12 15 6"></polyline>
+                                    </svg>
+                                    <span className="sr-only">戻る</span>
+                                </button>
                             </div>
+
 
                             {/* 中央のタイトルは削除（空にしてセンタリング維持したいなら空スパンでもOK） */}
                             <span className="sr-only">ヘッダー</span>

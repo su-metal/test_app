@@ -617,7 +617,7 @@ function ToastBar({ toast, onClose }: { toast: ToastPayload | null; onClose: () 
     if (!toast) return null;
     const tone = toast.kind === "success" ? "bg-emerald-600" : toast.kind === "error" ? "bg-red-600" : "bg-zinc-800";
     return (
-        <div className={`fixed bottom-32 left-1/2 -translate-x-1/2 z-150
+        <div className={`fixed bottom-32 left-1/2 -translate-x-1/2 z-3101
                    w-[72%] max-w-[520px]
                    px-4 py-2 text-white rounded-full shadow ${tone}`}>
             <div className="flex items-center gap-3">
@@ -3159,39 +3159,39 @@ export default function UserPilotApp() {
     if (!hydrated) return null;
 
 
-    function MiniCartPopup({
-        totalQty,
-        onOpenCart,
-    }: {
-        totalQty: number;
-        onOpenCart: () => void;
-    }) {
-        if (totalQty <= 0) return null;
-        return (
-            <div
-                className="fixed right-4 bottom-28 z-[3100] animate-in fade-in-0 slide-in-from-bottom-2"
-                role="dialog"
-                aria-live="polite"
-            >
-                <button
-                    type="button"
-                    onClick={onOpenCart}
-                    className="
-          shadow-lg rounded-2xl border bg-white px-4 py-3
-          flex items-center gap-3 hover:bg-zinc-50
-        "
-                    title="カートを開く"
-                    aria-label="カートを開く"
-                >
-                    <span className="text-xl">🛒</span>
-                    <div className="text-sm">
-                        <div className="font-semibold leading-tight">カートに商品があります</div>
-                        <div className="text-[12px] text-zinc-600">数量 {totalQty} 点</div>
-                    </div>
-                </button>
-            </div>
-        );
-    }
+    // function MiniCartPopup({
+    //     totalQty,
+    //     onOpenCart,
+    // }: {
+    //     totalQty: number;
+    //     onOpenCart: () => void;
+    // }) {
+    //     if (totalQty <= 0) return null;
+    //     return (
+    //         <div
+    //             className="fixed right-4 bottom-28 z-[3100] animate-in fade-in-0 slide-in-from-bottom-2"
+    //             role="dialog"
+    //             aria-live="polite"
+    //         >
+    //             <button
+    //                 type="button"
+    //                 onClick={onOpenCart}
+    //                 className="
+    //       shadow-lg rounded-2xl border bg-white px-4 py-3
+    //       flex items-center gap-3 hover:bg-zinc-50
+    //     "
+    //                 title="カートを開く"
+    //                 aria-label="カートを開く"
+    //             >
+    //                 <span className="text-xl">🛒</span>
+    //                 <div className="text-sm">
+    //                     <div className="font-semibold leading-tight">カートに商品があります</div>
+    //                     <div className="text-[12px] text-zinc-600">数量 {totalQty} 点</div>
+    //                 </div>
+    //             </button>
+    //         </div>
+    //     );
+    // }
 
 
     function ViewCartButton({
@@ -3781,7 +3781,7 @@ export default function UserPilotApp() {
                     )}
 
                     {/* 🛒 ホーム画面にいる時だけ、数量>0なら右下にポップアップ表示（※商品詳細モーダル中は非表示） */}
-                    {tab === "home" && totalCartQty > 0 && !detail && (
+                    {/* {tab === "home" && totalCartQty > 0 && !detail && (
                         <MiniCartPopup
                             totalQty={totalCartQty}
                             onOpenCart={() => {
@@ -3790,7 +3790,7 @@ export default function UserPilotApp() {
                                 setTab('cart');                  // 既存どおりカートタブへ
                             }}
                         />
-                    )}
+                    )} */}
 
                     {tab === "cart" && (
                         <section className="mt-4 space-y-4">

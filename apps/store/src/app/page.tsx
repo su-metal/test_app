@@ -654,18 +654,45 @@ function useOrders() {
 
   useEffect(() => { fetchAndSubscribe(); return () => { cleanup(); }; }, [fetchAndSubscribe, cleanup]);
 
+  // 新（RPC経由）:
   const fulfill = useCallback(async (id: string) => {
-    const target = orders.find(o => o.id === id); if (!target) return;
-    if (!supabase) { setOrders(prev => prev.map(o => o.id === id ? { ...o, status: 'FULFILLED' } : o)); orderChan.post({ type: 'ORDER_FULFILLED', orderId: id, at: Date.now() }); return; }
-    const { data, error } = await supabase.from('orders').update({ status: 'FULFILLED' }).eq('id', id).eq('store_id', getStoreId()).select('*').single();
-    if (error) { setErr(error.message || '更新に失敗しました'); return; }
-    if (data) {
-      setOrders(prev => prev.map(o => o.id === String((data as OrdersRow).id) ? mapOrder(data as OrdersRow) : o));
-      // 在庫反映のタイミングは「支払い時点」に変更。受け渡し時の減算は行わない。
-      // TODO(req v2): 運用上の整合が必要ならサーバー側で冪等化/検証を行う
-      orderChan.post({ type: 'ORDER_FULFILLED', orderId: String((data as OrdersRow).id), at: Date.now() });
+    const target = orders.find(o => o.id === id);
+    if (!target) return;
+
+    // ここではDBの値を使って正規化（モーダル側の入力検証は既に通過している想定）
+    const code = normalizeCode6(target.code ?? "");
+    if (!code || code.length !== 6) {
+      setErr('この注文にはコードが登録されていません');
+      return;
     }
-  }, [supabase, orders, decrementStocksDB, orderChan]);
+
+    if (!supabase) {
+      // （念のため）クライアント未初期化時はローカルだけ更新
+      setOrders(prev => prev.map(o => o.id === id ? { ...o, status: 'FULFILLED' } : o));
+      orderChan.post({ type: 'ORDER_FULFILLED', orderId: id, at: Date.now() });
+      return;
+    }
+
+    // ★ RPC 呼び出し（DB側で作成済みの fulfill_order(uuid, text) を使う）
+    const { data, error } = await supabase.rpc('fulfill_order', {
+      p_store_id: getStoreId(),
+      p_code: code,
+    });
+
+    if (error) {
+      setErr(error.message || '更新に失敗しました');
+      return;
+    }
+
+    if (data) {
+      // RPCの戻り値（更新後の行）で一覧を更新
+      const row = data as any; // returns public.orders
+      setOrders(prev =>
+        prev.map(o => (o.id === String(row.id) ? mapOrder(row) : o)),
+      );
+      orderChan.post({ type: 'ORDER_FULFILLED', orderId: String(row.id), at: Date.now() });
+    }
+  }, [supabase, orders, orderChan, setOrders, setErr]);
 
   const clearPending = useCallback(async () => {
     if (!(typeof window !== 'undefined' && window.confirm('「受取待ちの注文」をすべて削除しますか？'))) return;

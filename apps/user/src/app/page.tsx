@@ -1287,18 +1287,20 @@ function TinyQR({
     const [ready, setReady] = React.useState(false);
     const [cssSide, setCssSide] = React.useState<number>(size); // 実際のCSS上の一辺(px)
 
-    // ペイロードは将来互換性のためバージョニング
-    // ※ バックエンドは oid で注文を照合する運用を前提にしてください
-    const payload = React.useMemo(
-        () =>
-            JSON.stringify({
-                v: 1,            // version
-                typ: "order",    // type
-                oid: String(seed), // order id (UUID/ULID推奨)
-                iat: Date.now(),   // issued at (ms)
-            }),
-        [seed]
-    );
+    // 6桁の引換コードが来たら「そのまま」埋め込む（店舗側スキャナ互換）
+    // それ以外は後方互換で JSON にフォールバック
+    const payload = React.useMemo(() => {
+        const s = String(seed ?? "").trim();
+        if (/^\d{6}$/.test(s)) return s;                // 既に6桁
+        const digits = s.replace(/\D/g, "");
+        if (/^\d{6}$/.test(digits)) return digits;      // 混在から抽出して6桁
+        return JSON.stringify({
+            v: 1,
+            typ: "order",
+            oid: String(seed),
+            iat: Date.now(),
+        });
+    }, [seed]);
 
     // 親幅に追従（ResizeObserver）
     React.useEffect(() => {
@@ -3805,7 +3807,7 @@ export default function UserPilotApp() {
                                                         <div className="mt-4 flex justify-center">
                                                             <div className="p-3 rounded bg-white shadow">
                                                                 {/* 上限サイズは必要に応じて変更（例: 168 / 192） */}
-                                                                <TinyQR seed={o.id} size={192} className="w-full" />
+
                                                             </div>
                                                         </div>
                                                         <div className="mt-4">

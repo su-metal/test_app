@@ -4039,8 +4039,8 @@ export default function UserPilotApp() {
                             className="absolute inset-0 bg-black/40 z-[2000]"
                             onClick={() => setDetail(null)}
                         />
-                        <div className="absolute inset-0 flex items-center justify-center p-4 z-[2001]">
-                            <div className="max-w-[520px] w-full bg-white rounded-2xl shadow-xl max-h-[85vh] flex flex-col overflow-hidden">
+                        <div className="absolute inset-0 flex items-center justify-center p-4 z-[2001] pointer-events-none">
+                            <div className="max-w-[520px] w-full bg-white rounded-2xl shadow-xl max-h-[85vh] flex flex-col overflow-hidden pointer-events-auto">
                                 <div
                                     className="relative" ref={carouselWrapRef}
                                 >
@@ -4162,16 +4162,6 @@ export default function UserPilotApp() {
                                     </div>
                                     <div className="flex items-center justify-between pt-2">
 
-                                    </div>
-                                    {/* モーダルのフッター：閉じるのみ（「カートに追加」は削除） */}
-                                    <div className="pt-1">
-                                        <button
-                                            type="button"
-                                            className="w-full px-3 py-2 rounded-xl border"
-                                            onClick={() => { setAllergyOpen(false); setDetail(null); }}
-                                        >
-                                            閉じる
-                                        </button>
                                     </div>
                                 </div>
 

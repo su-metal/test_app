@@ -612,6 +612,23 @@ function useOrders() {
   const [err, setErr] = useState<string | null>(null);
   const channelRef = useRef<RealtimeChannel | null>(null);
   const chanName = `orders-realtime-${getStoreId()}`;
+  // useOrders() の先頭付近に追加
+  const upsertById = (list: Order[], row: Order) => {
+    const i = list.findIndex(o => o.id === row.id);
+    if (i >= 0) {
+      const next = list.slice();
+      next[i] = row;
+      return next;
+    }
+    return [row, ...list];
+  };
+  const uniqById = (rows: Order[]) => {
+    const m = new Map<string, Order>();
+    for (const r of rows) m.set(r.id, r);
+    // 直近が先頭になるように、最後に入ったものを優先しつつ逆順で返す
+    return Array.from(m.values());
+  };
+
 
   const cleanup = useCallback(() => {
     try { channelRef.current?.unsubscribe?.(); } catch { }
@@ -632,13 +649,26 @@ function useOrders() {
     if (!supabase) { setReady(true); return; }
     setErr(null); cleanup();
     const { data, error } = await supabase.from('orders').select('id,store_id,code,customer,items,total,placed_at,status').eq('store_id', getStoreId()).order('placed_at', { ascending: false });
-    if (error) setErr(error.message || 'データ取得に失敗しました'); else setOrders(((data ?? []) as OrdersRow[]).map(mapOrder));
+    if (error) {
+      setErr(error.message || 'データ取得に失敗しました');
+    } else {
+      const rows = ((data ?? []) as OrdersRow[]).map(mapOrder);
+      setOrders(uniqById(rows));
+    }
     try {
       const sid = getStoreId();
       const ch = (supabase as any)
         .channel(chanName)
-        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'orders', filter: `store_id=eq.${sid}` }, (p: any) => { if (p?.new) setOrders(prev => [mapOrder(p.new as OrdersRow), ...prev]); })
-        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'orders', filter: `store_id=eq.${sid}` }, (p: any) => { if (p?.new) setOrders(prev => prev.map(o => o.id === String((p.new as OrdersRow).id) ? mapOrder(p.new as OrdersRow) : o)); })
+        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'orders', filter: `store_id=eq.${sid}` }, (p: any) => {
+          if (!p?.new) return;
+          const row = mapOrder(p.new as OrdersRow);
+          setOrders(prev => upsertById(prev, row));
+        })
+        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'orders', filter: `store_id=eq.${sid}` }, (p: any) => {
+          if (!p?.new) return;
+          const row = mapOrder(p.new as OrdersRow);
+          setOrders(prev => upsertById(prev, row));
+        })
         // NOTE: DELETE は REPLICA IDENTITY 設定次第で old に store_id が含まれないため、フィルタを外す
         .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'orders' }, (p: any) => {
           const oldRow = (p?.old as any) || {};

@@ -1478,6 +1478,8 @@ export default function UserPilotApp() {
     const lastCartTargetIdRef = useRef<string | null>(null);
     // ▼ カート内の各「店舗先頭グループ」を指すアンカー（storeId -> 要素）
     const cartStoreAnchorRefs = useRef<Record<string, HTMLDivElement | null>>({});
+    // ★ポップアップ経由でカートへ入ったら「先頭固定」するためのフラグ
+    const [forceCartTop, setForceCartTop] = useState(false);
 
 
     // 並び替えモード（ローカル保存）
@@ -1555,6 +1557,22 @@ export default function UserPilotApp() {
             return kept;
         });
     }, [tab, setCart]);
+
+
+    // ★ 追加: ポップアップ経由のときは、まずカート画面の先頭に固定
+    useEffect(() => {
+        if (tab !== 'cart') return;
+        if (!forceCartTop) return;
+        if (pendingScrollShopId) return; // 店舗アンカー指定があるときは優先させる（競合回避）
+
+        // レイアウト確定後にトップへ（他の rAF ベースと規則を合わせる）
+        requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+                window.scrollTo({ top: 0, behavior: 'auto' });
+                setForceCartTop(false); // 一度で消費
+            });
+        });
+    }, [tab, forceCartTop, pendingScrollShopId]);
 
 
     // 「カートを見る」から遷移したら、目的店舗の先頭カートへスクロール（ヘッダー分を差し引いて位置補正）
@@ -3764,7 +3782,11 @@ export default function UserPilotApp() {
                     {tab === "home" && totalCartQty > 0 && !detail && (
                         <MiniCartPopup
                             totalQty={totalCartQty}
-                            onOpenCart={() => setTab("cart")}
+                            onOpenCart={() => {
+                                setForceCartTop(true);           // ★ 先頭固定を要求
+                                setPendingScrollShopId(null);    // ★ 店舗アンカーへのスクロール要求は打ち消す
+                                setTab('cart');                  // 既存どおりカートタブへ
+                            }}
                         />
                     )}
 

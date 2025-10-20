@@ -3282,6 +3282,162 @@ export default function UserPilotApp() {
                 <main className="max-w-[448px] mx-auto px-4 pb-28 pt-6">
                     {tab === "home" && (
                         <section className="mt-0 space-y-4">
+                            <section className="container section merits">
+                                <div
+                                    className="section-head"
+                                    style={{
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        justifyContent: 'space-between',
+                                        marginBottom: 8,
+                                    }}
+                                >
+                                    <div>
+                                        <div
+                                            className="section-en"
+                                            style={{ fontSize: 10, letterSpacing: '.24em', opacity: .5, marginBottom: 4 }}
+                                        >
+                                            WHY FOODIG
+                                        </div>
+                                        <h2 style={{ fontSize: 18, margin: 0 }}>おいしい未来を、みんなで</h2>
+                                    </div>
+                                </div>
+
+                                {/* 横スクロール行 */}
+                                <div
+                                    className="hscroll no-scrollbar"
+                                    style={{ display: 'flex', gap: 10, overflow: 'auto', padding: '2px 0', background: 'transparent' }}
+                                >
+                                    {/* 1) 余ったフードをおトクにゲット */}
+                                    <div
+                                        className="merit-banner"
+                                        style={{
+                                            minWidth: '82%',
+                                            background: '#fff',
+                                            color: '#0B0D11',
+                                            borderRadius: 12,
+                                            padding: '14px 16px',
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            gap: 10,
+                                            boxShadow: '0 4px 14px rgba(0,0,0,.08)',
+                                            border: '1px solid rgba(0,0,0,.08)',
+                                            textAlign: 'left',
+                                        }}
+                                    >
+                                        {/* POP: Shopping bags (filled, sticker style) */}
+                                        <svg
+                                            className="illus"
+                                            viewBox="0 0 64 64"
+                                            aria-hidden="true"
+                                            role="img"
+                                            style={{ width: 44, height: 44, flexShrink: 0, objectFit: 'contain', filter: 'drop-shadow(0 2px 4px rgba(0,0,0,.08))' }}
+                                            xmlns="http://www.w3.org/2000/svg"
+                                        >
+                                            <circle cx="20" cy="20" r="16" fill="#F0FFF7" />
+                                            <rect x="6" y="18" width="32" height="34" rx="6" fill="var(--accent)" stroke="#fff" strokeWidth="2.2" />
+                                            <path d="M12 22c0-6 5-11 11-11s11 5 11 11" fill="none" stroke="#fff" strokeWidth="2.2" />
+                                            <rect x="28" y="26" width="26" height="26" rx="6" fill="var(--accent2)" stroke="#fff" strokeWidth="2.2" />
+                                            <path d="M34 30c0-5 4-9 9-9s9 4 9 9" fill="none" stroke="#fff" strokeWidth="2.2" />
+                                            <path d="M48 12l1.6 3.4 3.6.4-2.7 2.5.7 3.5-3.2-1.7-3.2 1.7.7-3.5-2.7-2.5 3.6-.4z" fill="var(--coral)" />
+                                        </svg>
+                                        <div className="txt">
+                                            <div className="title" style={{ fontWeight: 800, fontSize: 14, marginBottom: 2 }}>
+                                                余ったフードをおトクにゲット
+                                            </div>
+                                            <div className="desc" style={{ fontSize: 12, lineHeight: 1.4, opacity: .75 }}>
+                                                閉店間際などのフードをお手頃価格で購入できます。
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    {/* 2) フードロス削減に参加 */}
+                                    <div
+                                        className="merit-banner"
+                                        style={{
+                                            minWidth: '82%',
+                                            background: '#fff',
+                                            color: '#0B0D11',
+                                            borderRadius: 12,
+                                            padding: '14px 16px',
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            gap: 10,
+                                            boxShadow: '0 4px 14px rgba(0,0,0,.08)',
+                                            border: '1px solid rgba(0,0,0,.08)',
+                                            textAlign: 'left',
+                                        }}
+                                    >
+                                        {/* POP: Leaf & hand (filled) */}
+                                        <svg
+                                            className="illus"
+                                            viewBox="0 0 64 64"
+                                            aria-hidden="true"
+                                            role="img"
+                                            style={{ width: 44, height: 44, flexShrink: 0, objectFit: 'contain', filter: 'drop-shadow(0 2px 4px rgba(0,0,0,.08))' }}
+                                            xmlns="http://www.w3.org/2000/svg"
+                                        >
+                                            <circle cx="22" cy="20" r="16" fill="#EEF4FF" />
+                                            <path d="M10 40c8 2 16 2 24 0 8-2 10-6 10-8" fill="#FFF" stroke="#fff" strokeWidth="2.2" />
+                                            <rect x="30" y="12" width="4" height="16" rx="2" fill="var(--accent)" />
+                                            <path d="M30 20c-10 0-16-6-18-10 6 0 14 2 18 6" fill="var(--accent)" />
+                                            <path d="M34 22c10 0 16-6 18-10-6 0-14 2-18 6" fill="var(--accent2)" />
+                                            <path d="M46 22c1.6-1.6 4.2-1.6 5.8 0 1.6 1.6 1.6 4.2 0 5.8l-2.9 2.9-2.9-2.9c-1.6-1.6-1.6-4.2 0-5.8z" fill="var(--coral)" />
+                                        </svg>
+                                        <div className="txt">
+                                            <div className="title" style={{ fontWeight: 800, fontSize: 14, marginBottom: 2 }}>
+                                                フードロス削減に参加
+                                            </div>
+                                            <div className="desc" style={{ fontSize: 12, lineHeight: 1.4, opacity: .75 }}>
+                                                あなたのアクションが地球を守る一歩になります。
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    {/* 3) 地元のお店を応援 */}
+                                    <div
+                                        className="merit-banner"
+                                        style={{
+                                            minWidth: '82%',
+                                            background: '#fff',
+                                            color: '#0B0D11',
+                                            borderRadius: 12,
+                                            padding: '14px 16px',
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            gap: 10,
+                                            boxShadow: '0 4px 14px rgba(0,0,0,.08)',
+                                            border: '1px solid rgba(0,0,0,.08)',
+                                            textAlign: 'left',
+                                        }}
+                                    >
+                                        {/* POP: Storefront (filled) */}
+                                        <svg
+                                            className="illus"
+                                            viewBox="0 0 64 64"
+                                            aria-hidden="true"
+                                            role="img"
+                                            style={{ width: 44, height: 44, flexShrink: 0, objectFit: 'contain', filter: 'drop-shadow(0 2px 4px rgba(0,0,0,.08))' }}
+                                            xmlns="http://www.w3.org/2000/svg"
+                                        >
+                                            <circle cx="22" cy="20" r="16" fill="#FFF5F3" />
+                                            <rect x="12" y="26" width="40" height="22" rx="6" fill="var(--accent)" stroke="#fff" strokeWidth="2.2" />
+                                            <path d="M16 26l5-9h22l5 9" stroke="#fff" strokeWidth="2.2" />
+                                            <rect x="20" y="32" width="9" height="12" rx="3" fill="#fff" />
+                                            <rect x="33" y="32" width="13" height="9" rx="3" fill="var(--accent2)" stroke="#fff" strokeWidth="2.2" />
+                                            <path d="M42 16c1.6-1.6 4.2-1.6 5.8 0 1.6 1.6 1.6 4.2 0 5.8l-2.9 2.9-2.9-2.9c-1.6-1.6-1.6-4.2 0-5.8z" fill="var(--coral)" />
+                                        </svg>
+                                        <div className="txt">
+                                            <div className="title" style={{ fontWeight: 800, fontSize: 14, marginBottom: 2 }}>
+                                                地元のお店を応援
+                                            </div>
+                                            <div className="desc" style={{ fontSize: 12, lineHeight: 1.4, opacity: .75 }}>
+                                                地域の飲食店とのつながりを深められます。
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </section>
                             <div className="flex items-center justify-between">
                                 {/* <h2 className="text-base font-semibold">近くのお店</h2> */}
 

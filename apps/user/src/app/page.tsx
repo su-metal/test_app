@@ -1396,9 +1396,6 @@ function TinyQR({
 
 export default function UserPilotApp() {
 
-
-
-
     // 保存済みカードの一覧（必要に応じてAPI連携に差し替え可：いまはデモ用）
     const savedCards = useMemo(
         () => [
@@ -3177,6 +3174,32 @@ export default function UserPilotApp() {
     }
 
 
+    function ViewCartButton({ shopId, className = "" }: { shopId: string; className?: string }) {
+        return (
+            <button
+                type="button"
+                onClick={() => {
+                    setTab("cart");
+                    setPendingScrollShopId(shopId); // カートで該当店舗の先頭へスクロール
+                }}
+                className={[
+                    "inline-flex items-center justify-center",
+                    "px-3 py-2 rounded-xl border",
+                    "bg-[var(--cart-btn-bg)] text-[var(--cart-btn-fg)] border-[var(--cart-btn-border)]",
+                    "disabled:opacity-40 disabled:cursor-not-allowed",
+                    "transition-colors",
+                    className
+                ].join(" ")}
+                title="カートを見る"
+                aria-label="カートを見る"
+            >
+                カートを見る（{qtyByShop[shopId] || 0}）
+            </button>
+        );
+    }
+
+
+
     return (
         <MinimalErrorBoundary>
             <div className="min-h-screen bg-[#f6f1e9]">{/* 柔らかいベージュ背景 */}
@@ -3378,23 +3401,7 @@ export default function UserPilotApp() {
 
                                                 {/* カートボタン（スクショ風） */}
                                                 <div className="mt-3 grid grid-cols-[1fr_auto] gap-2 items-center">
-                                                    <button
-                                                        className="
-     inline-flex items-center justify-center
-     px-3 py-2 rounded-xl border
-     bg-[var(--cart-btn-bg)] text-[var(--cart-btn-fg)] border-[var(--cart-btn-border)]
-     
-     disabled:opacity-40 disabled:cursor-not-allowed
-     transition-colors
-   "
-                                                        onClick={() => {
-                                                            setTab("cart");
-                                                            // カート描画後にこの店舗の先頭セクションへスクロール
-                                                            setPendingScrollShopId(s.id);
-                                                        }}
-                                                    >
-                                                        カートを見る（{qtyByShop[s.id] || 0}）
-                                                    </button>
+                                                    <ViewCartButton shopId={s.id} />
                                                     <button
                                                         type="button"
                                                         className="px-3 py-2 rounded-xl border cursor-pointer disabled:opacity-40 text-zinc-700"
@@ -4160,17 +4167,19 @@ export default function UserPilotApp() {
                                         </button>
                                     </div>
 
+                                    {/* ▼ 追加：その直下に残数 */}
+                                    <div className="mt-6 flex justify-center">
+                                        <RemainChip remain={Math.max(0, detail.item.stock - getReserved(detail.shopId, detail.item.id))} />
+                                    </div>
+
                                     {/* ▼ 追加：中央揃えの増減チップ */}
-                                    <div className="pt-3 flex justify-center">
+                                    <div className=" flex justify-center">
                                         <QtyChip sid={detail.shopId} it={detail.item} />
                                     </div>
 
-                                    {/* ▼ 追加：その直下に残数 */}
-                                    <div className="mt-2 flex justify-center">
-                                        <RemainChip remain={Math.max(0, detail.item.stock - getReserved(detail.shopId, detail.item.id))} />
-                                    </div>
-                                    <div className="flex items-center justify-between pt-2">
-
+                                    {/* ▼ 追加：モーダル内の「カートを見る」（ホームと同じコンポーネント） */}
+                                    <div className="pt-3 pb-6 -mx-4 px-4">
+                                        <ViewCartButton shopId={detail.shopId} className="w-full h-12 text-[15px]" />
                                     </div>
                                 </div>
 

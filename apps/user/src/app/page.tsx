@@ -4226,9 +4226,9 @@ export default function UserPilotApp() {
     fixed left-1/2 -translate-x-1/2 bottom-7
     w-[92%] max-w-[520px]
     bg-white/95 backdrop-blur
-    rounded-full border border-zinc-100
+    rounded-full border border-zinc-200
     shadow-[0_8px_24px_rgba(0,0,0,0.12)]
-    px-3 py-2 z-50
+    px-3 py-3 z-50
   "
                     aria-label="メインタブ"
                 >

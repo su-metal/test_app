@@ -1269,7 +1269,7 @@ function BottomSheet({
  */
 function TinyQR({
     seed,
-    size = 192,               // “最大”サイズ（上限）。親が狭ければ自動で縮む
+    size = 256,               // “最大”サイズ（上限）。親が狭ければ自動で縮む
     ecc = "quartile",           // エラー訂正: 'low' | 'medium' | 'quartile' | 'high'
     bg = "#ffffff",
     fg = "#111111",
@@ -1287,18 +1287,20 @@ function TinyQR({
     const [ready, setReady] = React.useState(false);
     const [cssSide, setCssSide] = React.useState<number>(size); // 実際のCSS上の一辺(px)
 
-    // ペイロードは将来互換性のためバージョニング
-    // ※ バックエンドは oid で注文を照合する運用を前提にしてください
-    const payload = React.useMemo(
-        () =>
-            JSON.stringify({
-                v: 1,            // version
-                typ: "order",    // type
-                oid: String(seed), // order id (UUID/ULID推奨)
-                iat: Date.now(),   // issued at (ms)
-            }),
-        [seed]
-    );
+    // 6桁の引換コードが来たら「そのまま」埋め込む（店舗側スキャナ互換）
+    // それ以外は後方互換で JSON にフォールバック
+    const payload = React.useMemo(() => {
+        const s = String(seed ?? "").trim();
+        if (/^\d{6}$/.test(s)) return s;                // 既に6桁
+        const digits = s.replace(/\D/g, "");
+        if (/^\d{6}$/.test(digits)) return digits;      // 混在から抽出して6桁
+        return JSON.stringify({
+            v: 1,
+            typ: "order",
+            oid: String(seed),
+            iat: Date.now(),
+        });
+    }, [seed]);
 
     // 親幅に追従（ResizeObserver）
     React.useEffect(() => {
@@ -1363,7 +1365,7 @@ function TinyQR({
             ref={wrapRef}
             className={["w-full", className].filter(Boolean).join(" ")}
             aria-busy={!ready}
-            style={{ width: "100%", maxWidth: `${size}px` }}  // ★ ここで上限をハードに適用
+            style={{ width: "100%", maxWidth: `${size}px` }}  // ★ 上限サイズを適用（デフォルト: 256px）
         >
             <canvas
                 ref={ref}
@@ -3139,57 +3141,57 @@ export default function UserPilotApp() {
     return (
         <MinimalErrorBoundary>
             <div className="min-h-screen bg-[#f6f1e9]">{/* 柔らかいベージュ背景 */}
-                <header
-                    className={[
-                        "sticky top-0 z-20 bg-white/85 backdrop-blur border-b",
-                        "transform-gpu transition-transform duration-200 will-change-transform",
-                        (tab === "home" && hideHeader) ? "-translate-y-full" : "translate-y-0",
-                    ].join(" ")}
-                >
+                {tab !== "home" && (
+                    <header
+                        className={[
+                            "sticky top-0 z-20 bg-white/85 backdrop-blur border-b",
+                            "transform-gpu transition-transform duration-200 will-change-transform",
+                            "translate-y-0",
+                        ].join(" ")}
+                    >
+                        <div className="max-w-[448px] mx-auto px-4 py-3 flex items-center justify-between" suppressHydrationWarning>
+                            {/* ← 左：戻るボタン（home以外で表示） */}
+                            <div className="min-w-[40px]">
+                                {tab !== 'home' ? (
+                                    <button
+                                        type="button"
+                                        onClick={goBack}
+                                        aria-label="戻る"
+                                        className="inline-flex items-center justify-center w-9 h-9 rounded-full border bg-white hover:bg-zinc-50"
+                                        title="戻る"
+                                    >
+                                        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2"
+                                            strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                            <polyline points="15 18 9 12 15 6"></polyline>
+                                        </svg>
+                                        <span className="sr-only">戻る</span>
+                                    </button>
+                                ) : (
+                                    /* ※ home のときは幅合わせのダミー */
+                                    <span className="inline-block w-9 h-9" aria-hidden="true" />
+                                )}
+                            </div>
 
-                    <div className="max-w-[448px] mx-auto px-4 py-3 flex items-center justify-between" suppressHydrationWarning>
-                        {/* ← 左：戻るボタン（home以外で表示） */}
-                        <div className="min-w-[40px]">
-                            {tab !== 'home' ? (
-                                <button
-                                    type="button"
-                                    onClick={goBack}
-                                    aria-label="戻る"
-                                    className="inline-flex items-center justify-center w-9 h-9 rounded-full border bg-white hover:bg-zinc-50"
-                                    title="戻る"
-                                >
-                                    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2"
-                                        strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                                        <polyline points="15 18 9 12 15 6"></polyline>
-                                    </svg>
-                                    <span className="sr-only">戻る</span>
+                            {/* 中央のタイトルは削除（空にしてセンタリング維持したいなら空スパンでもOK） */}
+                            <span className="sr-only">ヘッダー</span>
+
+                            {/* → 右：時計＆カートは現状のまま */}
+                            <div className="flex items-center gap-3">
+                                <div className="text-xs text-zinc-500">{clock || "—"}</div>
+                                <button className="relative px-2 py-1 rounded-full border bg-white cursor-pointer" onClick={() => setTab('cart')} aria-label="カートへ">
+                                    <span>🛒</span>
+                                    <span className="absolute -top-1 -right-1 min-w-5 h-5 px-1 rounded-full bg-zinc-900 text-white text-[10px] flex items-center justify-center">
+                                        {cart.length}
+                                    </span>
                                 </button>
-                            ) : (
-                                /* ※ home のときは幅合わせのダミー */
-                                <span className="inline-block w-9 h-9" aria-hidden="true" />
-                            )}
+                            </div>
                         </div>
+                    </header>
+                )}
 
-                        {/* 中央のタイトルは削除（空にしてセンタリング維持したいなら空スパンでもOK） */}
-                        <span className="sr-only">ヘッダー</span>
-
-                        {/* → 右：時計＆カートは現状のまま */}
-                        <div className="flex items-center gap-3">
-                            <div className="text-xs text-zinc-500">{clock || "—"}</div>
-                            <button className="relative px-2 py-1 rounded-full border bg-white cursor-pointer" onClick={() => setTab('cart')} aria-label="カートへ">
-                                <span>🛒</span>
-                                <span className="absolute -top-1 -right-1 min-w-5 h-5 px-1 rounded-full bg-zinc-900 text-white text-[10px] flex items-center justify-center">
-                                    {cart.length}
-                                </span>
-                            </button>
-                        </div>
-                    </div>
-                </header>
-
-
-                <main className="max-w-[448px] mx-auto px-4 pb-28">
+                <main className="max-w-[448px] mx-auto px-4 pb-28 pt-6">
                     {tab === "home" && (
-                        <section className="mt-4 space-y-4">
+                        <section className="mt-0 space-y-4">
                             <div className="flex items-center justify-between">
                                 {/* <h2 className="text-base font-semibold">近くのお店</h2> */}
 
@@ -3804,8 +3806,8 @@ export default function UserPilotApp() {
                                                         {/* 2段目：中央にQR（大きな枠） */}
                                                         <div className="mt-4 flex justify-center">
                                                             <div className="p-3 rounded bg-white shadow">
-                                                                {/* 上限サイズは必要に応じて変更（例: 168 / 192） */}
-                                                                <TinyQR seed={o.id} size={192} className="w-full" />
+                                                                {/* 上限サイズを拡大（視認性向上） */}
+                                                                <TinyQR seed={o.code6} size={256} className="w-full" />
                                                             </div>
                                                         </div>
                                                         <div className="mt-4">

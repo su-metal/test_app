@@ -3174,13 +3174,23 @@ export default function UserPilotApp() {
     }
 
 
-    function ViewCartButton({ shopId, className = "" }: { shopId: string; className?: string }) {
+    function ViewCartButton({
+        shopId,
+        className = "",
+        onAfterOpenCart,
+    }: {
+        shopId: string;
+        className?: string;
+        onAfterOpenCart?: () => void;
+    }) {
         return (
             <button
                 type="button"
                 onClick={() => {
                     setTab("cart");
                     setPendingScrollShopId(shopId); // カートで該当店舗の先頭へスクロール
+                    // 🆕 カートを開いた直後に追加処理（モーダルを閉じる等）を許可
+                    onAfterOpenCart?.();
                 }}
                 className={[
                     "inline-flex items-center justify-center",
@@ -3231,18 +3241,40 @@ export default function UserPilotApp() {
 
 
                             {/* 中央のタイトルは削除（空にしてセンタリング維持したいなら空スパンでもOK） */}
-                            <span className="sr-only">ヘッダー</span>
-
-                            {/* → 右：時計＆カートは現状のまま */}
-                            <div className="flex items-center gap-3">
-                                <div className="text-xs text-zinc-500">{clock || "—"}</div>
-                                <button className="relative px-2 py-1 rounded-full border bg-white cursor-pointer" onClick={() => setTab('cart')} aria-label="カートへ">
-                                    <span>🛒</span>
-                                    <span className="absolute -top-1 -right-1 min-w-5 h-5 px-1 rounded-full bg-zinc-900 text-white text-[10px] flex items-center justify-center">
-                                        {cart.length}
-                                    </span>
-                                </button>
+                            {/* 中央タイトル（カート時のみ表示） */}
+                            <div className="text-sm font-semibold">
+                                {tab === 'cart' ? 'カート（店舗別会計）' : ''}
                             </div>
+                            {/* → 右：タブに応じて切り替え */}
+                            <div className="min-w-[40px] flex items-center justify-end">
+                                {tab === 'cart' ? (
+                                    <button
+                                        type="button"
+                                        className="text-xs px-2 py-1 rounded border cursor-pointer disabled:opacity-40"
+                                        onClick={clearAllCarts}
+                                        disabled={cart.length === 0}
+                                        aria-disabled={cart.length === 0}
+                                        title="すべてのカートを空にする"
+                                    >
+                                        カートを全て空にする
+                                    </button>
+                                ) : (
+                                    <div className="flex items-center gap-3">
+                                        <div className="text-xs text-zinc-500">{clock || "—"}</div>
+                                        <button
+                                            className="relative px-2 py-1 rounded-full border bg-white cursor-pointer"
+                                            onClick={() => setTab('cart')}
+                                            aria-label="カートへ"
+                                        >
+                                            <span>🛒</span>
+                                            <span className="absolute -top-1 -right-1 min-w-5 h-5 px-1 rounded-full bg-zinc-900 text-white text-[10px] flex items-center justify-center">
+                                                {cart.length}
+                                            </span>
+                                        </button>
+                                    </div>
+                                )}
+                            </div>
+
                         </div>
                     </header>
                 )}
@@ -3582,16 +3614,7 @@ export default function UserPilotApp() {
 
                     {tab === "cart" && (
                         <section className="mt-4 space-y-4">
-                            <div className="flex items-center justify-between">
-                                <h2 className="text-base font-semibold">カート（店舗別会計）</h2>
-                                <button
-                                    type="button"
-                                    className="text-xs px-2 py-1 rounded border cursor-pointer disabled:opacity-40"
-                                    onClick={clearAllCarts}
-                                    disabled={cart.length === 0}
-                                    aria-disabled={cart.length === 0}
-                                >カートを全て空にする</button>
-                            </div>
+
                             {Object.keys(cartGroups).length === 0 && <p className="text-sm text-zinc-500">カートは空です</p>}
                             {(() => {
                                 const seen = new Set<string>(); // 店舗ごとの「最初の一個」を判定
@@ -4178,8 +4201,12 @@ export default function UserPilotApp() {
                                     </div>
 
                                     {/* ▼ 追加：モーダル内の「カートを見る」（ホームと同じコンポーネント） */}
-                                    <div className="pt-3 pb-6 -mx-4 px-4">
-                                        <ViewCartButton shopId={detail.shopId} className="w-full h-12 text-[15px]" />
+                                    <div className="pt-3 px-2 mb-6 flex justify-center">
+                                        <ViewCartButton
+                                            className="w-full max-w-[480px] h-12 text-[15px]"
+                                            shopId={detail.shopId}
+                                            onAfterOpenCart={() => setDetail(null)}  // ← 押下後にモーダルを閉じる
+                                        />
                                     </div>
                                 </div>
 

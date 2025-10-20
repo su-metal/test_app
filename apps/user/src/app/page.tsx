@@ -617,7 +617,7 @@ function ToastBar({ toast, onClose }: { toast: ToastPayload | null; onClose: () 
     if (!toast) return null;
     const tone = toast.kind === "success" ? "bg-emerald-600" : toast.kind === "error" ? "bg-red-600" : "bg-zinc-800";
     return (
-        <div className={`fixed bottom-32 left-1/2 -translate-x-1/2 z-150
+        <div className={`fixed bottom-32 left-1/2 -translate-x-1/2 z-3101
                    w-[72%] max-w-[520px]
                    px-4 py-2 text-white rounded-full shadow ${tone}`}>
             <div className="flex items-center gap-3">

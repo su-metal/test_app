@@ -3167,7 +3167,7 @@ export default function UserPilotApp() {
         if (totalQty <= 0) return null;
         return (
             <div
-                className="fixed right-4 bottom-20 z-[3100] animate-in fade-in-0 slide-in-from-bottom-2"
+                className="fixed right-4 bottom-28 z-[3100] animate-in fade-in-0 slide-in-from-bottom-2"
                 role="dialog"
                 aria-live="polite"
             >
@@ -4211,14 +4211,120 @@ export default function UserPilotApp() {
 
 
 
-                <footer className="fixed bottom-0 left-0 right-0 border-t bg-white/90">
+                {/* <footer className="fixed bottom-0 left-0 right-0 border-t bg-white/90">
                     <div className="max-w-[448px] mx-auto grid grid-cols-4 text-center">
                         <Tab id="home" label="ホーム" icon="🏠" />
                         <Tab id="cart" label="カート" icon="🛒" />
                         <Tab id="order" label="引換え" icon="🧾" />
                         <Tab id="account" label="アカウント" icon="👤" />
                     </div>
-                </footer>
+                </footer> */}
+
+                {/* === Bottom Tabs (スクショ風ピル) === */}
+                <nav
+                    className="
+    fixed left-1/2 -translate-x-1/2 bottom-7
+    w-[92%] max-w-[520px]
+    bg-white/95 backdrop-blur
+    rounded-full border border-zinc-100
+    shadow-[0_8px_24px_rgba(0,0,0,0.12)]
+    px-3 py-2 z-50
+  "
+                    aria-label="メインタブ"
+                >
+                    <ul className="grid grid-cols-4 items-center">
+                        {/* ホーム */}
+                        <li>
+                            <button
+                                type="button"
+                                onClick={() => setTab('home')}
+                                aria-current={tab === 'home' ? 'page' : undefined}
+                                className={`w-full flex flex-col items-center justify-center gap-1 py-1 ${tab === 'home' ? 'text-black' : 'text-zinc-500'}`}
+                            >
+                                {/* icon: home */}
+                                <svg width="22" height="22" viewBox="0 0 24 24" fill="none"
+                                    stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                    <path d="M3 11.5 12 4l9 7.5" />
+                                    <path d="M5 10.5V20h14v-9.5" />
+                                </svg>
+                                <span className="text-[11px] leading-none">ホーム</span>
+                            </button>
+                        </li>
+
+                        {/* カート */}
+                        <li className="relative">
+                            <button
+                                type="button"
+                                onClick={() => setTab('cart')}
+                                aria-current={tab === 'cart' ? 'page' : undefined}
+                                className={`w-full flex flex-col items-center justify-center gap-1 py-1 ${tab === 'cart' ? 'text-black' : 'text-zinc-500'}`}
+                            >
+                                {/* icon: cart */}
+                                <svg width="22" height="22" viewBox="0 0 24 24" fill="none"
+                                    stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                    <circle cx="9" cy="20" r="1.6" />
+                                    <circle cx="17" cy="20" r="1.6" />
+                                    <path d="M5 4h2l1.2 8.4a2 2 0 0 0 2 1.6h6.4a2 2 0 0 0 2-1.6L20 8H8" />
+                                </svg>
+                                <span className="text-[11px] leading-none">カート</span>
+                            </button>
+
+                            {/* 数量バッジ（黒丸＋白縁） */}
+                            {totalCartQty > 0 && (
+                                <span
+                                    className="
+            absolute -top-1.5 left-1/2 translate-x-2
+            inline-flex items-center justify-center
+            min-w-[18px] h-[18px] px-1
+            rounded-full text-[10px] font-bold
+            bg-black text-white ring-2 ring-white
+          "
+                                    aria-label={`カートに${totalCartQty}点`}
+                                >
+                                    {totalCartQty > 99 ? '99+' : totalCartQty}
+                                </span>
+                            )}
+                        </li>
+
+                        {/* 引換え */}
+                        <li>
+                            <button
+                                type="button"
+                                onClick={() => { setOrderTarget(undefined); setTab('order'); }}
+                                aria-current={tab === 'order' ? 'page' : undefined}
+                                className={`w-full flex flex-col items-center justify-center gap-1 py-1 ${tab === 'order' ? 'text-black' : 'text-zinc-500'}`}
+                            >
+                                {/* icon: ticket */}
+                                <svg width="22" height="22" viewBox="0 0 24 24" fill="none"
+                                    stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                    <path d="M3 9a3 3 0 0 0 0 6h18a3 3 0 0 1 0-6H3Z" />
+                                    <path d="M12 8v8" />
+                                    <path d="M8 8v8" opacity=".3" />
+                                    <path d="M16 8v8" opacity=".3" />
+                                </svg>
+                                <span className="text-[11px] leading-none">引換え</span>
+                            </button>
+                        </li>
+
+                        {/* アカウント */}
+                        <li>
+                            <button
+                                type="button"
+                                onClick={() => setTab('account')}
+                                aria-current={tab === 'account' ? 'page' : undefined}
+                                className={`w-full flex flex-col items-center justify-center gap-1 py-1 ${tab === 'account' ? 'text-black' : 'text-zinc-500'}`}
+                            >
+                                {/* icon: user */}
+                                <svg width="22" height="22" viewBox="0 0 24 24" fill="none"
+                                    stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                    <path d="M20 21a8 8 0 1 0-16 0" />
+                                    <circle cx="12" cy="8" r="4" />
+                                </svg>
+                                <span className="text-[11px] leading-none">アカウント</span>
+                            </button>
+                        </li>
+                    </ul>
+                </nav>
 
                 {/* 規約リンク */}
                 <div className="max-w-[448px] mx-auto px-4 py-2 text-center text-[10px] text-zinc-500">

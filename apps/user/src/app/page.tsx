@@ -3572,8 +3572,8 @@ export default function UserPilotApp() {
                         </section>
                     )}
 
-                    {/* 🛒 ホーム画面にいる時だけ、数量>0なら右下にポップアップ表示 */}
-                    {tab === "home" && totalCartQty > 0 && (
+                    {/* 🛒 ホーム画面にいる時だけ、数量>0なら右下にポップアップ表示（※商品詳細モーダル中は非表示） */}
+                    {tab === "home" && totalCartQty > 0 && !detail && (
                         <MiniCartPopup
                             totalQty={totalCartQty}
                             onOpenCart={() => setTab("cart")}

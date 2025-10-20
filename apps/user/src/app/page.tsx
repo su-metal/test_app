@@ -1398,6 +1398,7 @@ export default function UserPilotApp() {
 
 
 
+
     // 保存済みカードの一覧（必要に応じてAPI連携に差し替え可：いまはデモ用）
     const savedCards = useMemo(
         () => [
@@ -1671,9 +1672,6 @@ export default function UserPilotApp() {
         img.onerror = () => resolve();
         img.src = url;
     }), []);
-
-
-
 
 
     const supabase = useSupabase();
@@ -2716,6 +2714,11 @@ export default function UserPilotApp() {
         return m;
     }, [qtyByGroup, cartGroups]);
 
+    // 予約数量（全体の合計）
+    const totalCartQty = useMemo(
+        () => (cart || []).reduce((a, l) => a + (Number(l?.qty) || 0), 0),
+        [cart]
+    );
 
     const groupTotal = (gkey: string) => totalsByGroup[gkey] || 0;
 
@@ -3138,6 +3141,42 @@ export default function UserPilotApp() {
 
     if (!hydrated) return null;
 
+
+    function MiniCartPopup({
+        totalQty,
+        onOpenCart,
+    }: {
+        totalQty: number;
+        onOpenCart: () => void;
+    }) {
+        if (totalQty <= 0) return null;
+        return (
+            <div
+                className="fixed right-4 bottom-20 z-[3100] animate-in fade-in-0 slide-in-from-bottom-2"
+                role="dialog"
+                aria-live="polite"
+            >
+                <button
+                    type="button"
+                    onClick={onOpenCart}
+                    className="
+          shadow-lg rounded-2xl border bg-white px-4 py-3
+          flex items-center gap-3 hover:bg-zinc-50
+        "
+                    title="カートを開く"
+                    aria-label="カートを開く"
+                >
+                    <span className="text-xl">🛒</span>
+                    <div className="text-sm">
+                        <div className="font-semibold leading-tight">カートに商品があります</div>
+                        <div className="text-[12px] text-zinc-600">数量 {totalQty} 点</div>
+                    </div>
+                </button>
+            </div>
+        );
+    }
+
+
     return (
         <MinimalErrorBoundary>
             <div className="min-h-screen bg-[#f6f1e9]">{/* 柔らかいベージュ背景 */}
@@ -3213,46 +3252,6 @@ export default function UserPilotApp() {
                                     </button>
                                 </div>
                             </div>
-
-
-                            {/* 現在地取得と表示 */}
-                            {/* <div className="rounded-xl border bg-white p-3">
-                                <div className="flex items-center gap-2">
-                                    <button
-                                        type="button"
-                                        onClick={requestLocation}
-                                        className="px-3 py-1.5 rounded border cursor-pointer"
-                                        aria-busy={locState === 'getting'}
-                                        aria-live="polite"
-                                    >
-                                        {locState === 'getting' ? '現在地を取得中…' : '現在地を取得'}
-                                    </button>
-                                    {myPos && (
-                                        <div className="text-sm text-zinc-700">
-                                            現在地: 緯度 {myPos.lat.toFixed(5)}, 経度 {myPos.lng.toFixed(5)}
-                                        </div>
-                                    )}
-                                    {!myPos && locState === 'error' && (
-                                        <div className="text-sm text-red-600">{locError ?? '位置情報の取得に失敗しました'}</div>
-                                    )}
-
-                                </div>
-
-                                {myPos && (
-                                    <div className="mt-2 rounded-lg overflow-hidden border">
-                                        <iframe
-                                            title="現在地の地図"
-                                            src={`https://www.google.com/maps?q=${encodeURIComponent(myPos.lat + ',' + myPos.lng)}&hl=ja&z=16&output=embed`}
-                                            width="100%"
-                                            height="160"
-                                            style={{ border: 0 }}
-                                            loading="lazy"
-                                            referrerPolicy="no-referrer-when-downgrade"
-                                            aria-label="Googleマップで現在地を表示"
-                                        />
-                                    </div>
-                                )}
-                            </div> */}
 
 
 
@@ -3564,6 +3563,14 @@ export default function UserPilotApp() {
                                 })}
                             </div>
                         </section>
+                    )}
+
+                    {/* 🛒 ホーム画面にいる時だけ、数量>0なら右下にポップアップ表示 */}
+                    {tab === "home" && totalCartQty > 0 && (
+                        <MiniCartPopup
+                            totalQty={totalCartQty}
+                            onOpenCart={() => setTab("cart")}
+                        />
                     )}
 
                     {tab === "cart" && (
@@ -3994,6 +4001,8 @@ export default function UserPilotApp() {
 
                 </main>
 
+
+
                 <footer className="fixed bottom-0 left-0 right-0 border-t bg-white/90">
                     <div className="max-w-[448px] mx-auto grid grid-cols-4 text-center">
                         <Tab id="home" label="ホーム" icon="🏠" />
@@ -4039,8 +4048,8 @@ export default function UserPilotApp() {
                             className="absolute inset-0 bg-black/40 z-[2000]"
                             onClick={() => setDetail(null)}
                         />
-                        <div className="absolute inset-0 flex items-center justify-center p-4 z-[2001]">
-                            <div className="max-w-[520px] w-full bg-white rounded-2xl shadow-xl max-h-[85vh] flex flex-col overflow-hidden">
+                        <div className="absolute inset-0 flex items-center justify-center p-4 z-[2001] pointer-events-none">
+                            <div className="max-w-[520px] w-full bg-white rounded-2xl shadow-xl max-h-[85vh] flex flex-col overflow-hidden pointer-events-auto">
                                 <div
                                     className="relative" ref={carouselWrapRef}
                                 >
@@ -4162,16 +4171,6 @@ export default function UserPilotApp() {
                                     </div>
                                     <div className="flex items-center justify-between pt-2">
 
-                                    </div>
-                                    {/* モーダルのフッター：閉じるのみ（「カートに追加」は削除） */}
-                                    <div className="pt-1">
-                                        <button
-                                            type="button"
-                                            className="w-full px-3 py-2 rounded-xl border"
-                                            onClick={() => { setAllergyOpen(false); setDetail(null); }}
-                                        >
-                                            閉じる
-                                        </button>
                                     </div>
                                 </div>
 

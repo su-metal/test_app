@@ -930,6 +930,19 @@ function CameraCaptureModal({
     const v = videoRef.current;
     const c = canvasRef.current;
     if (!v || !c) return;
+
+    // 映像の読み込み完了を待つ
+    if (v.readyState < 2) {
+      await new Promise((resolve) => {
+        const handler = () => {
+          v.removeEventListener("loadeddata", handler);
+          resolve(null);
+        };
+        v.addEventListener("loadeddata", handler);
+      });
+    }
+
+    // 正しいサイズで描画
     const w = v.videoWidth || 1280;
     const h = v.videoHeight || 720;
     c.width = w;
@@ -937,8 +950,10 @@ function CameraCaptureModal({
     const ctx = c.getContext("2d");
     if (!ctx) return;
     ctx.drawImage(v, 0, 0, w, h);
+
     setIsPreview(true);
   };
+
 
   const confirmUse = async () => {
     const c = canvasRef.current;
@@ -1647,8 +1662,9 @@ type ExistingProps = {
 
 function ProductImageSlot(props: StagedProps | ExistingProps) {
   const { uploadProductImage, deleteProductImage } = useImageUpload();
-  const [openCam, setOpenCam] = React.useState(false);
-  const pickerRef = React.useRef<HTMLInputElement | null>(null);
+  const [openCam, setOpenCam] = React.useState(false); // 既存のままでOK（使わなくなる）
+  const pickerRef = React.useRef<HTMLInputElement | null>(null);   // ギャラリー
+  const cameraRef = React.useRef<HTMLInputElement | null>(null);   // カメラ
   const [loading, setLoading] = React.useState(false);
   // ▼ 既存商品のモーダル内プレビューを即時反映するためのローカル状態
   const isExisting = (props as any).mode === "existing";
@@ -1830,15 +1846,27 @@ function ProductImageSlot(props: StagedProps | ExistingProps) {
       )}
 
 
-      {/* 隠し input（ギャラリー） */}
+      {/* 隠し input：ギャラリー用 / カメラ用 の2本 */}
       {!isReadonly && (
-        <input
-          ref={pickerRef}
-          type="file"
-          accept="image/*"
-          className="hidden"
-          onChange={onPick}
-        />
+        <>
+          {/* ギャラリー（ファイルマネージャー等）。capture なし */}
+          <input
+            ref={pickerRef}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={onPick}
+          />
+          {/* カメラ（端末のカメラアプリを優先起動 or 候補に表示） */}
+          <input
+            ref={cameraRef}
+            type="file"
+            accept="image/*"
+            capture="environment"
+            className="hidden"
+            onChange={onPick}
+          />
+        </>
       )}
       {/* // ★ モーダル用のアクション上書き（任意）
       //   - actions.secondary: 'delete' | 'change'
@@ -1847,15 +1875,24 @@ function ProductImageSlot(props: StagedProps | ExistingProps) {
       {/* 縦積みボタン（新規登録フォーム or モーダル上書き時に表示） */}
       {(props.mode === "staged" || actions) && !isReadonly && (
         <div className="mt-2 flex flex-col gap-1">
-          {/* カメラ */}
+          {/* カメラで撮る（カメラ用 input を叩く） */}
           <button
             type="button"
             className="w-full rounded-lg border px-2 py-1 text-[11px] hover:bg-zinc-50"
-            onClick={() => setOpenCam(true)}
+            onClick={() => cameraRef.current?.click()}
             disabled={loading}
           >
-            {/* モーダルでは短いラベルにする指定 */}
-            {actions ? "カメラ" : "カメラで撮る"}
+            カメラで撮る
+          </button>
+
+          {/* ファイルから選ぶ（従来のギャラリー） */}
+          <button
+            type="button"
+            className="w-full rounded-lg border px-2 py-1 text-[11px] hover:bg-zinc-50"
+            onClick={() => pickerRef.current?.click()}
+            disabled={loading}
+          >
+            ファイルから選ぶ
           </button>
 
           {/* 削除 or 変更（モーダルのメイン画像は「変更」） */}

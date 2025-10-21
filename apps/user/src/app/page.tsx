@@ -639,8 +639,6 @@ function ToastBar({ toast, onClose }: { toast: ToastPayload | null; onClose: () 
 
 
 
-
-
 // クリップボード（クリック起点で呼ぶ。失敗時はフォールバック）
 async function safeCopy(text: string) {
     try {

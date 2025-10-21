@@ -1,11 +1,8 @@
-// middleware.ts  ← この1ファイルをコピペで追加（apps/user と apps/store の両方に置く）
-// 既存の next.config.ts を変更せずに、レスポンスヘッダでCSPを配布します。
-
+// apps/user/middleware.ts
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
 export const config = {
-  // 全ルートに適用（必要に応じて絞り込んでOK）
   matcher: "/:path*",
 };
 
@@ -16,35 +13,97 @@ export default function middleware(req: NextRequest) {
     process.env.VERCEL_ENV === "production" ||
     process.env.NODE_ENV === "production";
 
-  const scriptSrc = [
-    "'self'",
-    "'unsafe-inline'",
-    "'unsafe-eval'",
+  // ==== CSP ====
+  // ここはあなたの環境に合わせて必要に応じて調整してください
+  const SELF = "'self'";
+  const stripeDomains = [
     "https://js.stripe.com",
-    "https://static.line-scdn.net",
+    "https://*.stripe.com",
+    "https://*.stripecdn.com",
+    "https://checkout.stripe.com",
+  ];
+  const lineDomains = [
     "https://liff.line.me",
+    "https://static.line-scdn.net",
+    "https://api.line.me",
+  ];
+  const supabaseDomains = [
+    // あなたの Supabase プロジェクト
+    "https://dsrueuqshqdtkrprcjmc.supabase.co",
+    "wss://dsrueuqshqdtkrprcjmc.supabase.co",
+  ];
+  const googleDomains = [
+    "https://maps.googleapis.com",
+    "https://maps.gstatic.com",
+    "https://*.googleapis.com",
+    "https://*.gstatic.com",
+    "https://*.google.com",
+  ];
+  const hcaptchaDomains = ["https://*.hcaptcha.com", "https://hcaptcha.com"];
+
+  // dev では Vercel の Live Reload 等が入るため script-src に 'unsafe-eval' を許容
+  const scriptSrc = [
+    SELF,
+    "'unsafe-inline'",
+    ...(isProd ? [] : ["'unsafe-eval'"]),
+    ...stripeDomains,
+    ...lineDomains,
+    ...hcaptchaDomains,
   ];
 
-  // 本番では Vercel Live を許可しない（プレビュー/開発のみ許可）
-  if (!isProd) {
-    scriptSrc.push("https://vercel.live");
-  }
+  const connectSrc = [
+    SELF,
+    "blob:",
+    ...supabaseDomains,
+    ...stripeDomains,
+    ...lineDomains,
+    ...googleDomains,
+    ...hcaptchaDomains,
+  ];
+
+  const imgSrc = [
+    SELF,
+    "data:",
+    "blob:",
+    ...stripeDomains,
+    ...googleDomains,
+    ...hcaptchaDomains,
+  ];
+
+  const styleSrc = [
+    SELF,
+    "'unsafe-inline'",
+    "https://fonts.googleapis.com",
+    ...lineDomains,
+    ...hcaptchaDomains,
+  ];
+
+  const fontSrc = [SELF, "data:", "https://fonts.gstatic.com"];
+
+  const frameSrc = [
+    SELF,
+    ...stripeDomains,
+    ...hcaptchaDomains,
+    ...lineDomains,
+    "https://accounts.google.com",
+    "https://*.google.com",
+  ];
 
   const csp = [
-    "default-src 'self'",
+    `default-src ${SELF}`,
     `script-src ${scriptSrc.join(" ")}`,
-    "img-src 'self' data: blob: https://*.stripe.com https://static.line-scdn.net",
-    "style-src 'self' 'unsafe-inline'",
-    "font-src 'self' data: https://js.stripe.com https://*.stripe.com",
-    "connect-src 'self' ws: wss: https://api.line.me https://js.stripe.com https://m.stripe.com https://q.stripe.com https://r.stripe.com https://*.stripe.com https://dsrueuqshqdtkrprcjmc.supabase.co wss://dsrueuqshqdtkrprcjmc.supabase.co https://*.supabase.co wss://*.supabase.co",
-    "frame-src 'self' https://js.stripe.com https://*.stripe.com https://*.line.me https://liff.line.me",
-    "worker-src 'self' blob:",
-    "frame-ancestors 'self'",
-    "base-uri 'self'",
-    "form-action 'self' https://checkout.stripe.com",
+    `connect-src ${connectSrc.join(" ")}`,
+    `img-src ${imgSrc.join(" ")}`,
+    `style-src ${styleSrc.join(" ")}`,
+    `font-src ${fontSrc.join(" ")}`,
+    `frame-src ${frameSrc.join(" ")}`,
+    `worker-src ${SELF} blob:`,
+    `base-uri ${SELF}`,
+    `frame-ancestors ${SELF}`,
+    `form-action ${SELF} https://checkout.stripe.com`,
   ].join("; ");
 
-  // 既存ヘッダは保持しつつ、必要ヘッダを上書き/追加
+  // 配布ヘッダ
   res.headers.set("Content-Security-Policy", csp);
   res.headers.set("Referrer-Policy", "strict-origin-when-cross-origin");
   res.headers.set("X-Content-Type-Options", "nosniff");

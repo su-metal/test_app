@@ -3073,7 +3073,7 @@ export default function UserPilotApp() {
 
 
         const wrapBase = "relative flex gap-3 p-2 pr-3";
-        const chrome = "rounded-2xl border bg-white";
+        const chrome = "rounded-2xl border border-gray-200 shadow-sm bg-white";
         const wrapperCls = `${wrapBase} ${noChrome ? "" : chrome}`;
 
         return (
@@ -3280,7 +3280,7 @@ export default function UserPilotApp() {
 
     return (
         <MinimalErrorBoundary>
-            <div className="min-h-screen bg-[#f6f1e9]">{/* 柔らかいベージュ背景 */}
+            <div className="min-h-screen bg-[#F7F9F8]">{/* 柔らかいベージュ背景 */}
                 {tab !== "home" && (
                     <header
                         className={[
@@ -3595,7 +3595,7 @@ export default function UserPilotApp() {
                                             }}
                                         >
                                             <div
-                                                className={`relative rounded-2xl border bg-white p-4 ${!hasAny ? "opacity-70" : ""
+                                                className={`relative rounded-2xl border border-gray-200 shadow-sm bg-white p-4 ${!hasAny ? "opacity-70" : ""
                                                     } ${focusedShop === s.id ? "ring-2 ring-zinc-900" : ""}`}
                                             >
                                                 {/* ヒーロー画像 */}
@@ -3654,34 +3654,70 @@ export default function UserPilotApp() {
                                                         </div>
                                                     </div>
                                                 )}
-
-                                                {/* カートボタン（スクショ風） */}
-                                                <div className="mt-3 grid grid-cols-[1fr_auto] gap-2 items-center">
-                                                    <ViewCartButton shopId={s.id} />
+                                                {/* スクショ準拠：フル幅の3段レイアウト */}
+                                                <div className="mt-3 space-y-2">
+                                                    {/* 1) 緑の大ボタン：カートを見る（数） */}
                                                     <button
                                                         type="button"
-                                                        className="px-3 py-2 rounded-xl border cursor-pointer disabled:opacity-40 text-zinc-700"
-                                                        disabled={(qtyByShop[s.id] || 0) === 0}
+                                                        onClick={() => {
+                                                            setTab("cart");
+                                                            setPendingScrollShopId(s.id);
+                                                        }}
+                                                        className={[
+                                                            "w-full h-12 rounded-full",
+                                                            "bg-[#00c951] hover:bg-emerald-600",
+                                                            "text-white font-semibold",
+                                                            "flex items-center justify-center gap-2",
+                                                            "transition-colors"
+                                                        ].join(" ")}
+                                                        aria-label="カートを見る"
+                                                        title="カートを見る"
+                                                    >
+                                                        <span className="text-base"> <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="mr-2" aria-hidden="true">
+                                                            <circle cx="9" cy="21" r="1"></circle>
+                                                            <circle cx="20" cy="21" r="1"></circle>
+                                                            <path d="M1 1h4l2.68 13.39A2 2 0 0 0 9.62 16h7.76a2 2 0 0 0 2-1.61L21 8H6"></path>
+                                                        </svg></span>
+                                                        <span>カートを見る（{qtyByShop[s.id] || 0}）</span>
+                                                    </button>
+
+                                                    {/* 2) 白ボタン：カートを空にする */}
+                                                    <button
+                                                        type="button"
                                                         onClick={() => clearShopCart(s.id)}
+                                                        disabled={(qtyByShop[s.id] || 0) === 0}
+                                                        className={[
+                                                            "w-full h-12 rounded-full",
+                                                            "bg-white border",
+                                                            "text-zinc-800 font-semibold",
+                                                            "flex items-center justify-center gap-2",
+                                                            "disabled:opacity-40 disabled:cursor-not-allowed",
+                                                            "hover:bg-zinc-50 transition-colors"
+                                                        ].join(" ")}
+                                                        aria-disabled={(qtyByShop[s.id] || 0) === 0}
                                                         title="カートを空にする"
                                                     >
-                                                        🗑️
+                                                        <span><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="mr-2" aria-hidden="true">
+                                                            <polyline points="3 6 5 6 21 6"></polyline>
+                                                            <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                                                            <line x1="10" y1="11" x2="10" y2="17"></line>
+                                                            <line x1="14" y1="11" x2="14" y2="17"></line>
+                                                        </svg></span>
+                                                        <span>カートを空にする</span>
                                                     </button>
-                                                </div>
 
-                                                {/* ▼ 開閉CTA：デフォルト閉 ＆ トグル */}
-                                                <div className="mt-2">
+                                                    {/* 3) テキストリンク：店舗詳細を見る（トグル） */}
                                                     <button
                                                         type="button"
                                                         onClick={() => setMetaOpen(prev => ({ ...prev, [s.id]: !prev[s.id] }))}
-                                                        className="w-full inline-flex items-center justify-center gap-2 text-sm text-zinc-700 px-3 py-2 rounded-xl border bg-white hover:bg-zinc-50"
+                                                        className="w-full my-3 text-center text-sm text-zinc-600 hover:text-zinc-800"
                                                         aria-expanded={isOpen}
                                                         aria-controls={`shop-meta-${s.id}`}
                                                     >
-                                                        <span>{isOpen ? "店舗詳細を閉じる" : "店舗詳細を表示"}</span>
-                                                        <span className={`transition-transform ${isOpen ? "rotate-180" : ""}`}>⌄</span>
+                                                        {isOpen ? "店舗詳細を閉じる" : "店舗詳細を見る"}
                                                     </button>
                                                 </div>
+
 
                                                 {/* 店舗メタ情報（折りたたみ本体） */}
                                                 {isOpen && (
@@ -3777,7 +3813,7 @@ export default function UserPilotApp() {
                                                                 <div className="relative mt-2">
                                                                     {/* 住所/ミニマップ（埋め込み） */}
                                                                     {/* 外側の二重枠を除去（MapEmbedWithFallback 内で枠を描画） */}
-                                                                        {/* <iframe
+                                                                    {/* <iframe
                                                                             key={s.id}
                                                                             className="w-full h-60 md:h-80" // ← 高さを少し増やすと +- UI が確実に見えます
                                                                             src={buildMapEmbedSrc({
@@ -3797,25 +3833,25 @@ export default function UserPilotApp() {
                                                                             // 念のため（親のどこかで pointer-events: none が掛かっていた場合の保険）
                                                                             style={{ pointerEvents: 'auto' }}
                                                                         /> */}
-                                                                        <MapEmbedWithFallback
-                                                                            key={s.id}
-                                                                            className="w-full"
-                                                                            heightClass="h-60 md:h-80"
-                                                                            src={buildMapEmbedSrc({
-                                                                                name: s.name,
-                                                                                address: s.address,
-                                                                                place_id: s.place_id ?? null,
-                                                                                gmap_embed_src: s.gmap_embed_src ?? null,
-                                                                                gmap_url: s.gmap_url ?? null,
-                                                                                lat: s.lat,
-                                                                                lng: s.lng,
-                                                                                zoomOnPin: s.zoomOnPin,
-                                                                            })}
-                                                                            title={`${s.name} の地図`}
-                                                                            lat={typeof s.lat === 'number' ? s.lat : undefined}
-                                                                            lng={typeof s.lng === 'number' ? s.lng : undefined}
-                                                                            label={s.name}
-                                                                        />
+                                                                    <MapEmbedWithFallback
+                                                                        key={s.id}
+                                                                        className="w-full"
+                                                                        heightClass="h-60 md:h-80"
+                                                                        src={buildMapEmbedSrc({
+                                                                            name: s.name,
+                                                                            address: s.address,
+                                                                            place_id: s.place_id ?? null,
+                                                                            gmap_embed_src: s.gmap_embed_src ?? null,
+                                                                            gmap_url: s.gmap_url ?? null,
+                                                                            lat: s.lat,
+                                                                            lng: s.lng,
+                                                                            zoomOnPin: s.zoomOnPin,
+                                                                        })}
+                                                                        title={`${s.name} の地図`}
+                                                                        lat={typeof s.lat === 'number' ? s.lat : undefined}
+                                                                        lng={typeof s.lng === 'number' ? s.lng : undefined}
+                                                                        label={s.name}
+                                                                    />
 
                                                                 </div>
 

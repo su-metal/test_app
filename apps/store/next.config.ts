@@ -11,13 +11,19 @@ function buildCSP() {
   const parts = [
     "default-src 'self'",
     "base-uri 'self'",
+    // スクリプト: Stripe + LIFF + vercel.live（プレビュー/本番で読み込みの可能性があるため許可）
     `script-src 'self' 'unsafe-inline' ${
       isDev ? "'unsafe-eval' " : ""
-    }https://js.stripe.com`,
+    }https://js.stripe.com https://static.line-scdn.net https://vercel.live`,
+    // 明示: script-src-elem（未指定時は script-src がフォールバックされるが、要件に従い明記）
+    `script-src-elem 'self' 'unsafe-inline' ${
+      isDev ? "'unsafe-eval' " : ""
+    }https://js.stripe.com https://static.line-scdn.net https://vercel.live`,
     "style-src 'self' 'unsafe-inline' https://js.stripe.com",
     `img-src 'self' data: blob: https://*.stripe.com https://${SUPABASE_HOST}`,
     "font-src 'self' https://js.stripe.com data:",
-    `connect-src 'self' ws: wss: https://api.stripe.com https://m.stripe.com https://q.stripe.com https://r.stripe.com https://*.stripe.com https://${SUPABASE_HOST} wss://${SUPABASE_HOST}`,
+    // 接続先: Stripe + Supabase に加え、LIFF の API/manifest 取得先を許可
+    `connect-src 'self' ws: wss: https://api.stripe.com https://m.stripe.com https://q.stripe.com https://r.stripe.com https://*.stripe.com https://api.line.me https://liffsdk.line-scdn.net https://${SUPABASE_HOST} wss://${SUPABASE_HOST}`,
     "frame-src 'self' https://js.stripe.com https://hooks.stripe.com https://*.stripe.com",
     "worker-src 'self' blob:",
     "child-src 'self' blob:",

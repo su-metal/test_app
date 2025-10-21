@@ -4,9 +4,9 @@
   --background: #ffffff;
   --foreground: #171717;
 
-  --cart-btn-bg: #171717; /* デフォルト背景（例：sky-500） */
+  --cart-btn-bg: #00c951; /* デフォルト背景（例：sky-500） */
   --cart-btn-fg: #ffffff; /* 文字色 */
-  --cart-btn-border: #666666; /* 枠線 */
+  --cart-btn-border: #00c951; /* 枠線 */
   --cart-btn-bg-hover: #888888; /* hover背景（例：sky-600） */
   --cart-btn-fg-hover: #ffffff; /* hover文字色 */
 }

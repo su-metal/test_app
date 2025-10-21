@@ -35,7 +35,8 @@ const csp = [
   "font-src 'self' data: https://js.stripe.com https://*.stripe.com",
   // LIFF / Stripe / Supabase など
   "connect-src 'self' ws: wss: https://api.line.me https://js.stripe.com https://m.stripe.com https://q.stripe.com https://r.stripe.com https://*.stripe.com https://dsrueuqshqdtkrprcjmc.supabase.co wss://dsrueuqshqdtkrprcjmc.supabase.co https://*.supabase.co wss://*.supabase.co",
-  "frame-src 'self' https://js.stripe.com https://*.stripe.com https://*.line.me https://liff.line.me",
+  // Google マップ埋め込み（iframe）を許可
+  "frame-src 'self' https://js.stripe.com https://*.stripe.com https://*.line.me https://liff.line.me https://www.google.com https://maps.google.com https://*.google.com",
   "worker-src 'self' blob:",
   "frame-ancestors 'self'",
   "base-uri 'self'",

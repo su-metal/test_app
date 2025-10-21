@@ -26,7 +26,28 @@ export default function SuccessPage() {
         const key = "orders";
         const prev = JSON.parse(localStorage.getItem(key) || "[]");
         localStorage.setItem(key, JSON.stringify([json.order, ...prev]));
-        setMsg("ご購入ありがとうございました。チケットを追加しました。");
+
+        // 決済完了した商品をカートから除去（startStripeCheckout で保存した購入対象を参照）
+        try {
+          const raw = sessionStorage.getItem('checkout_group_itemKeys');
+          if (raw) {
+            const itemKeys: string[] = JSON.parse(raw);
+            const cartRaw = localStorage.getItem('cart');
+            const cartArr: any[] = cartRaw ? JSON.parse(cartRaw) : [];
+            const filtered = (Array.isArray(cartArr) ? cartArr : []).filter(
+              (l: any) => !itemKeys.includes(`${l?.shopId}:${l?.item?.id}`)
+            );
+            localStorage.setItem('cart', JSON.stringify(filtered));
+          }
+        } catch { /* noop */ }
+        // 後始末
+        try {
+          sessionStorage.removeItem('checkout_target_group');
+          sessionStorage.removeItem('checkout_group_itemKeys');
+        } catch { /* noop */ }
+
+        // 完了メッセージ
+        setMsg("ご購入ありがとうございました。チケットを追加し、カートを更新しました。");
       } catch (e: any) {
         console.error(e);
         setMsg(
@@ -51,4 +72,3 @@ export default function SuccessPage() {
     </main>
   );
 }
-

@@ -1,43 +1,31 @@
-// apps/store/next.config.ts
-import type { NextConfig } from "next";
+"use client";
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
-const isDev = process.env.NODE_ENV !== "production";
-const SUPABASE_HOST = "dsrueuqshqdtkrprcjmc.supabase.co";
+let __client: SupabaseClient | null = null;
 
-/** CSP を1本の文字列に組み立て */
-function buildCSP(): string {
-  return [
-    "default-src 'self'",
-    "base-uri 'self'",
-    // dev時はHMR向けに 'unsafe-eval' を足す
-    `script-src 'self' 'unsafe-inline' ${
-      isDev ? "'unsafe-eval' " : ""
-    }https://js.stripe.com`,
-    "style-src 'self' 'unsafe-inline'",
-    // ← Stripeのフォントを許可
-    "font-src 'self' data: https://js.stripe.com",
-    // 画像は self/data/blob と Stripe を許可
-    "img-src 'self' data: blob: https://*.stripe.com",
-    // Supabase・Stripe への接続を許可
-    `connect-src 'self' https://${SUPABASE_HOST} https://*.supabase.co https://api.stripe.com https://js.stripe.com`,
-    // Stripe の iframe
-    "frame-src https://js.stripe.com https://hooks.stripe.com",
-  ].join("; ");
+export function getSupabaseClient(): SupabaseClient {
+  if (!__client) {
+    const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+    const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+    __client = createClient(url, anon, {
+      auth: {
+        persistSession: true,
+        autoRefreshToken: true,
+        storageKey: "sb-user-app",
+      },
+      global: {
+        headers: {
+          apikey: anon,
+          Authorization: `Bearer ${anon}`,
+          "x-store-id": process.env.NEXT_PUBLIC_STORE_ID || "",
+        },
+      },
+    });
+  }
+  return __client;
 }
 
-const nextConfig: NextConfig = {
-  // ✅ まずは本番反映を優先：ビルド時の ESLint/型エラーで “落とさない”
-  eslint: { ignoreDuringBuilds: true },
-  typescript: { ignoreBuildErrors: true },
+export const supabase = getSupabaseClient();
 
-  async headers() {
-    return [
-      {
-        source: "/:path*",
-        headers: [{ key: "Content-Security-Policy", value: buildCSP() }],
-      },
-    ];
-  },
-};
+// TODO(req v2): 必要に応じてログ/メトリクス連携を追加
 
-export default nextConfig;

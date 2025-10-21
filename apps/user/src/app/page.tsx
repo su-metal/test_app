@@ -1,5 +1,6 @@
 ﻿"use client";
 import React, { useEffect, useMemo, useRef, useState, startTransition, useCallback } from "react";
+import MapEmbedWithFallback from "@/components/MapEmbedWithFallback";
 import { createClient, type RealtimeChannel } from "@supabase/supabase-js";
 import type { SupabaseClient } from '@supabase/supabase-js';
 // 追加：受取時間の表示コンポーネント
@@ -343,9 +344,17 @@ async function routeDistanceKm(
     mode: 'walking' | 'driving' = 'walking'
 ): Promise<number | null> {
     try {
-        const profile = mode === 'walking' ? 'foot' : 'driving';
-        const url = `https://router.project-osrm.org/route/v1/${profile}/${origin.lng},${origin.lat};${dest.lng},${dest.lat}?overview=false&alternatives=false&steps=false`;
-        const res = await fetch(url, { cache: 'no-store' });
+        // 同一オリジン API 経由に変更（LIFF の CSP 回避）
+        const profile = mode === 'walking' ? 'walking' : 'driving';
+        const qs = new URLSearchParams({
+            profile,
+            origin: `${origin.lat},${origin.lng}`,
+            dest: `${dest.lat},${dest.lng}`,
+            overview: 'false',
+            alternatives: 'false',
+            steps: 'false',
+        });
+        const res = await fetch(`/api/osrm?${qs.toString()}`, { cache: 'no-store' });
         if (!res.ok) return null;
         const json = await res.json();
         const meters: unknown = json?.routes?.[0]?.distance;
@@ -3769,7 +3778,7 @@ export default function UserPilotApp() {
                                                                     {/* 住所/ミニマップ（埋め込み） */}
                                                                     <div className="relative mt-2 rounded-xl overflow-hidden border
                 touch-pan-y touch-pinch-zoom overscroll-contain">
-                                                                        <iframe
+                                                                        {/* <iframe
                                                                             key={s.id}
                                                                             className="w-full h-60 md:h-80" // ← 高さを少し増やすと +- UI が確実に見えます
                                                                             src={buildMapEmbedSrc({
@@ -3788,6 +3797,25 @@ export default function UserPilotApp() {
                                                                             title={`${s.name} の地図`}
                                                                             // 念のため（親のどこかで pointer-events: none が掛かっていた場合の保険）
                                                                             style={{ pointerEvents: 'auto' }}
+                                                                        /> */}
+                                                                        <MapEmbedWithFallback
+                                                                            key={s.id}
+                                                                            className="w-full"
+                                                                            heightClass="h-60 md:h-80"
+                                                                            src={buildMapEmbedSrc({
+                                                                                name: s.name,
+                                                                                address: s.address,
+                                                                                place_id: s.place_id ?? null,
+                                                                                gmap_embed_src: s.gmap_embed_src ?? null,
+                                                                                gmap_url: s.gmap_url ?? null,
+                                                                                lat: s.lat,
+                                                                                lng: s.lng,
+                                                                                zoomOnPin: s.zoomOnPin,
+                                                                            })}
+                                                                            title={`${s.name} の地図`}
+                                                                            lat={typeof s.lat === 'number' ? s.lat : undefined}
+                                                                            lng={typeof s.lng === 'number' ? s.lng : undefined}
+                                                                            label={s.name}
                                                                         />
                                                                     </div>
 

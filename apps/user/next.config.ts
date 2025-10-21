@@ -16,7 +16,8 @@ const scriptSrc = [
   "https://static.line-scdn.net",
   "https://liff.line.me",
   "https://*.hcaptcha.com",
-  ...(isProd ? [] : ["https://vercel.live"]),
+  // vercel.live はプレビュー/本番でも読み込みが発生する場合があるため許可
+  "https://vercel.live",
 ];
 
 // ★ ここが今回の修正ポイント：img-src を広げる
@@ -36,7 +37,7 @@ const csp = [
   // Stripe の Web フォントを許可（'none' は使わない）
   "font-src 'self' data: https://js.stripe.com https://*.stripe.com",
   // LIFF / Stripe / Supabase など
-  "connect-src 'self' ws: wss: https://api.line.me https://js.stripe.com https://m.stripe.com https://q.stripe.com https://r.stripe.com https://*.stripe.com https://*.stripecdn.com https://api.hcaptcha.com https://api2.hcaptcha.com https://*.hcaptcha.com https://dsrueuqshqdtkrprcjmc.supabase.co wss://dsrueuqshqdtkrprcjmc.supabase.co https://*.supabase.co wss://*.supabase.co",
+  "connect-src 'self' ws: wss: https://api.line.me https://js.stripe.com https://m.stripe.com https://q.stripe.com https://r.stripe.com https://*.stripe.com https://*.stripecdn.com https://api.hcaptcha.com https://api2.hcaptcha.com https://*.hcaptcha.com https://liffsdk.line-scdn.net https://dsrueuqshqdtkrprcjmc.supabase.co wss://dsrueuqshqdtkrprcjmc.supabase.co https://*.supabase.co wss://*.supabase.co",
   // Google マップ埋め込み（iframe）を許可
   "frame-src 'self' https://js.stripe.com https://*.stripe.com https://*.line.me https://liff.line.me https://www.google.com https://maps.google.com https://*.google.com https://*.hcaptcha.com",
   "worker-src 'self' blob:",

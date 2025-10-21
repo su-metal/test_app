@@ -3776,8 +3776,7 @@ export default function UserPilotApp() {
                                                             <div className="relative mt-2">
                                                                 <div className="relative mt-2">
                                                                     {/* 住所/ミニマップ（埋め込み） */}
-                                                                    <div className="relative mt-2 rounded-xl overflow-hidden border
-                touch-pan-y touch-pinch-zoom overscroll-contain">
+                                                                    {/* 外側の二重枠を除去（MapEmbedWithFallback 内で枠を描画） */}
                                                                         {/* <iframe
                                                                             key={s.id}
                                                                             className="w-full h-60 md:h-80" // ← 高さを少し増やすと +- UI が確実に見えます
@@ -3817,7 +3816,6 @@ export default function UserPilotApp() {
                                                                             lng={typeof s.lng === 'number' ? s.lng : undefined}
                                                                             label={s.name}
                                                                         />
-                                                                    </div>
 
                                                                 </div>
 

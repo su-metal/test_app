@@ -30,3 +30,23 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* ====== ここから追記（横スクロール＋スクロールバー非表示） ====== */
+/* Chrome / Safari / Opera */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+  height: 0;
+}
+/* Firefox / Edge / IE */
+.no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+/* 横スクロール用：横だけ流し、縦は隠す。iOS慣性スクロール対応 */
+.hscroll {
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+}
+/* ====== 追記ここまで ====== */

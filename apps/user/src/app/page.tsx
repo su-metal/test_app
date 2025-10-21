@@ -4265,7 +4265,7 @@ export default function UserPilotApp() {
                 <nav
                     className="
     fixed left-1/2 -translate-x-1/2 bottom-7
-    w-[92%] max-w-[520px]
+    w-[92%] max-w-[448px]
     bg-white/95 backdrop-blur
     rounded-full border border-zinc-200
     shadow-[0_8px_24px_rgba(0,0,0,0.12)]

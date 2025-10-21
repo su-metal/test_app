@@ -11,9 +11,11 @@ const scriptSrc = [
   "'unsafe-inline'",
   "'unsafe-eval'",
   "https://js.stripe.com",
+  "https://*.stripecdn.com",
   "https://*.stripe.com",
   "https://static.line-scdn.net",
   "https://liff.line.me",
+  "https://*.hcaptcha.com",
   ...(isProd ? [] : ["https://vercel.live"]),
 ];
 
@@ -34,9 +36,9 @@ const csp = [
   // Stripe の Web フォントを許可（'none' は使わない）
   "font-src 'self' data: https://js.stripe.com https://*.stripe.com",
   // LIFF / Stripe / Supabase など
-  "connect-src 'self' ws: wss: https://api.line.me https://js.stripe.com https://m.stripe.com https://q.stripe.com https://r.stripe.com https://*.stripe.com https://dsrueuqshqdtkrprcjmc.supabase.co wss://dsrueuqshqdtkrprcjmc.supabase.co https://*.supabase.co wss://*.supabase.co",
+  "connect-src 'self' ws: wss: https://api.line.me https://js.stripe.com https://m.stripe.com https://q.stripe.com https://r.stripe.com https://*.stripe.com https://*.stripecdn.com https://api.hcaptcha.com https://api2.hcaptcha.com https://*.hcaptcha.com https://dsrueuqshqdtkrprcjmc.supabase.co wss://dsrueuqshqdtkrprcjmc.supabase.co https://*.supabase.co wss://*.supabase.co",
   // Google マップ埋め込み（iframe）を許可
-  "frame-src 'self' https://js.stripe.com https://*.stripe.com https://*.line.me https://liff.line.me https://www.google.com https://maps.google.com https://*.google.com",
+  "frame-src 'self' https://js.stripe.com https://*.stripe.com https://*.line.me https://liff.line.me https://www.google.com https://maps.google.com https://*.google.com https://*.hcaptcha.com",
   "worker-src 'self' blob:",
   "frame-ancestors 'self'",
   "base-uri 'self'",

@@ -1,103 +1,127 @@
 import { NextRequest, NextResponse } from "next/server";
 import sharp from "sharp";
-import { getSupabaseAdmin } from "@/src/lib/supabaseAdmin";
+import { randomUUID } from "crypto";
+import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 
-// サイズプリセットと命名サフィックス
-const PRESETS = [320, 480, 640, 960, 1280] as const;
-type Variant = { width: number; path: string; url?: string };
+// ---- Config ----
+export const runtime = "nodejs";
+const BUCKET = "public-images";
+// 生成する幅（px）
+export const PRESETS = [320, 480, 640, 960, 1280] as const;
+type PresetWidth = (typeof PRESETS)[number];
 
-// ファイル名は products/{productId}/{uuid}_{slot}_{w}.webp
-function pathOf(productId: string, slot: string, w: number, uuid: string): string {
-  return `products/${productId}/${uuid}_${slot}_${w}.webp`;
+type Variant = {
+  width: number;
+  path: string;
+  url?: string;
+};
+
+function assertPreset(w: number): asserts w is PresetWidth {
+  if (!PRESETS.includes(w as any)) {
+    throw new Error(`invalid preset width: ${w}`);
+  }
 }
 
-export const runtime = "nodejs";
+function pathOf(productId: string, slot: string, w: number, uuid: string) {
+  return `products/${productId}/${uuid}_${slot}_${w}.webp`;
+}
 
 export async function POST(req: NextRequest) {
   try {
     const form = await req.formData();
     const productId = String(form.get("productId") || "");
-    const slot = String(form.get("slot") || "");
+    const slot = String(form.get("slot") || "main");
     const file = form.get("file") as File | null;
 
-    if (!productId || !slot || !file) {
-      return NextResponse.json({ ok: false, error: "invalid_params" }, { status: 400 });
+    if (!productId) {
+      return NextResponse.json(
+        { ok: false, error: "productId is required" },
+        { status: 400 }
+      );
+    }
+    if (!file) {
+      return NextResponse.json(
+        { ok: false, error: "file is required" },
+        { status: 400 }
+      );
     }
 
-    const arrayBuf = await file.arrayBuffer();
-    const input = Buffer.from(arrayBuf);
-
-    // 入力画像のメタデータを取得
-    const img = sharp(input, { failOnError: false });
-    const meta = await img.metadata();
-    const srcW = meta.width ?? 0;
-    const srcH = meta.height ?? 0;
-    if (!srcW || !srcH) {
-      return NextResponse.json({ ok: false, error: "invalid_image" }, { status: 400 });
+    const mime = file.type || "application/octet-stream";
+    if (!/^image\/(jpeg|png|webp|gif|avif)$/.test(mime)) {
+      return NextResponse.json(
+        { ok: false, error: `unsupported content-type: ${mime}` },
+        { status: 400 }
+      );
     }
 
-    // アップスケール禁止 + 最大辺 1280px 上限
-    const maxEdge = 1280;
-    const effectiveMax = Math.min(maxEdge, Math.max(srcW, srcH));
-    const targets = PRESETS.filter((w) => w <= effectiveMax);
-    if (targets.length === 0) targets.push(Math.min(320, effectiveMax));
+    const uuid = randomUUID();
+    const input = Buffer.from(await file.arrayBuffer());
 
-    const admin = getSupabaseAdmin();
-    const uuid = (globalThis.crypto?.randomUUID?.() || require("crypto").randomUUID());
+    // 基本の画像パイプライン（自動回転 + WebP 変換）
+    const base = sharp(input, {
+      failOn: "none",
+      animated: mime.endsWith("gif"),
+    }).rotate(); // EXIF
+    const meta = await base.metadata();
+    const origWidth = meta.width ?? 0;
 
-    // 既存の同slotファイルをクリーンアップ（prefix一致）
-    try {
-      const baseDir = `products/${productId}`;
-      const list = await admin.storage.from("public-images").list(baseDir, { limit: 1000 });
-      const toDelete = (list.data || [])
-        .filter((it) => it.name.startsWith(`${slot}_`) || it.name.includes(`_${slot}_`))
-        .map((it) => `${baseDir}/${it.name}`);
-      if (toDelete.length > 0) {
-        await admin.storage.from("public-images").remove(toDelete);
-      }
-    } catch {
-      // noop: 権限や0件時は無視
+    // 生成する幅の決定（元画像より大きいサイズはスキップ）
+    const targets: PresetWidth[] = PRESETS.filter(
+      (w) => w <= origWidth || origWidth === 0
+    ) as PresetWidth[];
+    if (targets.length === 0) {
+      targets.push(PRESETS[0] as PresetWidth); // サイズ不明の場合は最小を作る
     }
 
-    // 各サイズを生成してアップロード
+    // 変換 + アップロード
+    const supabase = getSupabaseAdmin();
     const variants: Variant[] = [];
     for (const w of targets) {
-      const resized = await sharp(input, { failOnError: false })
-        .rotate() // EXIF 補正、メタデータは保持しない（除去）
-        .resize({ width: w, withoutEnlargement: true, fit: "inside" })
-        .webp({ quality: 82, alphaQuality: 90 })
+      assertPreset(w); // 型ナローイング + 実行時検証
+
+      const buf = await base
+        .clone()
+        .resize({ width: w, fit: "inside", withoutEnlargement: true })
+        .webp({ quality: 82, effort: 5 })
         .toBuffer();
 
       const path = pathOf(productId, slot, w, uuid);
-      const up = await admin.storage.from("public-images").upload(path, resized, {
+      const up = await supabase.storage.from(BUCKET).upload(path, buf, {
         contentType: "image/webp",
-        cacheControl: "31536000, immutable",
         upsert: true,
       });
-      if (up.error) throw up.error;
-      variants.push({ width: w, path });
+      if (up.error) {
+        throw up.error;
+      }
+
+      const { data: pub } = supabase.storage.from(BUCKET).getPublicUrl(path);
+      variants.push({ width: w, path, url: pub.publicUrl });
     }
 
-    // DB 更新: 既存の互換カラム（*_image_path）を最大幅のものに更新
-    const biggest = variants.reduce((a, b) => (a.width >= b.width ? a : b));
-    const col = slot === "main" ? "main_image_path"
-      : slot === "sub1" ? "sub_image_path1" : "sub_image_path2";
-    const upd = await admin.from("products").update({ [col]: biggest.path }).eq("id", productId);
-    if (upd.error) throw upd.error;
+    // 最も大きい幅を代表パスとする
+    const biggest = variants.reduce((a, b) => (a.width > b.width ? a : b));
 
-    // 追加の JSONB カラムに派生配列を保存（存在しなければ無視）
-    // TODO(req v2): スキーマ正式化: products.image_variants(jsonb)
+    // （任意）商品テーブルへ JSON を保存（存在しない場合は無視）
     try {
-      const variantsJson = { [slot]: variants.map((v) => ({ width: v.width, path: v.path })) };
-      await admin.from("products").update({ image_variants: variantsJson }).eq("id", productId);
+      const variantsJson = variants.map((v) => ({
+        width: v.width,
+        path: v.path,
+        url: v.url,
+      }));
+      await supabase
+        .from("products")
+        .update({ image_variants: variantsJson })
+        .eq("id", productId);
     } catch {
-      // カラム未作成などは無視
+      // テーブル/カラム未作成などは無視
     }
 
     return NextResponse.json({ ok: true, path: biggest.path, variants });
   } catch (e: any) {
     console.error("[images/upload] error", e);
-    return NextResponse.json({ ok: false, error: String(e?.message || e) }, { status: 500 });
+    return NextResponse.json(
+      { ok: false, error: String(e?.message ?? e) },
+      { status: 500 }
+    );
   }
 }
-

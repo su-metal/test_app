@@ -24,7 +24,8 @@
   "dependencies": {
     "@line/liff": "^2.27.2",
     "@supabase/supabase-js": "^2.74.0",
-    "jose": "^5.9.3",
-    "leaflet": "^1.9.4"
+
+    "leaflet": "^1.9.4",
+    "jose": "^5.9.6"
   }
 }

@@ -38,8 +38,23 @@ export default function LiffBoot() {
                 if (isLineWebView && !liff.isLoggedIn()) {
                     if (debug) console.info("[LIFF][store] login (LINE WebView)");
                     liff.login();
-                } else if (debug) {
-                    console.info("[LIFF][store] init done (no auto login)");
+                } else {
+                    if (debug) console.info("[LIFF][store] init done (no auto login)");
+                    try {
+                        const idToken = liff.getIDToken();
+                        if (idToken) {
+                            await fetch("/api/auth/line/silent-login", {
+                                method: "POST",
+                                headers: { "content-type": "application/json" },
+                                body: JSON.stringify({ id_token: idToken }),
+                                credentials: "include",
+                            });
+                        } else if (debug) {
+                            console.info("[LIFF][store] no id token yet");
+                        }
+                    } catch (e) {
+                        if (debug) console.warn("[LIFF][store] silent-login failed", e);
+                    }
                 }
             } catch (e) {
                 if (mounted) console.error("[LIFF][store] init/login failed", e);

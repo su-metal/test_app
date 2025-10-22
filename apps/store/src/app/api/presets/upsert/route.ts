@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
+import { getSupabaseAdmin } from '@/lib/supabaseAdmin';
 import { jwtVerify, createRemoteJWKSet } from 'jose';
 
 // TODO(req v2): 本APIはLINEミニアプリ用のサインド検証を行います。
@@ -7,11 +7,8 @@ import { jwtVerify, createRemoteJWKSet } from 'jose';
 
 const LINE_JWKS = createRemoteJWKSet(new URL('https://api.line.me/oauth2/v2.1/certs'));
 
-const supabaseAdmin = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!,
-  { auth: { persistSession: false, autoRefreshToken: false } }
-);
+// 遅延取得（ビルド時に環境変数未設定でも落ちないようにする）
+const supabaseAdmin = getSupabaseAdmin();
 
 type BodyRow = {
   store_id: string;

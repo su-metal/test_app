@@ -24,7 +24,8 @@
   "dependencies": {
     "@line/liff": "^2.27.2",
     "@supabase/supabase-js": "^2.74.0",
-    "jose": "^5.9.3",
+    "jose": "^5.10.0",
     "leaflet": "^1.9.4"
-  }
+  },
+  "packageManager": "pnpm@10.19.0+sha512.c9fc7236e92adf5c8af42fd5bf1612df99c2ceb62f27047032f4720b33f8eacdde311865e91c411f2774f618d82f320808ecb51718bfa82c060c4ba7c76a32b8"
 }

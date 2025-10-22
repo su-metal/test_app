@@ -1,54 +1,78 @@
-// middleware.ts  ← この1ファイルをコピペで追加（apps/user と apps/store の両方に置く）
-// 既存の next.config.ts を変更せずに、レスポンスヘッダでCSPを配布します。
-
-import { NextResponse } from "next/server";
+// apps/store/middleware.ts
 import type { NextRequest } from "next/server";
+import { NextResponse } from "next/server";
 
-export const config = {
-  // 全ルートに適用（必要に応じて絞り込んでOK）
-  matcher: "/:path*",
-};
+/**
+ * 認証判定（副作用なし・Cookieのみ）
+ * - SupabaseのCookieは環境により sb-access-token / sb-access-token-<project> など可変
+ * - 将来の変更にも強いように前方一致で検出
+ */
+function hasSupabaseSession(req: NextRequest): boolean {
+  const cookies = req.cookies;
+  // 最低限の2種類（access/refresh）のどちらかがあれば「一旦ログイン済み」とみなす
+  const hasAccess = cookies
+    .getAll()
+    .some((c) => c.name.startsWith("sb-access-token"));
+  const hasRefresh = cookies
+    .getAll()
+    .some((c) => c.name.startsWith("sb-refresh-token"));
+  return hasAccess || hasRefresh;
+}
 
-export default function middleware(req: NextRequest) {
-  const res = NextResponse.next();
+/**
+ * 認証不要のパス（ホワイトリスト）
+ * - ここに列挙されたものは middleware の対象外（副作用を避ける）
+ */
+const PUBLIC_PATH_PREFIXES = [
+  "/login",
+  "/api", // APIは認証方式が別のことが多いので除外
+  "/_next", // Next.js静的アセット
+  "/favicon.ico",
+  "/robots.txt",
+  "/sitemap.xml",
+  "/manifest.webmanifest",
+  "/assets",
+  "/images",
+  "/static",
+  "/fonts",
+];
 
-  const isProd =
-    process.env.VERCEL_ENV === "production" ||
-    process.env.NODE_ENV === "production";
+function isPublicPath(pathname: string): boolean {
+  return PUBLIC_PATH_PREFIXES.some(
+    (p) => pathname === p || pathname.startsWith(`${p}/`)
+  );
+}
 
-  const scriptSrc = [
-    "'self'",
-    "'unsafe-inline'",
-    "'unsafe-eval'",
-    "https://js.stripe.com",
-    "https://static.line-scdn.net",
-    "https://liff.line.me",
-  ];
+export function middleware(req: NextRequest) {
+  const { pathname, search } = new URL(req.url);
 
-  // 本番では Vercel Live を許可しない（プレビュー/開発のみ許可）
-  if (!isProd) {
-    scriptSrc.push("https://vercel.live");
+  // 1) 事前除外：プリフライト / 公開パス は素通し（副作用ゼロ）
+  if (req.method === "OPTIONS" || isPublicPath(pathname)) {
+    return NextResponse.next();
   }
 
-  const csp = [
-    "default-src 'self'",
-    `script-src ${scriptSrc.join(" ")}`,
-    "img-src 'self' data: blob: https://*.stripe.com https://static.line-scdn.net",
-    "style-src 'self' 'unsafe-inline'",
-    "font-src 'self' data: https://js.stripe.com https://*.stripe.com",
-    "connect-src 'self' ws: wss: https://api.line.me https://js.stripe.com https://m.stripe.com https://q.stripe.com https://r.stripe.com https://*.stripe.com https://dsrueuqshqdtkrprcjmc.supabase.co wss://dsrueuqshqdtkrprcjmc.supabase.co https://*.supabase.co wss://*.supabase.co",
-    "frame-src 'self' https://js.stripe.com https://*.stripe.com https://*.line.me https://liff.line.me",
-    "worker-src 'self' blob:",
-    "frame-ancestors 'self'",
-    "base-uri 'self'",
-    "form-action 'self' https://checkout.stripe.com",
-  ].join("; ");
+  // 2) 認証チェック
+  if (!hasSupabaseSession(req)) {
+    // 元の行き先を next= に保存して /login へ
+    const loginUrl = new URL("/login", req.url);
+    if (pathname !== "/login") {
+      const next = pathname + (search || "");
+      loginUrl.searchParams.set("next", next);
+    }
+    return NextResponse.redirect(loginUrl);
+  }
 
-  // 既存ヘッダは保持しつつ、必要ヘッダを上書き/追加
-  res.headers.set("Content-Security-Policy", csp);
-  res.headers.set("Referrer-Policy", "strict-origin-when-cross-origin");
-  res.headers.set("X-Content-Type-Options", "nosniff");
-  res.headers.set("X-Frame-Options", "SAMEORIGIN");
-
-  return res;
+  // 3) 認証OKならそのまま
+  return NextResponse.next();
 }
+
+/**
+ * matcher は「保護したいURL集合」に対して広めに適用しつつ、
+ * 主要な静的配下は除外する正規表現を使用
+ */
+export const config = {
+  matcher: [
+    // 例: /api, /_next, /favicon.ico などは除外
+    "/((?!api|_next/static|_next/image|favicon.ico|robots.txt|sitemap.xml|assets|images|static|fonts|manifest.webmanifest).*)",
+  ],
+};

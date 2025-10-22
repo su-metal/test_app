@@ -36,7 +36,11 @@ export async function upsertPickupPresetsViaApi(presets: PickupPreset[]) {
   if (process.env.NEXT_PUBLIC_DEV_SKIP_LIFF !== "1") {
     if (!liffId) throw new Error("LIFFの設定が不足しています (NEXT_PUBLIC_LIFF_ID)");
     await liff.init({ liffId });
-    if (!liff.isLoggedIn()) liff.login();
+    if (!liff.isLoggedIn()) {
+      // 現在のページに戻す（ユーザーアプリへ遷移しない）
+      liff.login({ redirectUri: window.location.href });
+      return; // 以降はリダイレクトされるため終了
+    }
     idToken = liff.getIDToken() || undefined;
     if (!idToken) throw new Error("LINEのIDトークンが取得できませんでした");
   }
@@ -52,4 +56,3 @@ export async function upsertPickupPresetsViaApi(presets: PickupPreset[]) {
   const json = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(json?.error || "プリセットの保存に失敗しました");
 }
-

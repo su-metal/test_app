@@ -29,7 +29,8 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const sess = verifySessionCookie(cookies().get(COOKIE_NAME)?.value, secret);
+    const cookieStore = await cookies();
+    const sess = verifySessionCookie(cookieStore.get(COOKIE_NAME)?.value, secret);
     if (!sess) return new Response(JSON.stringify({ error: "unauthorized" }), { status: 401 });
 
     const body = (await req.json().catch(() => ({}))) as { rows?: PresetRow[]; current_slot_no?: 1 | 2 | 3 };

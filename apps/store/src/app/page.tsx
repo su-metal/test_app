@@ -863,9 +863,17 @@ function QRScanner({ onDetect, onClose }: { onDetect: (code: string) => void; on
     <div className="fixed inset-0 z-[60] grid place-items-center bg-black/40 p-4" role="dialog" aria-modal="true" onClick={onClose}>
       <div className="w-full max-w-md rounded-2xl bg-white shadow-xl border p-4" onClick={e => e.stopPropagation()}>
         <div className="text-base font-semibold mb-2">QRを読み取る</div>
-        <div className="aspect-[4/3] bg-black/80 rounded-xl overflow-hidden mb-3">
-          <video ref={videoRef} className="w-full h-full object-contain" muted playsInline />
+        {/* 端末のアスペクトに依らず“枠いっぱい”で見せる */}
+        <div className="rounded-xl overflow-hidden mb-3 bg-black h-[60svh] sm:h-[65svh]">
+          {/* 画面いっぱいに敷き詰める */}
+          <video
+            ref={videoRef}
+            className="w-full h-full object-cover"
+            muted
+            playsInline
+          />
         </div>
+
         {err ? <div className="text-sm text-red-600 mb-2">{err}</div> : null}
         <div className="text-right">
           <button className="rounded-xl border px-4 py-2 text-sm" onClick={onClose}>閉じる</button>
@@ -874,6 +882,143 @@ function QRScanner({ onDetect, onClose }: { onDetect: (code: string) => void; on
     </div>
   );
 }
+
+
+function ScanChooser({
+  onDetect,
+  onClose,
+}: {
+  onDetect: (code: string) => void;
+  onClose: () => void;
+}) {
+  const [useInternal, setUseInternal] = React.useState(false);
+  const [err, setErr] = React.useState<string | null>(null);
+  const fileRef = React.useRef<HTMLInputElement | null>(null);
+
+  // 画像ファイルから検出（カメラアプリ or ファイルマネージャから選択）
+  const onPick = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.currentTarget.files?.[0];
+    e.currentTarget.value = "";
+    if (!f) return;
+    try {
+      if (!("BarcodeDetector" in window)) {
+        setErr("この端末は画像からの読み取りに対応していません（内蔵スキャナをご利用ください）");
+        return;
+      }
+      const bmp = await createImageBitmap(f);
+      const det = new (window as any).BarcodeDetector({
+        formats: ["qr_code", "ean_13", "code_128"],
+      });
+      const codes = await det.detect(bmp);
+      const raw = codes?.[0]?.rawValue ?? codes?.[0]?.rawText ?? "";
+      const code = normalizeCode6(raw);
+      if (code && code.length === 6) {
+        onDetect(code);
+        onClose();
+      } else {
+        setErr("読み取れませんでした。もう一度お試しください。");
+      }
+    } catch {
+      setErr("読み取りに失敗しました。もう一度お試しください。");
+    }
+  };
+
+  // 外部アプリを起動（Android: インテントで“アプリの選択”を促す）
+  const openExternal = () => {
+    const ua = navigator.userAgent || "";
+    const isAndroid = /Android/i.test(ua);
+
+    if (isAndroid) {
+      // ZXing互換のスキャンIntent。packageを指定しないことで対応アプリの“選択”が出る端末が多いです。
+      const intent =
+        "intent://scan/#Intent;scheme=zxing;action=com.google.zxing.client.android.SCAN;S.MODE=QR_CODE;end";
+      // 新規タブだとブロックされることがあるため、同一タブ遷移
+      window.location.href = intent;
+    } else {
+      // iOSなど：専用スキームは端末依存のため内蔵/画像からの利用を案内
+      setErr("外部スキャンアプリの呼び出しはこの端末では保証できません。内蔵スキャナか画像からの読み取りをご利用ください。");
+    }
+  };
+
+  // 内蔵スキャナへ切り替えたら、そのまま既存のQRScannerを表示
+  if (useInternal) {
+    return (
+      <QRScanner
+        onDetect={(code) => {
+          onDetect(code);
+          onClose();
+        }}
+        onClose={onClose}
+      />
+    );
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-[60] grid place-items-center bg-black/40 p-4"
+      role="dialog"
+      aria-modal="true"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-md rounded-2xl bg-white shadow-xl border p-4"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="text-base font-semibold mb-2">QRを読み取る方法を選択</div>
+
+        <div className="space-y-2">
+          <button
+            type="button"
+            className="w-full rounded-xl border px-4 py-3 text-sm hover:bg-zinc-50"
+            onClick={() => setUseInternal(true)}
+          >
+            ブラウザでスキャン（内蔵）
+          </button>
+
+          <button
+            type="button"
+            className="w-full rounded-xl border px-4 py-3 text-sm hover:bg-zinc-50"
+            onClick={() => fileRef.current?.click()}
+          >
+            カメラで読み取り
+          </button>
+
+          <button
+            type="button"
+            className="w-full rounded-xl border px-4 py-3 text-sm hover:bg-zinc-50"
+            onClick={openExternal}
+          >
+            外部アプリでスキャン（アプリを選択）
+          </button>
+
+          <p className="text-[11px] text-zinc-500">
+            ※ 外部アプリは端末にインストール済みのQRコードアプリから選択できます（Android想定）。
+            iOSでは内蔵スキャナか画像からの読み取りをご利用ください。
+          </p>
+
+          {err ? <div className="text-sm text-red-600">{err}</div> : null}
+        </div>
+
+        {/* 画像選択（capture=environment でカメラアプリも候補に出ます） */}
+        <input
+          ref={fileRef}
+          type="file"
+          accept="image/*"
+          capture="environment"
+          className="hidden"
+          onChange={onPick}
+        />
+
+        <div className="text-right mt-3">
+          <button className="rounded-xl border px-4 py-2 text-sm" onClick={onClose}>
+            閉じる
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 
 // ▼▼▼ 静止画カメラ撮影モーダル ▼▼▼
 function CameraCaptureModal({
@@ -930,6 +1075,19 @@ function CameraCaptureModal({
     const v = videoRef.current;
     const c = canvasRef.current;
     if (!v || !c) return;
+
+    // 映像の読み込み完了を待つ
+    if (v.readyState < 2) {
+      await new Promise((resolve) => {
+        const handler = () => {
+          v.removeEventListener("loadeddata", handler);
+          resolve(null);
+        };
+        v.addEventListener("loadeddata", handler);
+      });
+    }
+
+    // 正しいサイズで描画
     const w = v.videoWidth || 1280;
     const h = v.videoHeight || 720;
     c.width = w;
@@ -937,8 +1095,10 @@ function CameraCaptureModal({
     const ctx = c.getContext("2d");
     if (!ctx) return;
     ctx.drawImage(v, 0, 0, w, h);
+
     setIsPreview(true);
   };
+
 
   const confirmUse = async () => {
     const c = canvasRef.current;
@@ -1647,8 +1807,9 @@ type ExistingProps = {
 
 function ProductImageSlot(props: StagedProps | ExistingProps) {
   const { uploadProductImage, deleteProductImage } = useImageUpload();
-  const [openCam, setOpenCam] = React.useState(false);
-  const pickerRef = React.useRef<HTMLInputElement | null>(null);
+  const [openCam, setOpenCam] = React.useState(false); // 既存のままでOK（使わなくなる）
+  const pickerRef = React.useRef<HTMLInputElement | null>(null);   // ギャラリー
+  const cameraRef = React.useRef<HTMLInputElement | null>(null);   // カメラ
   const [loading, setLoading] = React.useState(false);
   // ▼ 既存商品のモーダル内プレビューを即時反映するためのローカル状態
   const isExisting = (props as any).mode === "existing";
@@ -1830,15 +1991,27 @@ function ProductImageSlot(props: StagedProps | ExistingProps) {
       )}
 
 
-      {/* 隠し input（ギャラリー） */}
+      {/* 隠し input：ギャラリー用 / カメラ用 の2本 */}
       {!isReadonly && (
-        <input
-          ref={pickerRef}
-          type="file"
-          accept="image/*"
-          className="hidden"
-          onChange={onPick}
-        />
+        <>
+          {/* ギャラリー（ファイルマネージャー等）。capture なし */}
+          <input
+            ref={pickerRef}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={onPick}
+          />
+          {/* カメラ（端末のカメラアプリを優先起動 or 候補に表示） */}
+          <input
+            ref={cameraRef}
+            type="file"
+            accept="image/*"
+            capture="environment"
+            className="hidden"
+            onChange={onPick}
+          />
+        </>
       )}
       {/* // ★ モーダル用のアクション上書き（任意）
       //   - actions.secondary: 'delete' | 'change'
@@ -1847,15 +2020,24 @@ function ProductImageSlot(props: StagedProps | ExistingProps) {
       {/* 縦積みボタン（新規登録フォーム or モーダル上書き時に表示） */}
       {(props.mode === "staged" || actions) && !isReadonly && (
         <div className="mt-2 flex flex-col gap-1">
-          {/* カメラ */}
+          {/* カメラで撮る（カメラ用 input を叩く） */}
           <button
             type="button"
             className="w-full rounded-lg border px-2 py-1 text-[11px] hover:bg-zinc-50"
-            onClick={() => setOpenCam(true)}
+            onClick={() => cameraRef.current?.click()}
             disabled={loading}
           >
-            {/* モーダルでは短いラベルにする指定 */}
-            {actions ? "カメラ" : "カメラで撮る"}
+            カメラで撮る
+          </button>
+
+          {/* ファイルから選ぶ（従来のギャラリー） */}
+          <button
+            type="button"
+            className="w-full rounded-lg border px-2 py-1 text-[11px] hover:bg-zinc-50"
+            onClick={() => pickerRef.current?.click()}
+            disabled={loading}
+          >
+            ファイルから選ぶ
           </button>
 
           {/* 削除 or 変更（モーダルのメイン画像は「変更」） */}
@@ -2826,11 +3008,12 @@ function OrdersPage() {
       )}
 
       {scanOpen && (
-        <QRScanner
+        <ScanChooser
           onDetect={(raw) => { setCodeInput(raw); setCodeErr(null); setScanOpen(false); }}
           onClose={() => setScanOpen(false)}
         />
       )}
+
     </main>
   );
 }

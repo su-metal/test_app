@@ -38,7 +38,9 @@ export default function LiffBoot() {
                 if (isLineWebView && !liff.isLoggedIn()) {
                     if (debug) console.info("[LIFF][store] login (LINE WebView)");
                     // 本番の LIFF 既定エンドポイントに流れないよう現在のURLへ戻す
-                    liff.login({ redirectUri: window.location.href });
+                    const { origin, pathname, search } = window.location;
+                    const safeRedirect = `${origin}${pathname}${search}`;
+                    liff.login({ redirectUri: safeRedirect });
                 } else {
                     if (debug) console.info("[LIFF][store] init done (no auto login)");
                     try {

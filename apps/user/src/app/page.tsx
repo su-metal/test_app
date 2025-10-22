@@ -259,6 +259,32 @@ function publicImageUrl(path: string | null | undefined): string | null {
     return `${base}/storage/v1/object/public/public-images/${path}`;
 }
 
+// 画像派生の URL 配列を構築
+const SIZE_PRESETS = [320, 480, 640, 960, 1280] as const;
+type Variant = { url: string; width: number };
+function buildVariantsFromPath(path: string): Variant[] {
+    const base = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+    const m = path.match(/^(.*)_(main|sub1|sub2)_(\d+)\.webp$/);
+    if (m) {
+        const prefix = m[1];
+        const slot = m[2];
+        return SIZE_PRESETS.map((w) => ({ url: `${base}/storage/v1/object/public/public-images/${prefix}_${slot}_${w}.webp`, width: w }));
+    }
+    // 既存（単一パス）フォールバック
+    return [{ url: `${base}/storage/v1/object/public/public-images/${path}`, width: 1280 }];
+}
+function variantsForItem(it: Item, slot: 'main' | 'sub1' | 'sub2' = 'main'): Variant[] {
+    const base = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+    const v = (it as any)?.image_variants?.[slot] as Array<{ path: string; width: number }> | undefined;
+    if (Array.isArray(v) && v.length > 0) {
+        return v
+            .map((x) => ({ url: `${base}/storage/v1/object/public/public-images/${x.path}`, width: Number(x.width) }))
+            .sort((a, b) => a.width - b.width);
+    }
+    const p = slot === 'main' ? it.main_image_path : slot === 'sub1' ? it.sub_image_path1 : it.sub_image_path2;
+    return p ? buildVariantsFromPath(p) : [];
+}
+
 
 // === 背景画像を IntersectionObserver で遅延ロードし、白フラッシュ無しでフェード表示 ===
 function BgImage({
@@ -762,6 +788,7 @@ interface Item {
     sub_image_path1?: string | null;
     sub_image_path2?: string | null;
     publish_at?: string | null;
+    image_variants?: any | null; // TODO(req v2): products.image_variants(jsonb) に合わせた型へ
 }
 
 interface Shop {
@@ -1939,7 +1966,7 @@ export default function UserPilotApp() {
         (async () => {
             const q = supabase
                 .from("products")
-                .select("id,store_id,name,price,stock,updated_at,main_image_path,sub_image_path1,sub_image_path2,pickup_slot_no,publish_at,note")
+    .select("id,store_id,name,price,stock,updated_at,main_image_path,sub_image_path1,sub_image_path2,pickup_slot_no,publish_at,note")
             // 必要なら在庫>0や公開フラグで絞ってOK（例）
             // .gt("stock", 0).eq("is_published", true)
 
@@ -2099,6 +2126,7 @@ export default function UserPilotApp() {
                 sub_image_path1: p?.sub_image_path1 ?? null,
                 sub_image_path2: p?.sub_image_path2 ?? null,
                 publish_at: p?.publish_at ?? null,
+                image_variants: (p as any)?.image_variants ?? null,
             };
         };
 
@@ -4501,6 +4529,8 @@ export default function UserPilotApp() {
                                                     <div key={`slide-${i}-${path}`} style={{ width: `${100 / (imgCount + 2)}%`, height: '100%', flex: `0 0 ${100 / (imgCount + 2)}%` }}>
                                                         <img
                                                             src={publicImageUrl(path)!}
+                                                            srcSet={buildVariantsFromPath(path).map(v => `${v.url} ${v.width}w`).join(', ')}
+                                                            sizes="(min-width: 768px) 800px, 100vw"
                                                             alt={i === pos ? `${detail.item.name} 画像 ${gIndex + 1}/${imgCount}` : ''}
                                                             className="w-full h-full object-cover select-none"
                                                             draggable={false}

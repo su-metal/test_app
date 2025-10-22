@@ -3029,6 +3029,8 @@ function ProductsPage() {
 
 // === 受取時間プリセット設定（店側） =====================================
 function PickupPresetPage() {
+  // 認証を確保（未ログイン時は匿名サインインを試行 or 何もしない設定）
+  useEnsureAuth();
   const supabase = (() => {
     // 既存 useSupabase と同等のクライアントを取る（window.__supabase 優先）
     const w = typeof window !== 'undefined' ? (window as any) : null;
@@ -3070,11 +3072,21 @@ function PickupPresetPage() {
       setLoading(true);
       setMsg(null);
 
+      // 認証チェック（未ログインなら中断）
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.user?.id) {
+        setMsg('ログインが必要です。ログイン後に再度お試しください。');
+        setLoading(false);
+        return;
+      }
+
       // 現在のスロット番号
+      const { getMyStoreId } = await import("@/lib/getMyStoreId");
+      const myStoreId = await getMyStoreId();
       const { data: store } = await (supabase as any)
         .from('stores')
         .select('id,current_pickup_slot_no')
-        .eq('id', getStoreId())
+        .eq('id', myStoreId)
         .single();
       // any 経由で never 回避
       const cur = (((store as any)?.current_pickup_slot_no) ?? 1) as SlotNo;
@@ -3085,7 +3097,7 @@ function PickupPresetPage() {
       const { data: presets } = await supabase
         .from('store_pickup_presets')
         .select('slot_no,name,start_time,end_time,slot_minutes')
-        .eq('store_id', getStoreId())
+        .eq('store_id', myStoreId)
         .order('slot_no', { ascending: true });
 
       if (presets && presets.length) {
@@ -3128,8 +3140,24 @@ function PickupPresetPage() {
     setSaving(true);
     try {
       // 3枠まとめて UPSERT（store_id も明示）※ onConflict は「store_id,slot_no」
+      const { getMyStoreId: _getMyStoreId2 } = await import("@/lib/getMyStoreId");
+      const myStoreId2 = await _getMyStoreId2();
+      // API 経由の保存（LIFFサイン）。RLS不達でも service_role で吸収
+      const { upsertPickupPresetsViaApi } = await import("@/lib/pickupPresets");
+      const presets = SLOT_NUMBERS.map((s) => ({
+        slot_no: rows[s].slot_no,
+        name: rows[s].name.trim(),
+        start_time: hhmmss(hhmm(rows[s].start_time)),
+        end_time: hhmmss(hhmm(rows[s].end_time)),
+        slot_minutes: 10,
+      }));
+      await upsertPickupPresetsViaApi(presets);
+
+      // 旧: SDK 直 upsert は無効化
+      if (false) {
       const payload = SLOT_NUMBERS.map((s) => ({
-        store_id: getStoreId(),
+        // TODO(req v2): store_id は固定値禁止。常にログインユーザーの店舗IDを使用
+        store_id: myStoreId2,
         slot_no: rows[s].slot_no,
         name: rows[s].name.trim(),
         start_time: hhmmss(hhmm(rows[s].start_time)),
@@ -3159,13 +3187,16 @@ function PickupPresetPage() {
         .upsert(payload, { onConflict: 'store_id,slot_no' });
 
       if (up.error) throw up.error;
+      }
 
       // “今使う”スロットを stores に反映
       if (current) {
+        const { getMyStoreId: _getMyStoreId3 } = await import("@/lib/getMyStoreId");
+        const myStoreId3 = await _getMyStoreId3();
         const st = await (supabase as any)
           .from('stores')
           .update({ current_pickup_slot_no: current })
-          .eq('id', getStoreId());
+          .eq('id', myStoreId3);
 
         if (st.error) throw st.error;
       }

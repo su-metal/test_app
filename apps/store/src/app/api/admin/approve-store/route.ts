@@ -1,9 +1,10 @@
 import { NextResponse } from "next/server";
-import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 
 const ADMIN_SECRET = process.env.ADMIN_DASHBOARD_SECRET;
 
 export async function POST(req: Request) {
+  const supabaseAdmin = getSupabaseAdmin();
   if (ADMIN_SECRET) {
     const header = new Headers(req.headers).get("x-admin-secret");
     if (header !== ADMIN_SECRET) {

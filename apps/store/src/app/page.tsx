@@ -3136,6 +3136,23 @@ function PickupPresetPage() {
         end_time: hhmmss(hhmm(rows[s].end_time)),
         slot_minutes: 10,
       }));
+      // サーバーAPI経由で保存（service_role, onConflict: store_id,slot_no）
+      try {
+        const resp = await fetch('/api/store/pickup-presets', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({ rows: payload, current_slot_no: current ?? undefined }),
+        });
+        if (!resp.ok) {
+          const j = await resp.json().catch(() => ({} as any));
+          throw new Error(j?.error || `API ${resp.status}`);
+        }
+        setMsg('保存しました。ユーザーアプリに反映されます。');
+        return;
+      } catch (e) {
+        throw e;
+      }
       // any 経由で never 回避
       const up = await (supabase as any)
         .from('store_pickup_presets')

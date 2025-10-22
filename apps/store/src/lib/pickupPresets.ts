@@ -38,7 +38,7 @@ export async function upsertPickupPresetsViaApi(presets: PickupPreset[]) {
     await liff.init({ liffId });
     if (!liff.isLoggedIn()) {
       // 現在のページに戻す（ユーザーアプリへ遷移しない）
-      liff.login({ redirectUri: window.location.href });
+      liff.login({ redirectUri: `${window.location.origin}${window.location.pathname}${window.location.search}` });
       return; // 以降はリダイレクトされるため終了
     }
     idToken = liff.getIDToken() || undefined;

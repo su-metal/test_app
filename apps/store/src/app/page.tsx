@@ -1782,6 +1782,38 @@ function useImageUpload() {
   return { uploadProductImage, deleteProductImage };
 }
 
+// 画像最適化版アップロードフック（サーバーAPI委譲）
+function useImageUploadV2() {
+  const uploadProductImage = React.useCallback(async (productId: string, file: File, slot: Slot) => {
+    const fd = new FormData();
+    fd.append("productId", productId);
+    fd.append("slot", slot);
+    fd.append("file", file);
+    const res = await fetch("/api/images/upload", { method: "POST", body: fd });
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}));
+      throw new Error(j?.error || "upload_failed");
+    }
+    const json = await res.json();
+    return String(json.path || "");
+  }, []);
+
+  const deleteProductImage = React.useCallback(async (productId: string, slot: Slot) => {
+    const res = await fetch("/api/images/delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ productId, slot }),
+    });
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}));
+      throw new Error(j?.error || "delete_failed");
+    }
+    return true;
+  }, []);
+
+  return { uploadProductImage, deleteProductImage };
+}
+
 // ▼ 画像スロット共通カード（登録済み/新規どちらでも使える）
 // type Slot = "main" | "sub1" | "sub2";
 type StagedProps = {
@@ -1806,7 +1838,7 @@ type ExistingProps = {
 };
 
 function ProductImageSlot(props: StagedProps | ExistingProps) {
-  const { uploadProductImage, deleteProductImage } = useImageUpload();
+  const { uploadProductImage, deleteProductImage } = useImageUploadV2();
   const [openCam, setOpenCam] = React.useState(false); // 既存のままでOK（使わなくなる）
   const pickerRef = React.useRef<HTMLInputElement | null>(null);   // ギャラリー
   const cameraRef = React.useRef<HTMLInputElement | null>(null);   // カメラ
@@ -2131,7 +2163,7 @@ function ProductForm() {
 
 
   const take = storeTake(Number(price || 0));
-  const { uploadProductImage, deleteProductImage } = useImageUpload();
+  const { uploadProductImage, deleteProductImage } = useImageUploadV2();
   const [uploadingId, setUploadingId] = useState<string | null>(null);
 
   // 登録フォームに「公開タイミング」を追加

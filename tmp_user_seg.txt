@@ -1,0 +1,30 @@
+        noChrome?: boolean;
+        onRemove?: () => void;
+    }) => {
+        const reserved = getReserved(sid, it.id);
+        const remain = Math.max(0, it.stock - reserved);
+        // 「決済で在庫が引かれた（＝ products.stock が 0）」ときだけ Sold out を表示
+        const isSoldOut = it.stock <= 0;
+
+
+        const wrapBase = "relative flex gap-3 p-2 pr-3";
+        const chrome = "rounded-2xl border border-gray-200 shadow-sm bg-white";
+        const wrapperCls = `${wrapBase} ${noChrome ? "" : chrome}`;
+
+        return (
+            <div className={`${wrapperCls} ${isSoldOut ? "opacity-85" : ""}`}>
+                <div className="flex items-start gap-3 flex-1 min-w-0">
+                    {/* サムネ（main → sub1 → sub2 → 絵文字） */}
+                    <button
+                        type="button"
+                        role="button"
+                        tabIndex={0}
+                        aria-label={`${it.name} の画像を開く`}
+                        onKeyDown={(e) => {
+                            if (e.key === "Enter" || e.key === " ") {
+                                e.preventDefault();
+                                (e.currentTarget as HTMLButtonElement).click();
+                            }
+                        }}
+                        onClick={() => { setDetail({ shopId: sid, item: it }); setGIndex(0); }}
+                        className="relative w-24 h-24 overflow-hidden rounded-xl bg-zinc-100 flex items-center justify-center shrink-0 border cursor-pointer group focus:outline-none focus:ring-2 focus:ring-zinc-900/50"

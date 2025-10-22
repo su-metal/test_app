@@ -1,0 +1,60 @@
+function useImageUpload() {
+  const supabase = useSupabase();
+  const colOf = (slot: Slot) =>
+    slot === "main" ? "main_image_path" :
+      slot === "sub1" ? "sub_image_path1" : "sub_image_path2";
+
+  const uploadProductImage = useCallback(async (productId: string, file: File, slot: Slot) => {
+    if (!supabase) throw new Error("Supabase 未初期化");
+
+    // 事前に store_id と既存パスを取得（安全性＆旧ファイル掃除）
+    const { data: before, error: fetchErr } = await supabase
+      .from("products")
+      .select("store_id, main_image_path, sub_image_path1, sub_image_path2")
+      .eq("id", productId)
+      .single();
+    if (fetchErr) throw fetchErr;
+
+    const sid = getStoreId();
+    if (!before) throw new Error("対象商品が存在しません");
+    if (!sid) throw new Error("店舗IDが未設定です（NEXT_PUBLIC_STORE_ID）");
+    if (String(before.store_id ?? "") !== String(sid)) {
+      throw new Error("他店舗の商品は更新できません");
+    }
+
+    const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
+    const path = `products/${productId}/${slot}-${Date.now()}.${ext}`;
+
+    // 1) Storage へアップロード
+    const up = await supabase.storage.from("public-images").upload(path, file, {
+      cacheControl: "31536000",
+      upsert: true,
+    });
+    if (up.error) {
+      console.error("[upload] storage error", up.error);
+      throw up.error;
+    }
+
+    // 2) DB を更新（更新する列だけ差し替え、store_id で二重限定）
+    const col = colOf(slot);
+    const upd = await supabase
+      .from("products")
+      .update({ [col]: path })
+      .eq("id", productId)
+      .eq("store_id", sid);
+    if (upd.error) {
+      console.error("[upload] db error", upd.error);
+      await supabase.storage.from("public-images").remove([path]).catch(() => { });
+      throw upd.error;
+    }
+
+    // 3) 旧ファイル掃除（該当スロットのみ）
+    const oldPath =
+      slot === "main" ? before.main_image_path :
+        slot === "sub1" ? before.sub_image_path1 : before.sub_image_path2;
+    if (oldPath && oldPath !== path) {
+      await supabase.storage.from("public-images").remove([oldPath]).catch(() => { });
+    }
+
+    return path;
+  }, [supabase]);

@@ -3,11 +3,13 @@ import sharp from "sharp";
 import { randomUUID } from "crypto";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 
-// ---- Config ----
-export const runtime = "nodejs";
+// ---- Next.js Route config ----
+export const runtime = "nodejs"; // これは許可された export
+
 const BUCKET = "public-images";
-// 生成する幅（px）
-export const PRESETS = [320, 480, 640, 960, 1280] as const;
+
+// 生成する幅（px）— ★ここは export しない
+const PRESETS = [320, 480, 640, 960, 1280] as const;
 type PresetWidth = (typeof PRESETS)[number];
 
 type Variant = {
@@ -26,6 +28,7 @@ function pathOf(productId: string, slot: string, w: number, uuid: string) {
   return `products/${productId}/${uuid}_${slot}_${w}.webp`;
 }
 
+// ---- Only handler exports are allowed ----
 export async function POST(req: NextRequest) {
   try {
     const form = await req.formData();
@@ -57,27 +60,25 @@ export async function POST(req: NextRequest) {
     const uuid = randomUUID();
     const input = Buffer.from(await file.arrayBuffer());
 
-    // 基本の画像パイプライン（自動回転 + WebP 変換）
+    // 画像パイプライン（自動回転）
     const base = sharp(input, {
       failOn: "none",
       animated: mime.endsWith("gif"),
-    }).rotate(); // EXIF
+    }).rotate();
     const meta = await base.metadata();
     const origWidth = meta.width ?? 0;
 
-    // 生成する幅の決定（元画像より大きいサイズはスキップ）
+    // 元画像より大きいプリセットは省く（幅不明なら最小だけ作る）
     const targets: PresetWidth[] = PRESETS.filter(
       (w) => w <= origWidth || origWidth === 0
     ) as PresetWidth[];
-    if (targets.length === 0) {
-      targets.push(PRESETS[0] as PresetWidth); // サイズ不明の場合は最小を作る
-    }
+    if (targets.length === 0) targets.push(PRESETS[0] as PresetWidth);
 
-    // 変換 + アップロード
     const supabase = getSupabaseAdmin();
     const variants: Variant[] = [];
+
     for (const w of targets) {
-      assertPreset(w); // 型ナローイング + 実行時検証
+      assertPreset(w);
 
       const buf = await base
         .clone()
@@ -90,18 +91,15 @@ export async function POST(req: NextRequest) {
         contentType: "image/webp",
         upsert: true,
       });
-      if (up.error) {
-        throw up.error;
-      }
+      if (up.error) throw up.error;
 
       const { data: pub } = supabase.storage.from(BUCKET).getPublicUrl(path);
       variants.push({ width: w, path, url: pub.publicUrl });
     }
 
-    // 最も大きい幅を代表パスとする
     const biggest = variants.reduce((a, b) => (a.width > b.width ? a : b));
 
-    // （任意）商品テーブルへ JSON を保存（存在しない場合は無視）
+    // （任意）DBに保存（存在しない場合は握りつぶす）
     try {
       const variantsJson = variants.map((v) => ({
         width: v.width,
@@ -112,9 +110,7 @@ export async function POST(req: NextRequest) {
         .from("products")
         .update({ image_variants: variantsJson })
         .eq("id", productId);
-    } catch {
-      // テーブル/カラム未作成などは無視
-    }
+    } catch {}
 
     return NextResponse.json({ ok: true, path: biggest.path, variants });
   } catch (e: any) {

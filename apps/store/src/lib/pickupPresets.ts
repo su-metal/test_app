@@ -1,69 +1,49 @@
 // apps/store/src/lib/pickupPresets.ts
 import { getMyStoreId } from "./getMyStoreId";
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore
-import liff from "@line/liff";
+// RLS 側で x-store-id ヘッダーを参照する既存ポリシー互換のため、
+// supabaseClient（グローバルヘッダー付与版）を使用する。
+import { supabase } from "./supabaseClient";
+import { createClient } from "@supabase/supabase-js";
 
 export type PickupPreset = {
   slot_no: number;
   name: string;
-  start_time: string; // 'HH:mm' 等（DB 型に合わせること）
+  start_time: string; // 'HH:mm' 推奨（DB time 型。秒は 00 固定で可）
   end_time: string;
   slot_minutes: number;
 };
 
-// 本番では RLS によりクライアントからの直接 upsert は失敗するため禁止
+// Supabase Auth セッションの RLS を通して直接 upsert
 export async function upsertPickupPreset(preset: PickupPreset) {
-  return upsertPickupPresetsViaApi([preset]);
+  return upsertPickupPresets([preset]);
 }
 
-// 本番では RLS によりクライアントからの直接 upsert は失敗するため禁止
+// Supabase Auth セッションの RLS を通して直接 upsert
 export async function upsertPickupPresets(presets: PickupPreset[]) {
-  return upsertPickupPresetsViaApi(presets);
-}
-
-/**
- * LIFF の ID トークンで認証し、サーバー Route 経由で upsert
- * - サーバー側で service_role を用いて RLS を迂回し、store_members 等で権限を検証
- */
-export async function upsertPickupPresetsViaApi(presets: PickupPreset[]) {
   const store_id = await getMyStoreId();
-  const rows = presets.map((p) => ({ store_id, ...p }));
+  const rows = presets.map((p) => ({
+    store_id,
+    slot_no: p.slot_no,
+    name: p.name,
+    start_time: p.start_time,
+    end_time: p.end_time,
+    slot_minutes: p.slot_minutes ?? 10,
+  }));
 
-  // 既定は API 経由（Route で LIFF サイン検証）
-  const liffId = process.env.NEXT_PUBLIC_LIFF_ID as string | undefined;
-  let idToken: string | undefined;
-  if (process.env.NEXT_PUBLIC_DEV_SKIP_LIFF !== "1") {
-    if (!liffId) throw new Error("LIFFの設定が不足しています (NEXT_PUBLIC_LIFF_ID)");
-    await liff.init({ liffId });
-    if (!liff.isLoggedIn()) {
-      // 現在のページに戻す（ユーザーアプリへ遷移しない）
-      const configuredBase = (window as any).BASE_URL_STORE as string | undefined;
-      const fallback = `${window.location.origin}${window.location.pathname}${window.location.search}`;
-      const inClient = typeof liff.isInClient === 'function' ? liff.isInClient() : false;
-      if (configuredBase && configuredBase.length > 0) {
-        try { const u = new URL(configuredBase); u.hash = ''; liff.login({ redirectUri: u.toString() }); } catch { liff.login({ redirectUri: configuredBase }); }
-      } else if (inClient) {
-        liff.login();
-      } else {
-        liff.login({ redirectUri: fallback });
-      }
-      return; // 以降はリダイレクトされるため終了
-    }
-    idToken = liff.getIDToken() || undefined;
-    if (!idToken) throw new Error("LINEのIDトークンが取得できませんでした");
+  // 既存RLSが x-store-id を参照する環境に合わせ、
+  // この保存処理だけは store_id 固定のヘッダーを持つ一時クライアントを使う。
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+  const sbForWrite = createClient(url, key, { global: { headers: { 'x-store-id': store_id } } });
+
+  const { error } = await sbForWrite
+    .from("store_pickup_presets")
+    // TODO(req v2): DB側で primary key(store_id, slot_no) を保証
+    .upsert(rows, { onConflict: "store_id,slot_no" });
+
+  if (error) {
+    throw new Error(error.message || "プリセットの保存に失敗しました");
   }
-
-  const res = await fetch("/api/presets/upsert", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...(idToken ? { "x-line-id-token": idToken } : {}),
-    },
-    body: JSON.stringify(rows),
-  });
-  const json = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(json?.error || "プリセットの保存に失敗しました");
 }
 
-
+// TODO(req v2): 旧実装（LIFF + service_role API）は撤去。ロールバック用途は環境変数で復帰する場合のみ別モジュールに隔離する。

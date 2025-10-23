@@ -47,15 +47,29 @@ export async function POST(req: Request) {
     );
   }
 
-  const { error: serr } = await supabaseAdmin.from("stores").insert({
-    name: app.store_name,
-    email: app.email,
-    auth_user_id: created.user.id,
-  });
-  if (serr) {
+  const { data: storeIns, error: serr } = await supabaseAdmin
+    .from("stores")
+    .insert({
+      name: app.store_name,
+      email: app.email,
+      auth_user_id: created.user.id,
+    })
+    .select("id")
+    .single();
+  if (serr || !storeIns?.id) {
     await supabaseAdmin.auth.admin.deleteUser(created.user.id).catch(() => {});
-    return NextResponse.json({ error: serr.message }, { status: 500 });
+    return NextResponse.json({ error: serr?.message || 'insert store failed' }, { status: 500 });
   }
+
+  // 初期プリセット投入（slot 1..3）と current_pickup_slot_no=1
+  const storeId = storeIns.id as string;
+  const presets = [
+    { store_id: storeId, slot_no: 1, name: 'プリセット1', start_time: '10:00:00', end_time: '14:00:00', slot_minutes: 10 },
+    { store_id: storeId, slot_no: 2, name: 'プリセット2', start_time: '14:00:00', end_time: '18:00:00', slot_minutes: 10 },
+    { store_id: storeId, slot_no: 3, name: 'プリセット3', start_time: '18:00:00', end_time: '21:00:00', slot_minutes: 10 },
+  ];
+  await supabaseAdmin.from('store_pickup_presets').upsert(presets, { onConflict: 'store_id,slot_no' });
+  await supabaseAdmin.from('stores').update({ current_pickup_slot_no: 1 }).eq('id', storeId);
 
   const { error: uerr } = await supabaseAdmin
     .from("store_applications")

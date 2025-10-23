@@ -3175,7 +3175,7 @@ function PickupPresetPage() {
       const { getMyStoreId: _getMyStoreId2 } = await import("@/lib/getMyStoreId");
       const myStoreId2 = await _getMyStoreId2();
       // API 経由の保存（LIFFサイン）。RLS不達でも service_role で吸収
-      const { upsertPickupPresetsViaApi } = await import("@/lib/pickupPresets");
+      const { upsertPickupPresets } = await import("@/lib/pickupPresets");
       const presets = SLOT_NUMBERS.map((s) => ({
         slot_no: rows[s].slot_no,
         name: rows[s].name.trim(),
@@ -3183,7 +3183,7 @@ function PickupPresetPage() {
         end_time: hhmmss(hhmm(rows[s].end_time)),
         slot_minutes: 10,
       }));
-      await upsertPickupPresetsViaApi(presets);
+      await upsertPickupPresets(presets);
 
       // 旧: SDK 直 upsert は無効化
       if (false) {

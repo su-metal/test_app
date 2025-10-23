@@ -4,10 +4,30 @@ export const runtime = "nodejs";
 import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
 
-// --- LIFF URL（必ず https://liff.line.me/<LIFF_ID> 形式）---
-const USER_LIFF_ID = process.env.USER_LIFF_ID ?? "2008314807-lxkoyj4r"; // ← 環境変数にあるならそれを使用
-const USER_LIFF_URL = `https://liff.line.me/${USER_LIFF_ID}`;
+// ====== 設定（LIFF ID をここで指定 or 環境変数で指定）======
+// 入れ方は「ID文字列だけ」例: '1651234567-abcd12' です。
+// miniapp.line.me を含めない / liff:// は使わない。
+const RAW_USER_LIFF_ID = process.env.USER_LIFF_ID ?? "2008314807-lxkoyj4r";
 
+// --- LIFF URL を“絶対に https://liff.line.me/<ID>”に正規化 ---
+function makeLiffUrl(idOrUrl: string): string {
+  let s = (idOrUrl || "").trim();
+  // もし URL を入れてしまっていても ID に直す
+  s = s.replace(/^https?:\/\/[^/]+\/?/i, ""); // 先頭の https://xxx/ を削除
+  s = s.replace(/^liff\.line\.me\//i, "");
+  s = s.replace(/^miniapp\.line\.me\//i, "");
+  // 不可視文字の除去
+  s = s.replace(/[\u200B-\u200D\uFEFF]/g, "");
+  return `https://liff.line.me/${s}`;
+}
+
+function isValidLiffUrl(u: string): boolean {
+  return /^https:\/\/liff\.line\.me\/[A-Za-z0-9\-_]+$/.test(u);
+}
+
+const USER_LIFF_URL = makeLiffUrl(RAW_USER_LIFF_ID);
+
+// ====== 署名検証 ======
 function verifyLineSignature(rawBody: string, signature: string | null) {
   const secret = process.env.LINE_CHANNEL_SECRET;
   if (!secret) return false;
@@ -18,7 +38,7 @@ function verifyLineSignature(rawBody: string, signature: string | null) {
   return !!signature && hmac === signature;
 }
 
-// Messaging API: reply
+// ====== 返信ヘルパー（reply）======
 async function lineReply(replyToken: string, messages: any[]) {
   const res = await fetch("https://api.line.me/v2/bot/message/reply", {
     method: "POST",
@@ -34,12 +54,13 @@ async function lineReply(replyToken: string, messages: any[]) {
   return res.ok;
 }
 
+// ====== Webhookハンドラ ======
 export async function POST(req: NextRequest) {
   try {
     const rawBody = await req.text();
     const signature = req.headers.get("x-line-signature");
 
-    // デバッグログ
+    // デバッグログ（Vercel Logsで確認）
     console.log("[LINE] headers", Object.fromEntries(req.headers));
     console.log("[LINE] raw length", rawBody.length);
 
@@ -55,11 +76,13 @@ export async function POST(req: NextRequest) {
     );
 
     for (const event of body.events ?? []) {
-      // 友だち追加→ あいさつ＋ミニアプリ起動ボタン
+      // 友だち追加 → あいさつ + ミニアプリ起動ボタン
       if (event.type === "follow") {
-        const uri = USER_LIFF_URL.startsWith("https://liff.line.me/")
+        console.log("[LIFF URL check]", { RAW_USER_LIFF_ID, USER_LIFF_URL });
+        const uri = isValidLiffUrl(USER_LIFF_URL)
           ? USER_LIFF_URL
-          : "https://liff.line.me/2008314807-lxkoyj4r";
+          : "https://liff.line.me/2008314807-lxkoyj4r"; // 念のためのフォールバック（要置換）
+
         await lineReply(event.replyToken, [
           {
             type: "text",
@@ -77,7 +100,7 @@ export async function POST(req: NextRequest) {
         ]);
       }
 
-      // テスト：トークで「ping」と送ると「pong」を返す
+      // 動作テスト：トークで「ping」と送ると「pong」を返す
       if (event.type === "message" && event.message?.type === "text") {
         const txt = (event.message.text || "").trim().toLowerCase();
         if (txt === "ping") {

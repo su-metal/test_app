@@ -6,8 +6,9 @@ import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 // ---- Config ----
 export const runtime = "nodejs";
 const BUCKET = "public-images";
-// 生成する幅（px）
-export const PRESETS = [320, 480, 640, 960, 1280] as const;
+
+// 生成する幅（px）— Route では export しないこと！
+const PRESETS = [320, 480, 640, 960, 1280] as const;
 type PresetWidth = (typeof PRESETS)[number];
 
 type Variant = {
@@ -61,7 +62,7 @@ export async function POST(req: NextRequest) {
     const base = sharp(input, {
       failOn: "none",
       animated: mime.endsWith("gif"),
-    }).rotate(); // EXIF
+    }).rotate();
     const meta = await base.metadata();
     const origWidth = meta.width ?? 0;
 

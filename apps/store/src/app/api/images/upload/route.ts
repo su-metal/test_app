@@ -9,6 +9,7 @@ export const runtime = "nodejs"; // これは許可された export
 const BUCKET = "public-images";
 
 // 生成する幅（px）— ★ここは export しない
+
 const PRESETS = [320, 480, 640, 960, 1280] as const;
 type PresetWidth = (typeof PRESETS)[number];
 

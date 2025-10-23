@@ -1966,7 +1966,7 @@ export default function UserPilotApp() {
         (async () => {
             const q = supabase
                 .from("products")
-    .select("id,store_id,name,price,stock,updated_at,main_image_path,sub_image_path1,sub_image_path2,pickup_slot_no,publish_at,note")
+                .select("id,store_id,name,price,stock,updated_at,main_image_path,sub_image_path1,sub_image_path2,pickup_slot_no,publish_at,note")
             // 必要なら在庫>0や公開フラグで絞ってOK（例）
             // .gt("stock", 0).eq("is_published", true)
 
@@ -3061,7 +3061,7 @@ export default function UserPilotApp() {
             <div className="inline-flex items-center rounded-full px-0 py-1 text-sm select-none">
                 <button
                     type="button"
-                    className="w-12 h-12 text-[10px] leading-none rounded-full border cursor-pointer disabled:opacity-40 flex items-center justify-center"
+                    className="w-9 h-9 text-[10px] leading-none rounded-full border cursor-pointer disabled:opacity-40 flex items-center justify-center"
                     disabled={reserved <= 0}
                     onClick={() => changeQty(sid, it, -1)}
                     aria-label="数量を減らす"

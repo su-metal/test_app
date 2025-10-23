@@ -38,7 +38,16 @@ export async function upsertPickupPresetsViaApi(presets: PickupPreset[]) {
     await liff.init({ liffId });
     if (!liff.isLoggedIn()) {
       // 現在のページに戻す（ユーザーアプリへ遷移しない）
-      liff.login({ redirectUri: `${window.location.origin}${window.location.pathname}${window.location.search}` });
+      const configuredBase = (window as any).BASE_URL_STORE as string | undefined;
+      const fallback = `${window.location.origin}${window.location.pathname}${window.location.search}`;
+      const inClient = typeof liff.isInClient === 'function' ? liff.isInClient() : false;
+      if (configuredBase && configuredBase.length > 0) {
+        try { const u = new URL(configuredBase); u.hash = ''; liff.login({ redirectUri: u.toString() }); } catch { liff.login({ redirectUri: configuredBase }); }
+      } else if (inClient) {
+        liff.login();
+      } else {
+        liff.login({ redirectUri: fallback });
+      }
       return; // 以降はリダイレクトされるため終了
     }
     idToken = liff.getIDToken() || undefined;
@@ -56,3 +65,5 @@ export async function upsertPickupPresetsViaApi(presets: PickupPreset[]) {
   const json = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(json?.error || "プリセットの保存に失敗しました");
 }
+
+

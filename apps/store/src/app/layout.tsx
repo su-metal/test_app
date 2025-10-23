@@ -41,6 +41,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                   window.NEXT_PUBLIC_SUPABASE_URL = ${JSON.stringify(supabaseUrl)};
                   window.NEXT_PUBLIC_SUPABASE_ANON_KEY = ${JSON.stringify(supabaseKey)};
                   window.NEXT_PUBLIC_STORE_ID = saved || ${JSON.stringify(storeId)};
+                  // 本番URL（redirectUri 構築用）
+                  window.BASE_URL_STORE = ${JSON.stringify(process.env.BASE_URL_STORE ?? '')};
+                  window.BASE_URL_USER = ${JSON.stringify(process.env.BASE_URL_USER ?? '')};
 
                   // 互換エイリアス（既存コード対策）
                   window.__SUPABASE_URL__ = window.NEXT_PUBLIC_SUPABASE_URL;

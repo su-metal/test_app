@@ -38,9 +38,26 @@ export default function LiffBoot() {
                 if (isLineWebView && !liff.isLoggedIn()) {
                     if (debug) console.info("[LIFF][store] login (LINE WebView)");
                     // 本番の LIFF 既定エンドポイントに流れないよう現在のURLへ戻す
+                    const configuredBase = (window as any).BASE_URL_STORE as string | undefined;
                     const { origin, pathname, search } = window.location;
-                    const safeRedirect = `${origin}${pathname}${search}`;
-                    liff.login({ redirectUri: safeRedirect });
+                    const fallback = `${origin}${pathname}${search}`;
+                    const inClient = typeof liff.isInClient === 'function' ? liff.isInClient() : false;
+                    // BASE_URL_STORE があればそれを優先（正規化して末尾スラッシュ含む）
+                    if (configuredBase && configuredBase.length > 0) {
+                        try {
+                            const u = new URL(configuredBase);
+                            u.hash = '';
+                            liff.login({ redirectUri: u.toString() });
+                        } catch {
+                            liff.login({ redirectUri: configuredBase });
+                        }
+                    } else if (inClient) {
+                        // LINEアプリ内なら redirectUri 省略でも戻れる
+                        liff.login();
+                    } else {
+                        // 省略不可の環境ではハッシュを除いた現在URLを使用
+                        liff.login({ redirectUri: fallback });
+                    }
                 } else {
                     if (debug) console.info("[LIFF][store] init done (no auto login)");
                     try {

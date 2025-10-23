@@ -4,7 +4,7 @@ import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 
 // 追加：LINE 用ブートストラップ（クライアント）
-import LiffBoot from "./LiffBoot";
+// 店舗側は LIFF を使用しない（Supabase Auth のみ）
 
 // 既存：Supabase 初期化（クライアント）
 import SupabaseBoot from "./SupabaseBoot";
@@ -42,8 +42,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                   window.NEXT_PUBLIC_SUPABASE_ANON_KEY = ${JSON.stringify(supabaseKey)};
                   window.NEXT_PUBLIC_STORE_ID = saved || ${JSON.stringify(storeId)};
                   // 本番URL（redirectUri 構築用）
-                  window.BASE_URL_STORE = ${JSON.stringify(process.env.BASE_URL_STORE ?? '')};
-                  window.BASE_URL_USER = ${JSON.stringify(process.env.BASE_URL_USER ?? '')};
+                  // LINE/LIFF 依存は削除（店舗側では未使用）
 
                   // 互換エイリアス（既存コード対策）
                   window.__SUPABASE_URL__ = window.NEXT_PUBLIC_SUPABASE_URL;
@@ -65,7 +64,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 
       <body className={`${geistSans.variable} ${geistMono.variable} antialiased`}>
         {/* ▼▼ ここで一度だけ LIFF を初期化（LINE内では自動ログイン、外部ブラウザでは非ログイン） ▼▼ */}
-        <LiffBoot />
+        {/* 店舗側は LIFF/LINE 依存なし */}
         {/* ▼ Supabase の初期化（既存のまま） */}
         <SupabaseBoot />
 

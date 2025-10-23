@@ -55,8 +55,15 @@ export default function LiffBoot() {
                         // LINEアプリ内なら redirectUri 省略でも戻れる
                         liff.login();
                     } else {
-                        // 省略不可の環境ではハッシュを除いた現在URLを使用
-                        liff.login({ redirectUri: fallback });
+                        // 省略不可の環境では、許可ドメインのみ許可。それ以外は明示的に中断。
+                        const allowFallback = /duckdns\.org$/i.test(window.location.hostname);
+                        if (allowFallback) {
+                            liff.login({ redirectUri: fallback });
+                        } else {
+                            console.error('[LIFF][store] redirectUri 未設定のため中断: hostname=%s', window.location.hostname);
+                            if (debug) alert('LINE ログインのリダイレクトURLが未設定です。\nBASE_URL_STORE を本番ドメイン(https://www.store-suchanramen.duckdns.org/)に設定してください。');
+                            return;
+                        }
                     }
                 } else {
                     if (debug) console.info("[LIFF][store] init done (no auto login)");

@@ -59,7 +59,7 @@ export async function POST(req: NextRequest) {
                 {
                   type: "uri",
                   label: "ミニアプリを開く",
-                  uri: "https://liff.line.me/<USER_LIFF_ID>", // あなたのLIFF IDを入れる
+                  uri: "https://liff.line.me/2008314807-lxkoyj4r", // あなたのLIFF IDを入れる
                 },
               ],
             },

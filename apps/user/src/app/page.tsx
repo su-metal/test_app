@@ -1473,6 +1473,7 @@ function CompactTicketCard({
     onDelete,
 }: {
     o: Order;
+    shopName?: string;
     pickupLabelFor: (storeId: string, productSlotNo?: number | null) => string | null;
     /** 商品に紐づく受取時間（プリセット）ラベル。可能なら product のスロットから算出した値を渡す */
     presetPickupLabel?: string | null;
@@ -1482,6 +1483,15 @@ function CompactTicketCard({
 }) {
 
     const created = new Date(o.createdAt);
+    // 名称の解決: 渡された shopName があれば優先、なければ pickupLabelFor.nameFor から取得
+    const resolvedShopName = (() => {
+        try {
+            const candidate = shopName ?? (pickupLabelFor as any)?.nameFor?.(o.shopId);
+            return candidate ?? "";
+        } catch {
+            return shopName ?? "";
+        }
+    })();
     const selectedPickup = o?.lines?.[0]?.item?.pickup || "";
     // 店側の現在スロットではなく、購入商品の設定枠のみを表示
     const presetPickup = String(presetPickupLabel || "");
@@ -1506,7 +1516,7 @@ function CompactTicketCard({
                 <div className="flex items-center gap-2 min-w-0">
                     <span className="text-lg leading-none">{isOpen ? "▾" : "▸"}</span>
                     <div className="min-w-0">
-                        <div className="text-sm font-semibold truncate">{shopName || "店舗"}</div>
+                        <div className="text-sm font-semibold truncate">{resolvedShopName || "店舗"}</div>
                         <div className="text-[11px] text-zinc-500 truncate">注文番号 {o.id}</div>
                     </div>
                 </div>

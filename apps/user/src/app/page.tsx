@@ -1463,6 +1463,135 @@ function TinyQR({
     );
 }
 
+function CompactTicketCard({
+    o,
+    pickupLabelFor,
+    isOpen,
+    onToggle,
+    onDelete,
+}: {
+    o: Order;
+    pickupLabelFor: (storeId: string, productSlotNo?: number | null) => string | null;
+    isOpen: boolean;
+    onToggle: () => void;
+    onDelete?: () => void;
+}) {
+    const shopName = (() => {
+        try { return (pickupLabelFor as any)?.nameFor?.(o.shopId) || ""; } catch { return ""; }
+    })();
+    const created = new Date(o.createdAt);
+    const selectedPickup = o?.lines?.[0]?.item?.pickup || "";
+    const presetPickup = pickupLabelFor?.(o.shopId) || "";
+    const norm = (s: string) => (s || "").replace(/[—–~\-]/g, "〜");
+    const expired = selectedPickup ? isPickupExpired(selectedPickup) : false;
+    const panelId = `ticket-${o.id}`;
+
+    return (
+        <article
+            className={`rounded-2xl border bg-white shadow-sm transition-[padding] ${isOpen ? "p-4" : "p-3"}`}
+            aria-label="引換チケット"
+        >
+            {/* ヘッダー（開閉ボタン） */}
+            <button
+                type="button"
+                className="w-full flex items-center justify-between gap-3 text-left"
+                aria-expanded={isOpen}
+                aria-controls={panelId}
+                onClick={onToggle}
+            >
+                <div className="flex items-center gap-2 min-w-0">
+                    <span className="text-lg leading-none">{isOpen ? "▾" : "▸"}</span>
+                    <div className="min-w-0">
+                        <div className="text-sm font-semibold truncate">{shopName || "店舗"}</div>
+                        <div className="text-[11px] text-zinc-500 truncate">注文番号 {o.id}</div>
+                    </div>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                    <span className="text-xs px-2 py-1 rounded bg-amber-100 text-amber-800 border border-amber-200">未引換</span>
+                    {expired && (
+                        <span className="text-[11px] px-2 py-0.5 rounded bg-red-100 text-red-700 border border-red-200">
+                            受取時間外
+                        </span>
+                    )}
+                </div>
+            </button>
+
+            {/* 折りたたみ本体 */}
+            {isOpen && (
+                <div id={panelId} className="mt-3">
+                    {/* コア情報：左=コード/QR、右=金額/日時/受取時間 */}
+                    <div className="grid items-start gap-3 [grid-template-columns:minmax(0,1fr)_auto] sm:gap-4">
+                        {/* 左：コード＆QR */}
+                        <div className="min-w-0">
+                            <div className="text-[12px] text-zinc-500">引換コード</div>
+                            <div className="text-2xl font-extrabold tracking-[0.08em] tabular-nums select-all">{o.code6}</div>
+                            <div className="mt-2 max-w-[128px]">
+                                <TinyQR seed={o.code6} size={128} />
+                            </div>
+                        </div>
+
+                        {/* 右：合計/日時/受取時間 */}
+                        <div className="min-w-[160px] text-right">
+                            <div className="text-xs text-zinc-500">合計</div>
+                            <div className="text-xl font-extrabold tabular-nums">{currency(o.amount)}</div>
+                            <div className="mt-1 text-[12px] text-zinc-500 leading-tight">{created.toLocaleString()}</div>
+
+                            <div className="mt-2 space-y-1">
+                                <div className="rounded-lg border px-2 py-1">
+                                    <div className="text-[11px] text-zinc-500">注文時に選択した受取時間</div>
+                                    <div className="text-sm font-medium tabular-nums">
+                                        {selectedPickup ? norm(selectedPickup) : "未設定"}
+                                    </div>
+                                </div>
+                                <div className="rounded-lg border px-2 py-1">
+                                    <div className="text-[11px] text-zinc-500">店舗受取可能時間（プリセット）</div>
+                                    <div className="text-sm tabular-nums">
+                                        {presetPickup ? norm(presetPickup) : "—"}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* 購入内容 */}
+                    <div className="mt-3">
+                        <div className="text-[12px] text-zinc-500 mb-1">購入内容</div>
+                        <ul className="space-y-1">
+                            {o.lines.map((l, i) => (
+                                <li key={i} className="flex items-start justify-between gap-2">
+                                    <div className="min-w-0 truncate">{l.item.name}</div>
+                                    <div className="shrink-0 text-sm text-zinc-700">×{l.qty}</div>
+                                </li>
+                            ))}
+                        </ul>
+                    </div>
+
+                    {/* フッター */}
+                    <div className="mt-3 flex items-start justify-between gap-3">
+                        <p className="text-[11px] text-zinc-500 leading-relaxed">
+                            ※ 店頭で6桁コードまたはQRを提示してください。受取完了は店舗アプリで行われ、ステータスが
+                            <span className="font-medium"> redeemed</span> に更新されます。
+                        </p>
+                        {onDelete && (
+                            <button
+                                type="button"
+                                onClick={onDelete}
+                                className="shrink-0 inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-[12px] hover:bg-zinc-50"
+                                aria-label="このチケットを削除"
+                                title="このチケットを削除"
+                            >
+                                🗑️ このチケットを削除
+                            </button>
+                        )}
+                    </div>
+                </div>
+            )}
+        </article>
+    );
+}
+
+
+
 export default function UserPilotApp() {
 
     // 保存済みカードの一覧（必要に応じてAPI連携に差し替え可：いまはデモ用）
@@ -4174,103 +4303,34 @@ export default function UserPilotApp() {
                     {tab === "order" && !orderTarget && (
                         <section className="mt-4 space-y-3">
                             <h2 className="text-base font-semibold">未引換のチケット</h2>
-                            {pendingForOrderTab.length === 0 && (
+                            {pendingForOrderTab.length === 0 ? (
                                 <div className="text-sm text-zinc-500">未引換のチケットはありません。</div>
-                            )}
-                            {pendingForOrderTab.length > 0 && (
+                            ) : (
                                 <div className="space-y-3">
                                     <div className="flex items-center justify-between">
                                         <div className="text-sm text-zinc-600">引換待ちのチケット</div>
                                         <div className="text-[11px] text-zinc-500">{pendingForOrderTab.length}件</div>
                                     </div>
-                                    {pendingForOrderTab.map(o => {
-                                        const shopName = shopsById.get(o.shopId)?.name || o.shopId;
+
+                                    {pendingForOrderTab.map((o) => {
                                         const isOpen = openTicketIdOrder === o.id;
                                         return (
-                                            <div key={o.id} className={`rounded-2xl border bg-white ${isOpen ? 'p-4' : 'p-3'}`}>
-                                                <button type="button" aria-expanded={isOpen} aria-controls={`ticket-${o.id}`} className="w-full flex items-center justify-between cursor-pointer" onClick={() => setOpenTicketIdOrder(isOpen ? null : o.id)}>
-                                                    <div className="flex items-center gap-2 min-w-0">
-                                                        <span className="text-lg leading-none">{isOpen ? '▾' : '▸'}</span>
-                                                        <div className="text-left truncate">
-                                                            <div className="text-sm font-semibold truncate">{shopName}</div>
-                                                            <div className="text-[11px] text-zinc-500 truncate">注文番号 {o.id}</div>
-                                                        </div>
-                                                    </div>
-                                                    <div className="text-xs px-2 py-1 rounded bg-amber-100 shrink-0">{statusText(o.status)}</div>
-                                                </button>
-                                                {isOpen && (
-                                                    <div id={`ticket-${o.id}`}>
-                                                        {/* 1段目：左=引換コード／右=合計 */}
-                                                        <div className="grid grid-cols-2 gap-3 items-end mt-3">
-                                                            {/* 左カラム */}
-                                                            <div>
-                                                                <div className="text-xs text-zinc-500">引換コード</div>
-                                                                <div className="mt-1 text-2xl font-mono tracking-widest">{o.code6}</div>
-                                                                {/* <div className="mt-2">
-                                                                    <button
-                                                                        type="button"
-                                                                        className="text-xs px-2 py-1 rounded border cursor-pointer"
-                                                                        onClick={async () => {
-                                                                            const ok = await safeCopy(o.code6);
-                                                                            emitToast(ok ? 'success' : 'error', ok ? 'コピーしました' : 'コピーに失敗しました');
-                                                                        }}
-                                                                    >
-                                                                        コードをコピー
-                                                                    </button>
-                                                                </div> */}
-                                                            </div>
-
-                                                        </div>
-
-                                                        {/* 2段目：中央にQR（大きな枠） */}
-                                                        <div className="mt-4 flex justify-center">
-                                                            <div className="p-3 rounded bg-white shadow">
-                                                                {/* 上限サイズを拡大（視認性向上） */}
-                                                                <TinyQR seed={o.code6} size={256} className="w-full" />
-                                                            </div>
-                                                        </div>
-                                                        <div className="mt-4">
-                                                            <div className="text-xs text-zinc-500 mb-1">購入内容</div>
-                                                            <ul className="space-y-1">
-                                                                {o.lines.map((l, i) => (
-                                                                    <li key={`${l.item.id}-${i}`} className="flex items-center justify-between text-sm">
-                                                                        <span className="truncate mr-2">{l.item.name}</span>
-                                                                        <span className="tabular-nums">×{l.qty}</span>
-                                                                    </li>
-                                                                ))}
-                                                            </ul>
-                                                        </div>
-                                                        {/* 右カラム（右寄せで合計と日時） */}
-                                                        <div className="mt-3 text-right">
-                                                            <div className="text-xs text-zinc-500">合計</div>
-                                                            <div className="mt-1 text-xl font-extrabold">{currency(o.amount)}</div>
-                                                            <div className="mt-2 text-[11px] text-zinc-500">
-                                                                {new Date(o.createdAt).toLocaleString()}
-                                                            </div>
-                                                        </div>
-                                                        {/* TODO(req v2): 本番ではこの削除機能を無効化/非表示にする（テスト運用限定） */}
-                                                        <div className="mt-3 flex items-center gap-2">
-                                                            <button
-                                                                type="button"
-                                                                className="text-xs px-2 py-1 rounded border border-red-300 text-red-700 cursor-pointer"
-                                                                onClick={(e) => {
-                                                                    e.stopPropagation();
-                                                                    if (!confirm('このチケットを削除しますか？（ローカルのみ削除）')) return;
-                                                                    setOrders(prev => prev.filter(x => !(String(x.id) === String(o.id) && x.status === 'paid')));
-                                                                    emitToast('success', 'チケットを削除しました');
-                                                                }}
-                                                            >
-                                                                このチケットを削除
-                                                            </button>
-                                                        </div>
-                                                        <div className="text-xs text-zinc-500 mt-3">※ 店頭で6桁コードまたはQRを提示してください。受取完了は店側アプリで行われ、ステータスが <b>redeemed</b> に更新されます。</div>
-                                                    </div>
-                                                )}
-                                            </div>
+                                            <CompactTicketCard
+                                                key={o.id}
+                                                o={o}
+                                                pickupLabelFor={pickupLabelFor}
+                                                isOpen={isOpen}
+                                                onToggle={() => setOpenTicketIdOrder(isOpen ? null : o.id)}
+                                                onDelete={() => {
+                                                    // 既存の削除ロジックに合わせてください
+                                                    setOrders((prev) => prev.filter((x) => x.id !== o.id));
+                                                }}
+                                            />
                                         );
                                     })}
                                 </div>
                             )}
+
                         </section>
                     )}
 
@@ -5088,6 +5148,7 @@ function AccountView({
                                     </div>
                                     <div className="flex items-center gap-3 shrink-0">
                                         <span className={`text-[11px] px-2 py-0.5 rounded ${o.status === 'redeemed' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>{statusText(o.status)}</span>
+                                        {(() => { const pickup = o.lines?.[0]?.item?.pickup || ""; const expired = pickup ? isPickupExpired(pickup) : false; return o.status === 'paid' && expired ? (<span className="text-[11px] px-2 py-0.5 rounded bg-red-100 text-red-700">受取時間外</span>) : null; })()}
                                         <span className="font-semibold tabular-nums">{currency(o.amount)}</span>
                                         <span className="text-xs">{isOpen ? '▾' : '▸'}</span>
                                     </div>

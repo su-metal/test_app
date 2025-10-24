@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 import React, { useMemo, useState, useEffect, useRef, useCallback } from "react";
 import { createClient, type RealtimeChannel } from "@supabase/supabase-js";
 
@@ -703,6 +703,48 @@ function useOrders() {
       return;
     }
 
+
+    // 受取枠の終了時刻超過チェック（JST基準）
+    // stores.current_pickup_slot_no と store_pickup_presets から当日の終了時刻を取得して判定
+    try {
+      // 現在の受取スロットを取得
+      const { data: storeRow } = await (supabase as any)
+        .from('stores')
+        .select('current_pickup_slot_no')
+        .eq('id', getStoreId())
+        .single();
+      const curSlot: number | null = (storeRow?.current_pickup_slot_no ?? null);
+
+      if (curSlot) {
+        const { data: presetRows } = await (supabase as any)
+          .from('store_pickup_presets')
+          .select('end_time,slot_minutes')
+          .eq('store_id', getStoreId())
+          .eq('slot_no', curSlot)
+          .limit(1);
+        const endTime: string | undefined = presetRows?.[0]?.end_time;
+
+        if (endTime) {
+          // HH:MM:SS → 分
+          const toMinutes = (t: string) => {
+            const [hh, mm] = String(t).slice(0,5).split(':').map((n) => Number(n) || 0);
+            return hh * 60 + mm;
+          };
+          // 現在時刻（JST）を分に変換
+          const parts = new Intl.DateTimeFormat('ja-JP', { timeZone: 'Asia/Tokyo', hour12: false, hour: '2-digit', minute: '2-digit' }).formatToParts(new Date());
+          const curMin = (Number(parts.find(p => p.type === 'hour')?.value || '0') * 60) + Number(parts.find(p => p.type === 'minute')?.value || '0');
+          const endMin = toMinutes(endTime);
+
+          if (curMin >= endMin) {
+            setErr('受取時間を過ぎたため、引換できません');
+            // TODO(req v2): 注文ごとの受取枠（スロットNo/時刻）を保持し、その終了時刻で厳密に判定する
+            return;
+          }
+        }
+      }
+    } catch {
+      // 取得に失敗しても処理は継続（ネットワーク揺らぎ対策）
+    }
     // ★ RPC 呼び出し（DB側で作成済みの fulfill_order(uuid, text) を使う）
     const { data, error } = await supabase.rpc('fulfill_order', {
       p_store_id: getStoreId(),

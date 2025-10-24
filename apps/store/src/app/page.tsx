@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 import React, { useMemo, useState, useEffect, useRef, useCallback } from "react";
 import { createClient, type RealtimeChannel } from "@supabase/supabase-js";
 
@@ -685,7 +685,7 @@ function useOrders() {
   useEffect(() => { fetchAndSubscribe(); return () => { cleanup(); }; }, [fetchAndSubscribe, cleanup]);
 
   // 新（RPC経由）:
-  const fulfill = useCallback(async (id: string) => {
+  const fulfill = useCallback(async (id: string, opts?: { override?: boolean }) => {
     const target = orders.find(o => o.id === id);
     if (!target) return;
 
@@ -727,7 +727,7 @@ function useOrders() {
         if (endTime) {
           // HH:MM:SS → 分
           const toMinutes = (t: string) => {
-            const [hh, mm] = String(t).slice(0,5).split(':').map((n) => Number(n) || 0);
+            const [hh, mm] = String(t).slice(0, 5).split(':').map((n) => Number(n) || 0);
             return hh * 60 + mm;
           };
           // 現在時刻（JST）を分に変換
@@ -736,9 +736,12 @@ function useOrders() {
           const endMin = toMinutes(endTime);
 
           if (curMin >= endMin) {
-            setErr('受取時間を過ぎたため、引換できません');
-            // TODO(req v2): 注文ごとの受取枠（スロットNo/時刻）を保持し、その終了時刻で厳密に判定する
-            return;
+            // ▲時間外：オーバーライド指定がない場合はエラーで止める
+            if (!opts?.override) {
+              setErr('受取時間を過ぎたため、引換できません（店舗裁量で受け渡すこともできます）');
+              return;
+            }
+            // ▼オーバーライド指定あり：続行（監査が必要なら RPC/UPDATE にフィールド追加を）
           }
         }
       }
@@ -2992,6 +2995,8 @@ function OrdersPage() {
   const inputDigits = String(codeInput ?? '').replace(/\D/g, '');
   const storeOk = !!current && current.storeId === getStoreId();
   const canFulfill = storeOk && expectedCode.length === 6 && inputDigits.length === 6 && inputDigits === expectedCode;
+  const [overrideAsk, setOverrideAsk] = useState(false);
+
   return (
     <main className="mx-auto max-w-[448px] px-4 py-5 space-y-6">
       {!ready && (<div className="rounded-xl border bg-white p-4 text-sm text-zinc-600">読み込み中…</div>)}
@@ -3061,22 +3066,73 @@ function OrdersPage() {
                 {codeErr ? <div className="text-sm text-red-600">{codeErr}</div> : null}
               </div>
             </div>
-            <div className="mt-4 flex items-center justify-end gap-2">
+            {/* ▼ 時間外オーバーライド確認（表示中は上に確認ボックスを出す） */}
+            {overrideAsk && (
+              <div className="mb-3 rounded-xl border p-3 bg-amber-50 text-amber-800">
+                <div className="text-sm font-semibold mb-1">確認</div>
+                <p className="text-sm leading-relaxed">
+                  受取時間外ですが、<b>店舗の裁量で受け渡しを完了</b>します。よろしいですか？
+                </p>
+                <ul className="mt-2 text-xs text-amber-800/90 list-disc pl-5 space-y-1">
+                  <li>注文ID: {current?.id}</li>
+                  <li>顧客: {current?.customer}</li>
+                  <li>照合コード: •••••{expectedCode?.slice(-1) || '—'}</li>
+                </ul>
+                <div className="mt-2 flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    className="rounded-lg border px-3 py-1.5 text-sm bg-white"
+                    onClick={() => setOverrideAsk(false)}
+                  >戻る</button>
+                  <button
+                    type="button"
+                    className="rounded-lg px-3 py-1.5 text-sm text-white bg-zinc-900"
+                    onClick={() => {
+                      const raw = String(codeInput ?? '').replace(/\D/g, '');
+                      if (!expectedCode || expectedCode.length !== 6) { setCodeErr('この注文にはコードが登録されていません'); return; }
+                      if (!storeOk) { setCodeErr('店舗が一致しません'); return; }
+                      if (raw.length !== 6) { setCodeErr('6桁のコードを入力してください'); return; }
+                      if (raw !== expectedCode) { setCodeErr('コードが一致しません'); return; }
+                      // ★ オーバーライドで実行
+                      fulfill(current!.id, { override: true });
+                      setCurrent(null); setCodeInput(""); setCodeErr(null); setOverrideAsk(false);
+                    }}
+                  >許可して受け渡す</button>
+                </div>
+              </div>
+            )}
+
+            <div className="mt-4 flex items-center justify-between gap-2">
               <button onClick={() => setCurrent(null)} className="rounded-xl border px-4 py-2 text-sm">キャンセル</button>
-              <button
-                onClick={() => {
-                  const raw = String(codeInput ?? '').replace(/\D/g, '');
-                  if (!expectedCode || expectedCode.length !== 6) { setCodeErr('この注文にはコードが登録されていません'); return; }
-                  if (!storeOk) { setCodeErr('店舗が一致しません'); return; }
-                  if (raw.length !== 6) { setCodeErr('6桁のコードを入力してください'); return; }
-                  if (raw !== expectedCode) { setCodeErr('コードが一致しません'); return; }
-                  fulfill(current.id);
-                  setCurrent(null); setCodeInput(""); setCodeErr(null);
-                }}
-                className={`rounded-xl px-4 py-2 text-sm text-white ${canFulfill ? 'bg-zinc-900' : 'bg-zinc-400 cursor-not-allowed'}`}
-                disabled={!canFulfill}
-              >受け渡し</button>
+              <div className="flex items-center gap-2">
+                {/* 通常の受け渡し */}
+                <button
+                  onClick={() => {
+                    const raw = String(codeInput ?? '').replace(/\D/g, '');
+                    if (!expectedCode || expectedCode.length !== 6) { setCodeErr('この注文にはコードが登録されていません'); return; }
+                    if (!storeOk) { setCodeErr('店舗が一致しません'); return; }
+                    if (raw.length !== 6) { setCodeErr('6桁のコードを入力してください'); return; }
+                    if (raw !== expectedCode) { setCodeErr('コードが一致しません'); return; }
+                    fulfill(current!.id); // ←通常（時間外はエラー表示）
+                    setCurrent(null); setCodeInput(""); setCodeErr(null);
+                  }}
+                  className={`rounded-xl px-4 py-2 text-sm text-white ${canFulfill ? 'bg-zinc-900' : 'bg-zinc-400 cursor-not-allowed'}`}
+                  disabled={!canFulfill}
+                >受け渡し</button>
+
+                {/* 店舗裁量ボタン：押すと上の確認ボックスを展開 */}
+                <button
+                  type="button"
+                  onClick={() => setOverrideAsk(true)}
+                  className={`rounded-xl px-3 py-2 text-sm border bg-white hover:bg-zinc-50 ${canFulfill ? '' : 'opacity-50 cursor-not-allowed'}`}
+                  disabled={!canFulfill}
+                  title="受取時間外でも店舗裁量で受け渡し"
+                >
+                  時間外でも受け渡す
+                </button>
+              </div>
             </div>
+
           </div>
         </div>
       )}
@@ -3229,38 +3285,38 @@ function PickupPresetPage() {
 
       // 旧: SDK 直 upsert は無効化
       if (false) {
-      const payload = SLOT_NUMBERS.map((s) => ({
-        // TODO(req v2): store_id は固定値禁止。常にログインユーザーの店舗IDを使用
-        store_id: myStoreId2,
-        slot_no: rows[s].slot_no,
-        name: rows[s].name.trim(),
-        start_time: hhmmss(hhmm(rows[s].start_time)),
-        end_time: hhmmss(hhmm(rows[s].end_time)),
-        slot_minutes: 10,
-      }));
-      // サーバーAPI経由で保存（service_role, onConflict: store_id,slot_no）
-      try {
-        const resp = await fetch('/api/store/pickup-presets', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          credentials: 'include',
-          body: JSON.stringify({ rows: payload, current_slot_no: current ?? undefined }),
-        });
-        if (!resp.ok) {
-          const j = await resp.json().catch(() => ({} as any));
-          throw new Error(j?.error || `API ${resp.status}`);
+        const payload = SLOT_NUMBERS.map((s) => ({
+          // TODO(req v2): store_id は固定値禁止。常にログインユーザーの店舗IDを使用
+          store_id: myStoreId2,
+          slot_no: rows[s].slot_no,
+          name: rows[s].name.trim(),
+          start_time: hhmmss(hhmm(rows[s].start_time)),
+          end_time: hhmmss(hhmm(rows[s].end_time)),
+          slot_minutes: 10,
+        }));
+        // サーバーAPI経由で保存（service_role, onConflict: store_id,slot_no）
+        try {
+          const resp = await fetch('/api/store/pickup-presets', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ rows: payload, current_slot_no: current ?? undefined }),
+          });
+          if (!resp.ok) {
+            const j = await resp.json().catch(() => ({} as any));
+            throw new Error(j?.error || `API ${resp.status}`);
+          }
+          setMsg('保存しました。ユーザーアプリに反映されます。');
+          return;
+        } catch (e) {
+          throw e;
         }
-        setMsg('保存しました。ユーザーアプリに反映されます。');
-        return;
-      } catch (e) {
-        throw e;
-      }
-      // any 経由で never 回避
-      const up = await (supabase as any)
-        .from('store_pickup_presets')
-        .upsert(payload, { onConflict: 'store_id,slot_no' });
+        // any 経由で never 回避
+        const up = await (supabase as any)
+          .from('store_pickup_presets')
+          .upsert(payload, { onConflict: 'store_id,slot_no' });
 
-      if (up.error) throw up.error;
+        if (up.error) throw up.error;
       }
 
       // “今使う”スロットを stores に反映

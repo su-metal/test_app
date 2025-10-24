@@ -1465,6 +1465,7 @@ function TinyQR({
 
 function CompactTicketCard({
     o,
+    shopName,
     pickupLabelFor,
     presetPickupLabel,
     isOpen,
@@ -1479,9 +1480,7 @@ function CompactTicketCard({
     onToggle: () => void;
     onDelete?: () => void;
 }) {
-    const shopName = (() => {
-        try { return (pickupLabelFor as any)?.nameFor?.(o.shopId) || ""; } catch { return ""; }
-    })();
+
     const created = new Date(o.createdAt);
     const selectedPickup = o?.lines?.[0]?.item?.pickup || "";
     // 店側の現在スロットではなく、購入商品の設定枠のみを表示
@@ -4402,6 +4401,7 @@ export default function UserPilotApp() {
                                             <CompactTicketCard
                                                 key={o.id}
                                                 o={o}
+                                                shopName={shopsById.get(o.shopId)?.name || "店舗"}
                                                 pickupLabelFor={pickupLabelFor}
                                                 presetPickupLabel={(() => { const firstLine = (o?.lines?.[0] ?? null) as any; const pid = String(firstLine?.item?.id ?? ""); const dp = (dbProducts || []).find((p: any) => String(p?.id) === pid); const slotNo = (dp as any)?.pickup_slot_no; return (typeof slotNo === 'number') ? (pickupLabelFor(o.shopId, slotNo) || '') : ''; })()}
                                                 isOpen={isOpen}

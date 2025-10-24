@@ -37,6 +37,9 @@ type OrdersRow = {
   total: number | null;
   placed_at: string | null;
   status: OrderStatus;
+  // TODO(req v2): DB スキーマ生成型に統一（supabase gen types）
+  pickup_start?: string | null;
+  pickup_end?: string | null;
 };
 
 type Order = {
@@ -48,6 +51,8 @@ type Order = {
   total: number;
   placedAt: string;
   status: OrderStatus;
+  pickupStart: string | null;
+  pickupEnd: string | null;
 };
 
 type ProductsRow = {
@@ -122,6 +127,8 @@ function mapOrder(r: OrdersRow): Order {
     total: Number(r.total ?? 0),
     placedAt: r.placed_at ?? new Date().toISOString(),
     status,
+    pickupStart: (r as any).pickup_start ?? null,
+    pickupEnd: (r as any).pickup_end ?? null,
   };
 }
 function mapProduct(r: ProductsRow): Product {
@@ -648,7 +655,11 @@ function useOrders() {
   const fetchAndSubscribe = useCallback(async () => {
     if (!supabase) { setReady(true); return; }
     setErr(null); cleanup();
-    const { data, error } = await supabase.from('orders').select('id,store_id,code,customer,items,total,placed_at,status').eq('store_id', getStoreId()).order('placed_at', { ascending: false });
+    const { data, error } = await supabase
+      .from('orders')
+      .select('id,store_id,code,customer,items,total,placed_at,status,pickup_start,pickup_end')
+      .eq('store_id', getStoreId())
+      .order('placed_at', { ascending: false });
     if (error) {
       setErr(error.message || 'データ取得に失敗しました');
     } else {
@@ -738,7 +749,7 @@ function useOrders() {
           if (curMin >= endMin) {
             // ▲時間外：オーバーライド指定がない場合はエラーで止める
             if (!opts?.override) {
-              setErr('受取時間を過ぎたため、引換できません（店舗裁量で受け渡すこともできます）');
+              setErr('受取時間外なので、引換できません（店舗裁量で受け渡すこともできます）');
               return;
             }
             // ▼オーバーライド指定あり：続行（監査が必要なら RPC/UPDATE にフィールド追加を）
@@ -844,6 +855,19 @@ const StatusBadge = React.memo(function StatusBadge({ status }: { status: OrderS
 const OrderCard = React.memo(function OrderCard({ order, onHandoff }: { order: Order; onHandoff: (o: Order) => void; }) {
   const onClick = useCallback(() => onHandoff(order), [onHandoff, order]);
   const mounted = useMounted();
+  const jpPickupRange = React.useMemo(() => {
+    const fmt = (iso: string) => {
+      try {
+        return new Intl.DateTimeFormat('ja-JP', { timeZone: 'Asia/Tokyo', hour12: false, hour: '2-digit', minute: '2-digit' }).format(new Date(iso));
+      } catch { return ''; }
+    };
+    const a = order.pickupStart ? fmt(order.pickupStart) : '';
+    const b = order.pickupEnd ? fmt(order.pickupEnd) : '';
+    if (a && b) return `${a}〜${b}`;
+    if (a) return `${a}〜`;
+    if (b) return `〜${b}`;
+    return '未指定';
+  }, [order.pickupStart, order.pickupEnd]);
   return (
     <div className="rounded-2xl border bg-white shadow-sm p-4 flex flex-col gap-3">
       <div className="flex items-center justify-between">
@@ -851,6 +875,7 @@ const OrderCard = React.memo(function OrderCard({ order, onHandoff }: { order: O
         <StatusBadge status={order.status} />
       </div>
       <div className="text-sm text-zinc-600">注文ID: {order.id}</div>
+      <div className="text-sm text-zinc-700">受取時間: {jpPickupRange}</div>
       <ul className="text-sm text-zinc-800 space-y-1">
         {order.items.map((it) => (
           <li key={it.id} className="flex items-center justify-between">
@@ -2553,7 +2578,7 @@ function ProductForm() {
       {/* ▼ ここで見出しを追加（商品が1件以上のとき） */}
       {products.length > 0 && <SectionTitle>出品中の商品</SectionTitle>}
 
-      <div className="grid grid-cols-1 gap-3">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
         {products.map((p) => {
           return (
             <div key={p.id} className="rounded-2xl border bg-white shadow-sm overflow-hidden">
@@ -2998,7 +3023,7 @@ function OrdersPage() {
   const [overrideAsk, setOverrideAsk] = useState(false);
 
   return (
-    <main className="mx-auto max-w-[448px] px-4 py-5 space-y-6">
+    <main className="mx-auto max-w-[448px] md:max-w-4xl lg:max-w-6xl px-4 py-5 space-y-6">
       {!ready && (<div className="rounded-xl border bg-white p-4 text-sm text-zinc-600">読み込み中…</div>)}
       {err ? (<div className="rounded-xl border bg-red-50 p-4 text-sm text-red-700 flex items-center justify-between"><span>{err}</span><button onClick={retry} className="rounded-lg bg-red-600 text-white px-3 py-1 text-xs">リトライ</button></div>) : null}
       <section>
@@ -3016,7 +3041,7 @@ function OrdersPage() {
           >未引換を一括削除</button>
         </div>
         {pending.length === 0 ? (<div className="rounded-xl border bg-white p-6 text-sm text-zinc-600">現在、受取待ちの注文はありません。</div>) : (
-          <div className="grid grid-cols-1 gap-4">{pending.map(o => (<OrderCard key={o.id} order={o} onHandoff={setCurrent} />))}</div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">{pending.map(o => (<OrderCard key={o.id} order={o} onHandoff={setCurrent} />))}</div>
         )}
       </section>
       <section>
@@ -3031,7 +3056,7 @@ function OrdersPage() {
           >一括削除</button>
         </div>
         {fulfilled.length === 0 ? (<div className="rounded-xl border bg-white p-6 text-sm text-zinc-600">まだ受け渡し済みの注文はありません。</div>) : (
-          <div className="grid grid-cols-1 gap-4 opacity-90">{fulfilled.map(o => (<OrderCard key={o.id} order={o} onHandoff={() => { }} />))}</div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 opacity-90">{fulfilled.map(o => (<OrderCard key={o.id} order={o} onHandoff={() => { }} />))}</div>
         )}
       </section>
       {current && (
@@ -3150,7 +3175,7 @@ function OrdersPage() {
 
 function ProductsPage() {
   return (
-    <main className="mx-auto max-w-[448px] px-4 py-5 space-y-8">
+    <main className="mx-auto max-w-[448px] lg:max-w-6xl px-4 py-5 space-y-8">
       <ProductForm />
       <div className="text-xs text-zinc-500">※ 商品管理は単一ページとして暫定運用。ブックマーク例: <code>#/products</code></div>
     </main>
@@ -3339,10 +3364,10 @@ function PickupPresetPage() {
     }
   };
 
-  if (loading) return <main className="mx-auto max-w-[448px] px-4 py-5"><div className="rounded-xl border bg-white p-4 text-sm text-zinc-600">読み込み中…</div></main>;
+  if (loading) return <main className="mx-auto max-w-[448px] lg:max-w-6xl px-4 py-5"><div className="rounded-xl border bg-white p-4 text-sm text-zinc-600">読み込み中…</div></main>;
 
   return (
-    <main className="mx-auto max-w-[448px] px-4 py-5 space-y-6">
+    <main className="mx-auto max-w-[448px] lg:max-w-6xl px-4 py-5 space-y-6">
       <div className="mb-1">
         <h1 className="text-lg font-semibold">受取時間プリセット設定</h1>
         <p className="text-sm text-zinc-600">最大3つのプリセットを編集し、「今使う」を選択してください（10分刻み）。</p>
@@ -3440,7 +3465,7 @@ export default function StoreApp() {
   return (
     <div className="min-h-screen bg-zinc-50">
       <header className="sticky top-0 z-40 bg-white/80 backdrop-blur supports-[backdrop-filter]:bg-white/60 border-b">
-        <div className="mx-auto max-w-[448px] px-4 py-3 flex items-center justify-between gap-2">
+        <div className="mx-auto max-w-[448px] lg:max-w-6xl px-4 py-3 flex items-center justify-between gap-2">
           {/* <div className="text-base font-semibold tracking-tight shrink-0">店側アプリ</div> */}
           <nav className="flex flex-wrap items-center gap-1 gap-y-1 text-sm">
             <a href="#/orders" className={`px-3 py-1.5 rounded-lg border shrink-0 ${routeForUI === 'orders' ? 'bg-zinc-900 text-white border-zinc-900' : 'bg-white text-zinc-700 hover:bg-zinc-50'}`} suppressHydrationWarning>注文管理</a>

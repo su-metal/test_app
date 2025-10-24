@@ -1,7 +1,9 @@
 // apps/user/src/app/api/cron/remind-pickup/route.ts
+export const runtime = "nodejs";
+
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import { linePush } from "@/lib/line"; // ← 修正済み（@ は src を指す想定）
+import { linePush } from "@/lib/line";
 
 const supabase = createClient(
   process.env.SUPABASE_URL!,
@@ -9,11 +11,11 @@ const supabase = createClient(
 );
 
 const WINDOW_MINUTES = 5; // cron間隔
-const REMIND_BEFORE_MIN = 10; // 受け取り前10分
+const REMIND_BEFORE_MIN = 10; // 受け取り予定の10分前
 
 export async function POST() {
   try {
-    // 抽出窓を作成（UTC前提）
+    // 時刻窓の計算（UTC）
     const now = new Date();
     const lower = new Date(
       now.getTime() + (REMIND_BEFORE_MIN - WINDOW_MINUTES / 2) * 60_000
@@ -24,11 +26,10 @@ export async function POST() {
 
     const { data: orders, error } = await supabase
       .from("orders")
-      .select(
-        "id, status, pickup_start, reminded_at, line_user_id, auth_user_id"
-      )
+      .select("id, status, pickup_start, reminded_at, line_user_id")
       .is("reminded_at", null)
       .eq("status", "PENDING")
+      .not("line_user_id", "is", null)
       .gte("pickup_start", lower.toISOString())
       .lte("pickup_start", upper.toISOString());
 
@@ -37,30 +38,18 @@ export async function POST() {
     let sent = 0;
 
     for (const o of orders ?? []) {
-      let to = (o as any).line_user_id as string | null;
-
-      // line_user_id が無ければ auth_user_id 経由で解決
-      if (!to && (o as any).auth_user_id) {
-        const { data: lu, error: luErr } = await supabase
-          .from("line_users")
-          .select("line_user_id")
-          .eq("auth_user_id", (o as any).auth_user_id)
-          .maybeSingle();
-        if (luErr) throw luErr;
-        to = lu?.line_user_id ?? null;
-      }
-
-      if (!to) continue; // 宛先不明はスキップ（ログ監視推奨）
+      const to = (o as any).line_user_id as string | null;
+      if (!to) continue; // 保険（NOT NULL 条件だが二重防御）
 
       // LINE push（シンプルテキスト）
       await linePush(to, [
         {
           type: "text",
-          text: "🍜 まもなく受け取り時間です！ご来店の際にチケットを提示してください。",
+          text: "まもなく受け取り予定です。店舗でチケットをご提示ください。",
         },
       ]);
 
-      // 冪等性：通知済み記録
+      // 送信後に reminded_at を記録（冪等確保）
       const { error: updErr } = await supabase
         .from("orders")
         .update({ reminded_at: new Date().toISOString() })
@@ -79,3 +68,4 @@ export async function POST() {
     );
   }
 }
+

@@ -4054,21 +4054,21 @@ export default function UserPilotApp() {
                                                     >
                                                         <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-700">
                                                             {/* 営業時間 */}
-                                                            <span className="inline-flex items-center gap-1 rounded-full text-[#7aaad2] bg-[#fff2d1] px-2 py-1">
+                                                            <span className="inline-flex items-center gap-1 rounded-full text-[#7aaad2] bg-zinc-100 px-2 py-1">
                                                                 <span>🕒</span>
                                                                 <span>営業時間</span>
                                                                 <span className="font-medium">{m.hours ?? "—"}</span>
                                                             </span>
 
                                                             {/* 定休日 */}
-                                                            <span className="inline-flex items-center gap-1 rounded-full text-[#7aaad2] bg-[#fff2d1] px-2 py-1">
+                                                            <span className="inline-flex items-center gap-1 rounded-full text-[#7aaad2] bg-zinc-100 px-2 py-1">
                                                                 <span>📅</span>
                                                                 <span>定休日</span>
                                                                 <span className="font-medium">{m.holiday ?? "—"}</span>
                                                             </span>
 
                                                             {/* ★ 追加：TEL */}
-                                                            <span className="inline-flex items-center gap-1 rounded-full text-[#7aaad2] bg-[#fff2d1] px-2 py-1">
+                                                            <span className="inline-flex items-center gap-1 rounded-full text-[#7aaad2] bg-zinc-100 px-2 py-1">
                                                                 <span>📞</span>
                                                                 {s.tel ? (
                                                                     <a href={`tel:${s.tel.replace(/\s+/g, '')}`} className="font-medium underline decoration-1 underline-offset-2">
@@ -4080,7 +4080,7 @@ export default function UserPilotApp() {
                                                             </span>
 
                                                             {/* ★ 追加：URL */}
-                                                            <span className="inline-flex items-center gap-1 rounded-full text-[#7aaad2] bg-[#fff2d1] px-2 py-1">
+                                                            <span className="inline-flex items-center gap-1 rounded-full text-[#7aaad2] bg-zinc-100 px-2 py-1">
                                                                 <span>🔗</span>
                                                                 {s.url ? (
                                                                     <a
@@ -4105,13 +4105,13 @@ export default function UserPilotApp() {
                                                             </span>
 
                                                             {/* 距離 */}
-                                                            <span className="inline-flex items-center gap-1 rounded-full text-[#7aaad2] bg-[#fff2d1] px-2 py-1">
+                                                            <span className="inline-flex items-center gap-1 rounded-full text-[#7aaad2] bg-zinc-100 px-2 py-1">
                                                                 <span>📍</span>
                                                                 <span className="font-medium">{distanceLabelFor(s)}</span>
                                                             </span>
 
                                                             {/* カテゴリ */}
-                                                            <span className="inline-flex items-center gap-1 rounded-full text-[#7aaad2] bg-[#fff2d1] px-2 py-1">
+                                                            <span className="inline-flex items-center gap-1 rounded-full text-[#7aaad2] bg-zinc-100 px-2 py-1">
                                                                 <span>🏷️</span>
                                                                 <span className="font-medium">{m.category ?? "—"}</span>
                                                             </span>
@@ -4126,7 +4126,7 @@ export default function UserPilotApp() {
                                                                     href={googleMapsUrlForShop(s)}
                                                                     target="_blank"
                                                                     rel="noopener noreferrer"
-                                                                    className="ml-2 inline-flex items-center gap-2 px-3 py-1.5 rounded-full border text-[13px] font-semibold text-[#6b0f0f] border-[#6b0f0f] hover:bg-[#6b0f0f]/5"
+                                                                    className="ml-2 inline-flex items-center gap-2 px-3 py-1.5 rounded-full border text-[13px] font-semibold text-[#5f95c5] border-[#5f95c5] bg-[#fff2d1] hover:bg-[#6b0f0f]/5"
                                                                     aria-label="Googleマップで開く"
                                                                 >
                                                                     <IconMapPin className="w-4 h-4" />

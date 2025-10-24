@@ -1,4 +1,5 @@
 // apps/user/src/app/api/line/webhook/route.ts
+///
 export const runtime = "nodejs";
 
 import { NextRequest, NextResponse } from "next/server";
@@ -117,9 +118,15 @@ export async function POST(req: NextRequest) {
           try {
             const { error } = await supa
               .from("line_users")
-              .upsert({ line_user_id: anyUserId }, { onConflict: "line_user_id" });
+              .upsert(
+                { line_user_id: anyUserId },
+                { onConflict: "line_user_id" }
+              );
             if (error) {
-              console.error("[LINE webhook] upsert error", error?.message || error);
+              console.error(
+                "[LINE webhook] upsert error",
+                error?.message || error
+              );
             } else {
               upserted++;
             }

@@ -7,6 +7,8 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import PickupTimeSelector, { type PickupSlot } from "@/components/PickupTimeSelector";
 import { EmbeddedCheckoutProvider, EmbeddedCheckout, useStripe, useElements, PaymentElement } from "@stripe/react-stripe-js";
 import type { QRCodeRenderersOptions } from "qrcode";
+import type { ReactNode } from 'react';
+
 
 
 
@@ -1167,6 +1169,37 @@ const IconChevron = ({ dir = "right", className = "" }: { dir?: "left" | "right"
         />
     </svg>
 );
+
+// ====== 追加：所要時間用のインラインSVGアイコン（#7aaad2） ======
+const travelIconStyle: React.CSSProperties = {
+    width: 24,
+    height: 24,
+    display: 'block',
+    verticalAlign: 'text-bottom',
+    color: '#D1797E', // 指定色
+};
+
+const WalkIcon = () => (
+    <svg viewBox="0 0 24 24" aria-hidden="true" role="img" style={travelIconStyle}>
+        <circle cx="12" cy="4" r="2" fill="currentColor" />
+        <path d="M10 8l-2 4-2 2" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+        <path d="M12 8l2 3 3 2" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+        <path d="M8 18l2-4 3 2 1 2" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+);
+
+const CarIcon = () => (
+    <svg viewBox="0 0 24 24" aria-hidden="true" role="img" style={{ ...travelIconStyle, transform: 'translateY(0.5px)' }}>
+        <rect x="2" y="10" width="18" height="6" rx="2" fill="currentColor" />
+        <path d="M7 9l2-3h6l2 3" fill="currentColor" />
+        <circle cx="8" cy="16" r="2" fill="#171717" />
+        <circle cx="16" cy="16" r="2" fill="#171717" />
+    </svg>
+);
+
+// この型は travelTimeLabelFor の戻り値に使います
+type TravelLabel = { icon: ReactNode; text: string };
+
 
 const GalleryNavBtn = ({
     side,
@@ -2527,28 +2560,34 @@ export default function UserPilotApp() {
     };
 
     // 所要時間（徒歩/車）ラベル：ルート距離が出るまで「距離算定中」
-    const travelTimeLabelFor = useCallback((s: ShopForSort | Shop): { icon: string; text: string } => {
-        const target = bestLatLngForDistance(s as Shop);
-        if (!myPos || !target) return { icon: "🚶", text: "—" };
-        const rk = routeKmByStore[s.id as string]; // km（OSRM）
-        if (rk == null) {
-            // OSRM の結果が未取得/失敗の場合は概算（直線距離ベース）で即時表示
-            const approx = haversineKm(myPos, target);
-            if (!Number.isFinite(approx)) return { icon: "🚶", text: "—" };
-            const walkMin = Math.max(1, Math.ceil(approx * 15));
-            if (walkMin <= 15) return { icon: "🚶", text: `徒歩約${walkMin}分` };
-            const carMin = Math.max(1, Math.ceil((approx * 60) / 35));
-            return { icon: "🚗", text: `所要約${carMin}分` };
-        }
+    // 所要時間（徒歩/車）ラベル：インラインSVGアイコン（#7aaad2）
+    const travelTimeLabelFor = useCallback(
+        (s: ShopForSort | Shop): TravelLabel => {
+            const target = bestLatLngForDistance(s as Shop);
+            if (!myPos || !target) return { icon: <WalkIcon />, text: '—' };
+            const rk = routeKmByStore[s.id as string]; // km（OSRM）
 
-        // 徒歩（4km/h）= 1kmあたり15分
-        const walkMin = Math.max(1, Math.ceil(rk * 15));
-        if (walkMin <= 15) return { icon: "🚶", text: `徒歩${walkMin}分` };
+            if (rk == null) {
+                // OSRM の結果が未取得/失敗の場合は概算（直線距離ベース）で即時表示
+                const approx = haversineKm(myPos, target);
+                if (!Number.isFinite(approx)) return { icon: <WalkIcon />, text: '—' };
+                const walkMin = Math.max(1, Math.ceil(approx * 15));
+                if (walkMin <= 15) return { icon: <WalkIcon />, text: `徒歩約${walkMin}分` };
+                const carMin = Math.max(1, Math.ceil((approx * 60) / 35));
+                return { icon: <CarIcon />, text: `所要約${carMin}分` };
+            }
 
-        // 車（35km/h）= 1kmあたり約1.714分
-        const carMin = Math.max(1, Math.ceil((rk * 60) / 35));
-        return { icon: "🚗", text: `所要${carMin}分` };
-    }, [myPos, routeKmByStore]);
+            // 徒歩（4km/h）= 1kmあたり15分
+            const walkMin = Math.max(1, Math.ceil(rk * 15));
+            if (walkMin <= 15) return { icon: <WalkIcon />, text: `徒歩${walkMin}分` };
+
+            // 車（35km/h）= 1kmあたり約1.714分
+            const carMin = Math.max(1, Math.ceil((rk * 60) / 35));
+            return { icon: <CarIcon />, text: `所要${carMin}分` };
+        },
+        [myPos, routeKmByStore]
+    );
+
 
 
     // 表示用の距離文言
@@ -3306,7 +3345,7 @@ export default function UserPilotApp() {
 
     return (
         <MinimalErrorBoundary>
-            <div className="min-h-screen bg-[#F7F9F8]">{/* 柔らかいベージュ背景 */}
+            <div className="min-h-screen bg-[#faf8f4]">{/* 柔らかいベージュ背景 */}
                 {tab !== "home" && (
                     <header
                         className={[
@@ -3425,16 +3464,30 @@ export default function UserPilotApp() {
                                             viewBox="0 0 64 64"
                                             aria-hidden="true"
                                             role="img"
-                                            style={{ width: 44, height: 44, flexShrink: 0, objectFit: 'contain', filter: 'drop-shadow(0 2px 4px rgba(0,0,0,.08))' }}
+                                            // ここでカラーバリエーションを定義（スクショ風ブルー）
+                                            style={{
+                                                width: 44,
+                                                height: 44,
+                                                flexShrink: 0,
+                                                objectFit: 'contain',
+                                                filter: 'drop-shadow(0 2px 4px rgba(0,0,0,.08))',
+                                                // CSS変数で一括制御
+                                                ['--accent']: '#7aaad2',
+                                                ['--accent2']: '#5f95c5',
+                                                ['--coral']: '#7aaad2',
+                                            } as React.CSSProperties}
                                             xmlns="http://www.w3.org/2000/svg"
                                         >
-                                            <circle cx="20" cy="20" r="16" fill="#F0FFF7" />
+                                            {/* 背景を淡いブルーに（スクショっぽく） */}
+                                            <circle cx="20" cy="20" r="16" fill="#EAF2F9" />
                                             <rect x="6" y="18" width="32" height="34" rx="6" fill="var(--accent)" stroke="#fff" strokeWidth="2.2" />
                                             <path d="M12 22c0-6 5-11 11-11s11 5 11 11" fill="none" stroke="#fff" strokeWidth="2.2" />
                                             <rect x="28" y="26" width="26" height="26" rx="6" fill="var(--accent2)" stroke="#fff" strokeWidth="2.2" />
                                             <path d="M34 30c0-5 4-9 9-9s9 4 9 9" fill="none" stroke="#fff" strokeWidth="2.2" />
+                                            {/* アクセントも同系色に統一（星=ブルー） */}
                                             <path d="M48 12l1.6 3.4 3.6.4-2.7 2.5.7 3.5-3.2-1.7-3.2 1.7.7-3.5-2.7-2.5 3.6-.4z" fill="var(--coral)" />
                                         </svg>
+
                                         <div className="txt">
                                             <div className="title" style={{ fontWeight: 800, fontSize: 14, marginBottom: 2 }}>
                                                 余ったフードをおトクにゲット
@@ -3468,16 +3521,27 @@ export default function UserPilotApp() {
                                             viewBox="0 0 64 64"
                                             aria-hidden="true"
                                             role="img"
-                                            style={{ width: 44, height: 44, flexShrink: 0, objectFit: 'contain', filter: 'drop-shadow(0 2px 4px rgba(0,0,0,.08))' }}
+                                            style={{
+                                                width: 44,
+                                                height: 44,
+                                                flexShrink: 0,
+                                                objectFit: 'contain',
+                                                filter: 'drop-shadow(0 2px 4px rgba(0,0,0,.08))',
+                                                ['--accent']: '#7aaad2',
+                                                ['--accent2']: '#5f95c5',
+                                                ['--coral']: '#7aaad2',
+                                            } as React.CSSProperties}
                                             xmlns="http://www.w3.org/2000/svg"
                                         >
-                                            <circle cx="22" cy="20" r="16" fill="#EEF4FF" />
+                                            {/* 背景サークルを淡いブルーに */}
+                                            <circle cx="22" cy="20" r="16" fill="#EAF2F9" />
                                             <path d="M10 40c8 2 16 2 24 0 8-2 10-6 10-8" fill="#FFF" stroke="#fff" strokeWidth="2.2" />
                                             <rect x="30" y="12" width="4" height="16" rx="2" fill="var(--accent)" />
                                             <path d="M30 20c-10 0-16-6-18-10 6 0 14 2 18 6" fill="var(--accent)" />
                                             <path d="M34 22c10 0 16-6 18-10-6 0-14 2-18 6" fill="var(--accent2)" />
                                             <path d="M46 22c1.6-1.6 4.2-1.6 5.8 0 1.6 1.6 1.6 4.2 0 5.8l-2.9 2.9-2.9-2.9c-1.6-1.6-1.6-4.2 0-5.8z" fill="var(--coral)" />
                                         </svg>
+
                                         <div className="txt">
                                             <div className="title" style={{ fontWeight: 800, fontSize: 14, marginBottom: 2 }}>
                                                 フードロス削減に参加
@@ -3487,6 +3551,7 @@ export default function UserPilotApp() {
                                             </div>
                                         </div>
                                     </div>
+
 
                                     {/* 3) 地元のお店を応援 */}
                                     <div
@@ -3511,16 +3576,28 @@ export default function UserPilotApp() {
                                             viewBox="0 0 64 64"
                                             aria-hidden="true"
                                             role="img"
-                                            style={{ width: 44, height: 44, flexShrink: 0, objectFit: 'contain', filter: 'drop-shadow(0 2px 4px rgba(0,0,0,.08))' }}
+                                            style={{
+                                                width: 44,
+                                                height: 44,
+                                                flexShrink: 0,
+                                                objectFit: 'contain',
+                                                filter: 'drop-shadow(0 2px 4px rgba(0,0,0,.08))',
+                                                ['--accent']: '#7aaad2',
+                                                ['--accent2']: '#5f95c5',
+                                                ['--coral']: '#7aaad2',
+                                            } as React.CSSProperties}
                                             xmlns="http://www.w3.org/2000/svg"
                                         >
-                                            <circle cx="22" cy="20" r="16" fill="#FFF5F3" />
+                                            {/* 背景サークルを淡いブルーに */}
+                                            <circle cx="22" cy="20" r="16" fill="#EAF2F9" />
                                             <rect x="12" y="26" width="40" height="22" rx="6" fill="var(--accent)" stroke="#fff" strokeWidth="2.2" />
                                             <path d="M16 26l5-9h22l5 9" stroke="#fff" strokeWidth="2.2" />
                                             <rect x="20" y="32" width="9" height="12" rx="3" fill="#fff" />
                                             <rect x="33" y="32" width="13" height="9" rx="3" fill="var(--accent2)" stroke="#fff" strokeWidth="2.2" />
+                                            {/* アイコンアクセントも同系色に統一 */}
                                             <path d="M42 16c1.6-1.6 4.2-1.6 5.8 0 1.6 1.6 1.6 4.2 0 5.8l-2.9 2.9-2.9-2.9c-1.6-1.6-1.6-4.2 0-5.8z" fill="var(--coral)" />
                                         </svg>
+
                                         <div className="txt">
                                             <div className="title" style={{ fontWeight: 800, fontSize: 14, marginBottom: 2 }}>
                                                 地元のお店を応援
@@ -3530,6 +3607,7 @@ export default function UserPilotApp() {
                                             </div>
                                         </div>
                                     </div>
+
                                 </div>
                             </section>
                             <div className="flex items-center justify-between">
@@ -3643,20 +3721,21 @@ export default function UserPilotApp() {
                                                         width={1200}
                                                         height={176}  /* h-44 ≒ 44 * 4 = 176px */
                                                     />
-                                                    <div className="absolute left-3 top-3 px-2 py-1 rounded bg-black/60 text-white text-sm">
+                                                    <div className="absolute left-3 top-3 px-2 py-1 font-semibold rounded bg-[#fff2d1] text-[#5f95c5] text-sm">
                                                         {s.name}
                                                     </div>
                                                     {(() => {
                                                         const tt = travelTimeLabelFor(s);
                                                         return (
                                                             <span
-                                                                className="absolute right-3 bottom-3 inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1 text-[11px]"
+                                                                className="absolute right-3 bottom-3 inline-flex items-center gap-0 rounded-full bg-zinc-100 px-2 py-1 text-[11px]"
                                                                 aria-label={`所要時間: ${tt.text}`}
                                                             >
                                                                 {/* 絵文字アイコンを正方形ボックスで中央寄せ */}
-                                                                <span className="inline-grid w-4 h-4 mr-1 place-items-center leading-none text-[16px]">
+                                                                <span className="inline-flex items-center justify-center w-6 h-6 mr-1 leading-none align-middle">
                                                                     {tt.icon}
                                                                 </span>
+
                                                                 {/* テキストも行高を1にして上下を詰める */}
                                                                 <span className="font-medium leading-[1]">{tt.text}</span>
                                                             </span>
@@ -3691,7 +3770,7 @@ export default function UserPilotApp() {
                                                         }}
                                                         className={[
                                                             "w-full h-12 rounded-full",
-                                                            "bg-[#00c951] hover:bg-emerald-600",
+                                                            "bg-[#5f95c5] hover:bg-emerald-600",
                                                             "text-white font-semibold",
                                                             "flex items-center justify-center gap-2",
                                                             "transition-colors"
@@ -3753,21 +3832,21 @@ export default function UserPilotApp() {
                                                     >
                                                         <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-700">
                                                             {/* 営業時間 */}
-                                                            <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1">
+                                                            <span className="inline-flex items-center gap-1 rounded-full text-[#7aaad2] bg-[#fff2d1] px-2 py-1">
                                                                 <span>🕒</span>
                                                                 <span>営業時間</span>
                                                                 <span className="font-medium">{m.hours ?? "—"}</span>
                                                             </span>
 
                                                             {/* 定休日 */}
-                                                            <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1">
+                                                            <span className="inline-flex items-center gap-1 rounded-full text-[#7aaad2] bg-[#fff2d1] px-2 py-1">
                                                                 <span>📅</span>
                                                                 <span>定休日</span>
                                                                 <span className="font-medium">{m.holiday ?? "—"}</span>
                                                             </span>
 
                                                             {/* ★ 追加：TEL */}
-                                                            <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1">
+                                                            <span className="inline-flex items-center gap-1 rounded-full text-[#7aaad2] bg-[#fff2d1] px-2 py-1">
                                                                 <span>📞</span>
                                                                 {s.tel ? (
                                                                     <a href={`tel:${s.tel.replace(/\s+/g, '')}`} className="font-medium underline decoration-1 underline-offset-2">
@@ -3779,7 +3858,7 @@ export default function UserPilotApp() {
                                                             </span>
 
                                                             {/* ★ 追加：URL */}
-                                                            <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1">
+                                                            <span className="inline-flex items-center gap-1 rounded-full text-[#7aaad2] bg-[#fff2d1] px-2 py-1">
                                                                 <span>🔗</span>
                                                                 {s.url ? (
                                                                     <a
@@ -3804,13 +3883,13 @@ export default function UserPilotApp() {
                                                             </span>
 
                                                             {/* 距離 */}
-                                                            <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1">
+                                                            <span className="inline-flex items-center gap-1 rounded-full text-[#7aaad2] bg-[#fff2d1] px-2 py-1">
                                                                 <span>📍</span>
                                                                 <span className="font-medium">{distanceLabelFor(s)}</span>
                                                             </span>
 
                                                             {/* カテゴリ */}
-                                                            <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1">
+                                                            <span className="inline-flex items-center gap-1 rounded-full text-[#7aaad2] bg-[#fff2d1] px-2 py-1">
                                                                 <span>🏷️</span>
                                                                 <span className="font-medium">{m.category ?? "—"}</span>
                                                             </span>
@@ -4077,8 +4156,8 @@ export default function UserPilotApp() {
                                                         startStripeCheckout(gkey);
                                                     }}
                                                     disabled={!pickupByGroup[gkey]}
-                                                    className={`w-full px-3 py-2 rounded text-white cursor-pointer
-            ${!pickupByGroup[gkey] ? "bg-zinc-300 cursor-not-allowed" : "bg-zinc-900 hover:bg-zinc-800"}`}
+                                                    className={`w-full px-3 py-3 rounded-2xl text-white cursor-pointer
+            ${!pickupByGroup[gkey] ? "bg-zinc-300 cursor-not-allowed" : "bg-[#101828] hover:bg-zinc-800"}`}
                                                     aria-disabled={!pickupByGroup[gkey]}
                                                 >
                                                     注文画面へ
@@ -4618,7 +4697,7 @@ export default function UserPilotApp() {
                                     {/* ▼ 追加：モーダル内の「カートを見る」（ホームと同じコンポーネント） */}
                                     <div className="pt-3 px-2 mb-6 flex justify-center">
                                         <ViewCartButton
-                                            className="w-full max-w-[480px] h-12 text-[15px]"
+                                            className="w-full max-w-[480px] h-12 text-[15px] text-white"
                                             shopId={detail.shopId}
                                             onAfterOpenCart={() => setDetail(null)}  // ← 押下後にモーダルを閉じる
                                         />

@@ -23,7 +23,7 @@
   - `pnpm dev:store` / `pnpm dev:user`: 個別起動。
 - フレームワーク/ライブラリ（特記ない限りルート管理）
   - next 15.5.x（App Router）、react 19.1.x、react-dom 19.1.x。
-  - @supabase/supabase-js ^2.74（ルート依存、両アプリで使用）。
+  - `@supabase/supabase-js` ^2.74（ルート依存、両アプリで使用）。
   - Tailwind CSS 4 + PostCSS + Autoprefixer。
 - TypeScript
   - strict 有効、`skipLibCheck` true、`moduleResolution: bundler`。
@@ -37,6 +37,10 @@
   - `NEXT_PUBLIC_STORE_ID`（文字列。UUID 推奨）
 - store は `apps/store/src/app/layout.tsx` で env を `window` にブリッジし、クライアント専用コードから読めます。
 - store / user で値が不整合だと Realtime 同期が壊れます。必ず同一プロジェクト/同一 STORE_ID を指すこと。
+- LINE/LIFF（運用/検証で利用。存在する場合のみ）
+  - `NEXT_PUBLIC_LIFF_ID`
+  - `LINE_CHANNEL_SECRET`, `LINE_CHANNEL_ACCESS_TOKEN`（Webhook 応答用）
+  - `LINE_LOGIN_CHANNEL_ID`, `LINE_LOGIN_CHANNEL_SECRET`（store 側 silent-login 用）
 
 Supabase 連携
 
@@ -50,6 +54,13 @@ Supabase 連携
     - FULFILLED/REDEEMED/COMPLETED → `redeemed`
     - PAID/PENDING → `paid`
   - Realtime 不達対策としてポーリング（`id, code, status`）で整合。
+
+Realtime とポリシーのチェックリスト
+
+- `public.orders` に対し Realtime を有効化。
+- 必要なら `ALTER TABLE public.orders REPLICA IDENTITY FULL;`。
+- RLS: anon ロールに `products`/`orders` の必要な `select` を許可。
+- 両アプリが同一 `NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_ANON_KEY` / `NEXT_PUBLIC_STORE_ID` を参照。
 
 テスト運用における縮退（要件書との差分）
 
@@ -81,59 +92,14 @@ Supabase 連携
   - `src/app/analytics/page.tsx`: 簡易分析画面（存在する場合）。
   - `src/types/window.d.ts`: Window 拡張。
   - 店舗スイッチャー: ヘッダー右上セレクタ。`localStorage('store:selected')` に保存し `window.__STORE_ID__` に反映。
+  - LIFF 起動（任意）: `src/app/LiffBoot.tsx`。
 - apps/user
   - `src/app/page.tsx`: ユーザーフロー（ショップ/カート/注文/アカウント、Realtime + ポーリング、トースト、QR 等）。
-  - `src/app/layout.tsx`: フォント/グローバルスタイル。
+  - `src/app/layout.tsx`: フォント/グローバルスタイル。`<LiffBoot />` を含む。
   - `src/lib/supabase.ts`: クライアント単一生成。
-  - 店舗・商品取得: `stores` と `products` を読み込み、`store_id` でグルーピングして `shops` を構築。
-
-実行とビルド
-
-- 開発: `pnpm i` → `pnpm dev`。 http://localhost:3001（store）/ http://localhost:3002（user）。
-- 本番: 各アプリで `build` / `start`。
-
-フェーズ方針（テスト → 正式）
-
-- Phase 0（現状・テスト運用）
-  - 最小フロー: 商品一覧 → カート → 注文 → 店側で受け渡し → ユーザー側で「引換済み」反映。
-  - Realtime が不安定でも user 側ポーリングで整合を確保。
-- Phase 1（要件書準拠の拡張）
-  - 認証/ユーザープロファイル、正式決済、通知、在庫連携、メトリクスを順次実装。
-
-コーディング規約（必ず遵守）
-
-- 変更は最小限・局所的に。無関係ファイルは触れない。
-- TypeScript 型を維持。例外的事情がない限り `any` は避ける。
-- Next.js App Router
-  - クライアントコンポーネントは先頭に `"use client"`。
-  - クライアントでは Node 専用 API を使わない。
-- UI 文言は日本語で統一（「未引換」「引換済み」「返金済み」）。
-- 6 桁コード比較は必ず `normalizeCode6` を使用。
-
-Realtime とポリシーのチェックリスト
-
-- `public.orders` に対し Realtime を有効化。
-- 必要なら `ALTER TABLE public.orders REPLICA IDENTITY FULL;`。
-- RLS: anon ロールに `products`/`orders` の必要な `select` を許可。
-- 両アプリが同一 `NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_ANON_KEY` / `NEXT_PUBLIC_STORE_ID` を参照。
-
-要件書の参照と作業ルール
-
-- 正式要件ドキュメント: `docs/フードロス削減アプリ_要件・仕様書_v_2_（_2025_09_26_）.md`（レポジトリ外の最新版も参照）。
-- 実装判断で揺れる場合は要件書優先で最小案を提案し、差分は `TODO(req v2)` を残す。
-
-新規コードの追加先
-
-- 店側: `apps/store/src/app/page.tsx`（必要に応じて新規ルート）。
-- ユーザー側: `apps/user/src/app/page.tsx` または `src/lib/*`。
-- 共有ユーティリティ: `packages/shared`（現状空）。
-
-依存・構成（現行）
-
-- ルート: `@supabase/supabase-js@^2.74.0`、`leaflet@^1.9.4`、`@line/liff`、Tailwind CSS 4、PostCSS、Autoprefixer、TypeScript 5。
-- store: `next@15.5.4`、`react@19.1.0`、`react-dom@19.1.0`。
-- user: `next@15.5.4`、`react@19.1.0`、`react-dom@19.1.0`、`@stripe/react-stripe-js`、`@stripe/stripe-js`、`stripe`、`react-leaflet`、`qrcode`。
-- スクリプト: ルートで `pnpm dev` が `concurrently` 経由で store/user を同時起動。
+  - `src/components/MapView.tsx` / `MapEmbedWithFallback.tsx`: 地図/埋め込み。
+  - 受け取り時間: UI `src/components/PickupTimeSelector.tsx`、ロジック `src/lib/pickupSlots.ts`。
+  - LIFF 起動（任意）: `src/app/LiffBoot.tsx`。
 
 API/機能の配置（user）
 
@@ -142,11 +108,37 @@ API/機能の配置（user）
   - `apps/user/src/app/api/stripe/create-intent/route.ts`
   - `apps/user/src/app/api/stripe/checkout/route.ts`
   - `apps/user/src/app/api/stripe/fulfill/route.ts`
+  - `apps/user/src/app/api/stripe/pay-with-saved/route.ts`
   - `apps/user/src/app/api/checkout/embedded/route.ts`
   - `apps/user/src/app/api/create-checkout-session/route.ts`（互換/移行用）
-- チェックアウト結果: `apps/user/src/app/checkout/success/page.tsx` / `cancel/page.tsx`
-- 地図/店舗表示: `apps/user/src/components/MapView.tsx`（Leaflet/React-Leaflet）。
-- 受け取り時間: UI `apps/user/src/components/PickupTimeSelector.tsx`、ロジック `apps/user/src/lib/pickupSlots.ts`。
+- 地図/ルーティング:
+  - `apps/user/src/app/api/maps-static/route.ts`
+  - `apps/user/src/app/api/osrm/route.ts`
+- LINE 連携:
+  - Webhook: `apps/user/src/app/api/line/webhook/route.ts`
+  - LIFF: `NEXT_PUBLIC_LIFF_ID` を利用し `src/app/LiffBoot.tsx` で初期化
+- 申請関連:
+  - `apps/user/src/app/api/store-applications/route.ts`
+- チェックアウト結果:
+  - `apps/user/src/app/checkout/success/page.tsx` / `apps/user/src/app/checkout/cancel/page.tsx`
+
+API/機能の配置（store）
+
+- 管理・申請:
+  - `apps/store/src/app/api/admin/store-applications/list/route.ts`
+  - `apps/store/src/app/api/admin/approve-store/route.ts`
+  - `apps/store/src/app/api/admin/tools/bootstrap-auth-users/route.ts`
+  - 画面: `apps/store/src/app/api/admin/applications/page.tsx`
+- 画像アップロード:
+  - `apps/store/src/app/api/images/upload/route.ts`
+  - `apps/store/src/app/api/images/delete/route.ts`
+- LINE 認証/サインイン（silent-login）:
+  - `apps/store/src/app/api/auth/line/silent-login/route.ts`
+- プリセット/受け取り設定:
+  - `apps/store/src/app/api/store/pickup-presets/route.ts`
+  - `apps/store/src/app/api/presets/upsert/route.ts`
+- 開発補助:
+  - `apps/store/src/app/api/dev/set-password/route.ts`
 
 Supabase データベース構成（現行実装に基づく）
 
@@ -162,6 +154,29 @@ Supabase データベース構成（現行実装に基づく）
 - 正式ドキュメントは `docs/` 配下を正とします。
 - `document/` 配下に同名/類似ドキュメントの重複が存在しますが、整合性の観点から参照は `docs/` を優先してください（差分がある場合は要件書を優先し、必要に応じて `TODO(req v2)` を残す）。
 - 旧記載の `/dogs` ディレクトリは本リポジトリに存在しないため、本ガイドから削除しました。
+
+コーディング規約（必ず遵守）
+
+- 変更は最小限・局所的に。無関係ファイルは触れない。
+- TypeScript 型を維持。例外的事情がない限り `any` は避ける。
+- Next.js App Router
+  - クライアントコンポーネントは先頭に `"use client"`。
+  - クライアントでは Node 専用 API を使わない。
+- UI 文言は日本語で統一（「未引換」「引換済み」「返金済み」）。
+- 6 桁コード比較は必ず `normalizeCode6` を使用（store/user 双方に実装あり）。
+
+実行とビルド
+
+- 開発: `pnpm i` → `pnpm dev`。 http://localhost:3001（store）/ http://localhost:3002（user）。
+- 本番: 各アプリで `build` / `start`。
+
+フェーズ方針（テスト → 正式）
+
+- Phase 0（現状・テスト運用）
+  - 最小フロー: 商品一覧 → カート → 注文 → 店側で受け渡し → ユーザー側で「引換済み」反映。
+  - Realtime が不安定でも user 側ポーリングで整合を確保。
+- Phase 1（要件書準拠の拡張）
+  - 認証/ユーザープロファイル、正式決済、通知、在庫連携、メトリクスを順次実装。
 
 注意（整合のための実装上の約束事）
 

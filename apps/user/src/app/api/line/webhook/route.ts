@@ -1,30 +1,31 @@
-// apps/user/src/app/api/line/webhook/route.ts
 export const runtime = "nodejs";
 
 import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
+import { createClient } from "@supabase/supabase-js";
 
-// ====== 設定（LIFF ID をここで指定 or 環境変数で指定）======
-// 入れ方は「ID文字列だけ」例: '1651234567-abcd12' です。
-// miniapp.line.me を含めない / liff:// は使わない。
-const RAW_USER_LIFF_ID = process.env.USER_LIFF_ID ?? "2008314807-lxkoyj4r";
+// ====== Supabase Server Client (service_role) ======
+function getServiceClient() {
+  const url = process.env.SUPABASE_URL!;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+  return createClient(url, key, {
+    auth: { autoRefreshToken: false, persistSession: false },
+  });
+}
 
-// --- LIFF URL を“絶対に https://liff.line.me/<ID>”に正規化 ---
+// ====== LIFF URL（https://liff.line.me/<LIFF_ID> 形式）======
+const RAW_USER_LIFF_ID = process.env.USER_LIFF_ID ?? "YOUR_LIFF_ID"; // ← IDだけを入力
 function makeLiffUrl(idOrUrl: string): string {
   let s = (idOrUrl || "").trim();
-  // もし URL を入れてしまっていても ID に直す
-  s = s.replace(/^https?:\/\/[^/]+\/?/i, ""); // 先頭の https://xxx/ を削除
+  s = s.replace(/^https?:\/\/[^/]+\/?/i, "");
   s = s.replace(/^liff\.line\.me\//i, "");
   s = s.replace(/^miniapp\.line\.me\//i, "");
-  // 不可視文字の除去
   s = s.replace(/[\u200B-\u200D\uFEFF]/g, "");
   return `https://liff.line.me/${s}`;
 }
-
 function isValidLiffUrl(u: string): boolean {
   return /^https:\/\/liff\.line\.me\/[A-Za-z0-9\-_]+$/.test(u);
 }
-
 const USER_LIFF_URL = makeLiffUrl(RAW_USER_LIFF_ID);
 
 // ====== 署名検証 ======
@@ -38,7 +39,7 @@ function verifyLineSignature(rawBody: string, signature: string | null) {
   return !!signature && hmac === signature;
 }
 
-// ====== 返信ヘルパー（reply）======
+// ====== LINE Messaging API 返信関数 ======
 async function lineReply(replyToken: string, messages: any[]) {
   const res = await fetch("https://api.line.me/v2/bot/message/reply", {
     method: "POST",
@@ -54,13 +55,13 @@ async function lineReply(replyToken: string, messages: any[]) {
   return res.ok;
 }
 
-// ====== Webhookハンドラ ======
+// ====== Webhook本体 ======
 export async function POST(req: NextRequest) {
   try {
     const rawBody = await req.text();
     const signature = req.headers.get("x-line-signature");
 
-    // デバッグログ（Vercel Logsで確認）
+    // Debug Logs
     console.log("[LINE] headers", Object.fromEntries(req.headers));
     console.log("[LINE] raw length", rawBody.length);
 
@@ -72,16 +73,37 @@ export async function POST(req: NextRequest) {
     const body = rawBody ? JSON.parse(rawBody) : { events: [] };
     console.log(
       "[LINE] events",
-      (body.events ?? []).map((e: any) => ({ type: e.type, ts: e.timestamp }))
+      (body.events ?? []).map((e: any) => ({
+        type: e.type,
+        ts: e.timestamp,
+        userId: e?.source?.userId,
+      }))
     );
 
+    const supabase = getServiceClient();
+
     for (const event of body.events ?? []) {
-      // 友だち追加 → あいさつ + ミニアプリ起動ボタン
+      // ✅ 友だち追加：line_user_id を保存して挨拶返信
       if (event.type === "follow") {
+        const lineUserId: string | undefined = event.source?.userId;
+
+        if (lineUserId) {
+          console.log("[LINE] follow from userId:", lineUserId);
+          // Supabase に upsert
+          const { error } = await supabase
+            .from("user_profiles")
+            .upsert(
+              { line_user_id: lineUserId },
+              { onConflict: "line_user_id" }
+            );
+          if (error) console.error("Supabase upsert error", error);
+          else console.log("Supabase upsert success");
+        }
+
         console.log("[LIFF URL check]", { RAW_USER_LIFF_ID, USER_LIFF_URL });
         const uri = isValidLiffUrl(USER_LIFF_URL)
           ? USER_LIFF_URL
-          : "https://liff.line.me/2008314807-lxkoyj4r"; // 念のためのフォールバック（要置換）
+          : "https://liff.line.me/YOUR_LIFF_ID"; // ← 念のためのフォールバック
 
         await lineReply(event.replyToken, [
           {
@@ -100,7 +122,7 @@ export async function POST(req: NextRequest) {
         ]);
       }
 
-      // 動作テスト：トークで「ping」と送ると「pong」を返す
+      // ✅ テスト：トークで「ping」と送ると「pong」を返す
       if (event.type === "message" && event.message?.type === "text") {
         const txt = (event.message.text || "").trim().toLowerCase();
         if (txt === "ping") {
@@ -116,7 +138,7 @@ export async function POST(req: NextRequest) {
   }
 }
 
-// 他メソッドは 405
+// ====== GETメソッド制限 ======
 export function GET() {
   return new NextResponse("Method Not Allowed", { status: 405 });
 }

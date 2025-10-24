@@ -51,8 +51,28 @@ export async function GET(req: Request) {
       0
     );
 
+    // 受取時間ラベル（例: "17:50〜18:00"）を当日JSTのTIMESTAMPTZに変換
+    function parsePickupLabelToJstIsoRange(label: string | undefined): { start?: string; end?: string } {
+      const text = String(label || "").trim();
+      if (!text) return {};
+      const m = text.match(/(\d{1,2}:\d{2})\s*[〜\-–—~]\s*(\d{1,2}:\d{2})/);
+      if (!m) return {};
+      const [_, a, b] = m;
+      const pad = (s: string) => (s.length === 1 ? `0${s}` : s);
+      const toIso = (hhmm: string) => {
+        const [hh, mm] = hhmm.split(":");
+        const parts = new Intl.DateTimeFormat("ja-JP", { timeZone: "Asia/Tokyo", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date());
+        const y = parts.find((p) => p.type === "year")?.value ?? "1970";
+        const mo = parts.find((p) => p.type === "month")?.value ?? "01";
+        const d = parts.find((p) => p.type === "day")?.value ?? "01";
+        return `${y}-${mo}-${d}T${pad(hh)}:${pad(mm)}:00+09:00`;
+      };
+      return { start: toIso(a), end: toIso(b) };
+    }
+    const pick = parsePickupLabelToJstIsoRange(pickup_label);
+
     // Supabase REST へ INSERT（RLSが許可されている前提）
-    const payload = {
+    const payload: any = {
       store_id,
       code: code6(),
       customer: email,
@@ -60,6 +80,9 @@ export async function GET(req: Request) {
       total, // 数値
       status: "PENDING", // 店側で引換完了に更新する前の状態
     };
+
+    if (pick?.start) payload.pickup_start = pick.start;
+    if (pick?.end) payload.pickup_end = pick.end;
 
     const res = await fetch(`${API_URL}/rest/v1/orders?select=*`, {
       method: "POST",
@@ -79,6 +102,41 @@ export async function GET(req: Request) {
     }
     const rows = await res.json();
     const row = Array.isArray(rows) ? rows[0] : rows;
+
+    // Attach pickup_start/pickup_end to the order if a pickup label was provided
+    try {
+      const text = String(pickup_label || "").trim();
+      if (text) {
+        const m = text.match(/(\d{1,2}:\d{2})\s*[〜\-–—~]\s*(\d{1,2}:\d{2})/);
+        if (m) {
+          const [_, a, b] = m;
+          const pad = (s: string) => (s.length === 1 ? `0${s}` : s);
+          const toIso = (hhmm: string) => {
+            const [hh, mm] = hhmm.split(":");
+            const parts = new Intl.DateTimeFormat("ja-JP", { timeZone: "Asia/Tokyo", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date());
+            const y = parts.find((p) => p.type === "year")?.value ?? "1970";
+            const mo = parts.find((p) => p.type === "month")?.value ?? "01";
+            const d = parts.find((p) => p.type === "day")?.value ?? "01";
+            return `${y}-${mo}-${d}T${pad(hh)}:${pad(mm)}:00+09:00`;
+          };
+          const patch: Record<string, string> = {};
+          patch.pickup_start = toIso(a);
+          patch.pickup_end = toIso(b);
+          await fetch(`${API_URL}/rest/v1/orders?id=eq.${encodeURIComponent(String(row.id))}&store_id=eq.${encodeURIComponent(String(store_id))}`, {
+            method: 'PATCH',
+            headers: {
+              apikey: ANON,
+              Authorization: `Bearer ${ANON}`,
+              'Content-Type': 'application/json',
+              Prefer: 'return=minimal',
+            },
+            body: JSON.stringify(patch),
+          });
+        }
+      }
+    } catch (e) {
+      console.error('[stripe/fulfill] pickup time update failed', e);
+    }
 
     // TODO(req v2): move stock decrement into a DB transaction (RPC) for atomicity
     try {

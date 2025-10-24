@@ -37,6 +37,9 @@ type OrdersRow = {
   total: number | null;
   placed_at: string | null;
   status: OrderStatus;
+  // TODO(req v2): DB スキーマ生成型に統一（supabase gen types）
+  pickup_start?: string | null;
+  pickup_end?: string | null;
 };
 
 type Order = {
@@ -48,6 +51,8 @@ type Order = {
   total: number;
   placedAt: string;
   status: OrderStatus;
+  pickupStart: string | null;
+  pickupEnd: string | null;
 };
 
 type ProductsRow = {
@@ -122,6 +127,8 @@ function mapOrder(r: OrdersRow): Order {
     total: Number(r.total ?? 0),
     placedAt: r.placed_at ?? new Date().toISOString(),
     status,
+    pickupStart: (r as any).pickup_start ?? null,
+    pickupEnd: (r as any).pickup_end ?? null,
   };
 }
 function mapProduct(r: ProductsRow): Product {
@@ -648,7 +655,11 @@ function useOrders() {
   const fetchAndSubscribe = useCallback(async () => {
     if (!supabase) { setReady(true); return; }
     setErr(null); cleanup();
-    const { data, error } = await supabase.from('orders').select('id,store_id,code,customer,items,total,placed_at,status').eq('store_id', getStoreId()).order('placed_at', { ascending: false });
+    const { data, error } = await supabase
+      .from('orders')
+      .select('id,store_id,code,customer,items,total,placed_at,status,pickup_start,pickup_end')
+      .eq('store_id', getStoreId())
+      .order('placed_at', { ascending: false });
     if (error) {
       setErr(error.message || 'データ取得に失敗しました');
     } else {
@@ -844,6 +855,19 @@ const StatusBadge = React.memo(function StatusBadge({ status }: { status: OrderS
 const OrderCard = React.memo(function OrderCard({ order, onHandoff }: { order: Order; onHandoff: (o: Order) => void; }) {
   const onClick = useCallback(() => onHandoff(order), [onHandoff, order]);
   const mounted = useMounted();
+  const jpPickupRange = React.useMemo(() => {
+    const fmt = (iso: string) => {
+      try {
+        return new Intl.DateTimeFormat('ja-JP', { timeZone: 'Asia/Tokyo', hour12: false, hour: '2-digit', minute: '2-digit' }).format(new Date(iso));
+      } catch { return ''; }
+    };
+    const a = order.pickupStart ? fmt(order.pickupStart) : '';
+    const b = order.pickupEnd ? fmt(order.pickupEnd) : '';
+    if (a && b) return `${a}〜${b}`;
+    if (a) return `${a}〜`;
+    if (b) return `〜${b}`;
+    return '未指定';
+  }, [order.pickupStart, order.pickupEnd]);
   return (
     <div className="rounded-2xl border bg-white shadow-sm p-4 flex flex-col gap-3">
       <div className="flex items-center justify-between">
@@ -851,6 +875,7 @@ const OrderCard = React.memo(function OrderCard({ order, onHandoff }: { order: O
         <StatusBadge status={order.status} />
       </div>
       <div className="text-sm text-zinc-600">注文ID: {order.id}</div>
+      <div className="text-sm text-zinc-700">受取時間: {jpPickupRange}</div>
       <ul className="text-sm text-zinc-800 space-y-1">
         {order.items.map((it) => (
           <li key={it.id} className="flex items-center justify-between">

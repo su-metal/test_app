@@ -112,7 +112,7 @@ export async function POST(req: NextRequest) {
         const lineUserId: string | undefined = event.source?.userId;
         if (lineUserId && supa) {
           const { error } = await supa
-            .from("user_profiles")
+            .from("line_users")
             .upsert(
               { line_user_id: lineUserId },
               { onConflict: "line_user_id" }

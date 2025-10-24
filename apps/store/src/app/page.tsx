@@ -2553,7 +2553,7 @@ function ProductForm() {
       {/* ▼ ここで見出しを追加（商品が1件以上のとき） */}
       {products.length > 0 && <SectionTitle>出品中の商品</SectionTitle>}
 
-      <div className="grid grid-cols-1 gap-3">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
         {products.map((p) => {
           return (
             <div key={p.id} className="rounded-2xl border bg-white shadow-sm overflow-hidden">
@@ -2998,7 +2998,7 @@ function OrdersPage() {
   const [overrideAsk, setOverrideAsk] = useState(false);
 
   return (
-    <main className="mx-auto max-w-[448px] px-4 py-5 space-y-6">
+    <main className="mx-auto max-w-[448px] lg:max-w-6xl px-4 py-5 space-y-6">
       {!ready && (<div className="rounded-xl border bg-white p-4 text-sm text-zinc-600">読み込み中…</div>)}
       {err ? (<div className="rounded-xl border bg-red-50 p-4 text-sm text-red-700 flex items-center justify-between"><span>{err}</span><button onClick={retry} className="rounded-lg bg-red-600 text-white px-3 py-1 text-xs">リトライ</button></div>) : null}
       <section>
@@ -3150,7 +3150,7 @@ function OrdersPage() {
 
 function ProductsPage() {
   return (
-    <main className="mx-auto max-w-[448px] px-4 py-5 space-y-8">
+    <main className="mx-auto max-w-[448px] lg:max-w-6xl px-4 py-5 space-y-8">
       <ProductForm />
       <div className="text-xs text-zinc-500">※ 商品管理は単一ページとして暫定運用。ブックマーク例: <code>#/products</code></div>
     </main>
@@ -3339,10 +3339,10 @@ function PickupPresetPage() {
     }
   };
 
-  if (loading) return <main className="mx-auto max-w-[448px] px-4 py-5"><div className="rounded-xl border bg-white p-4 text-sm text-zinc-600">読み込み中…</div></main>;
+  if (loading) return <main className="mx-auto max-w-[448px] lg:max-w-6xl px-4 py-5"><div className="rounded-xl border bg-white p-4 text-sm text-zinc-600">読み込み中…</div></main>;
 
   return (
-    <main className="mx-auto max-w-[448px] px-4 py-5 space-y-6">
+    <main className="mx-auto max-w-[448px] lg:max-w-6xl px-4 py-5 space-y-6">
       <div className="mb-1">
         <h1 className="text-lg font-semibold">受取時間プリセット設定</h1>
         <p className="text-sm text-zinc-600">最大3つのプリセットを編集し、「今使う」を選択してください（10分刻み）。</p>
@@ -3440,7 +3440,7 @@ export default function StoreApp() {
   return (
     <div className="min-h-screen bg-zinc-50">
       <header className="sticky top-0 z-40 bg-white/80 backdrop-blur supports-[backdrop-filter]:bg-white/60 border-b">
-        <div className="mx-auto max-w-[448px] px-4 py-3 flex items-center justify-between gap-2">
+        <div className="mx-auto max-w-[448px] lg:max-w-6xl px-4 py-3 flex items-center justify-between gap-2">
           {/* <div className="text-base font-semibold tracking-tight shrink-0">店側アプリ</div> */}
           <nav className="flex flex-wrap items-center gap-1 gap-y-1 text-sm">
             <a href="#/orders" className={`px-3 py-1.5 rounded-lg border shrink-0 ${routeForUI === 'orders' ? 'bg-zinc-900 text-white border-zinc-900' : 'bg-white text-zinc-700 hover:bg-zinc-50'}`} suppressHydrationWarning>注文管理</a>

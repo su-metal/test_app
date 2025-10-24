@@ -1488,8 +1488,9 @@ function CompactTicketCard({
 
     return (
         <article
-            className={`rounded-2xl border bg-white shadow-sm transition-[padding] ${isOpen ? "p-4" : "p-3"}`}
+            className={`relative rounded-2xl border bg-white shadow-sm transition-[padding] ${isOpen ? "p-4" : "p-3"}`}
             aria-label="引換チケット"
+            data-expired={expired ? "true" : "false"}
         >
             {/* ヘッダー（開閉ボタン） */}
             <button
@@ -1510,7 +1511,7 @@ function CompactTicketCard({
                     <span className="text-xs px-2 py-1 rounded bg-amber-100 text-amber-800 border border-amber-200">未引換</span>
                     {expired && (
                         <span className="text-[11px] px-2 py-0.5 rounded bg-red-100 text-red-700 border border-red-200">
-                            受取時間外
+                            受取時間超過
                         </span>
                     )}
                 </div>
@@ -1586,6 +1587,25 @@ function CompactTicketCard({
                     </div>
                 </div>
             )}
+            {/* ▼ 受取時間超過オーバーレイ（視覚的に「使えない」を明示） */}
+            {expired && (
+                <div
+                    className="
+      absolute inset-0 z-10 rounded-2xl
+      bg-black/55 backdrop-blur-[1px]
+      grid place-items-center p-4
+      pointer-events-none
+    "
+                    aria-hidden="false"
+                >
+                    <div className="text-center text-white">
+
+                        <div className="text-sm font-semibold">受取時間を過ぎたためこのチケットは使用できません</div>
+                        {/* <div className="text-[11px] opacity-90 mt-1">店舗の案内にしたがって次回の受取枠をご利用ください</div> */}
+                    </div>
+                </div>
+            )}
+
         </article>
     );
 }

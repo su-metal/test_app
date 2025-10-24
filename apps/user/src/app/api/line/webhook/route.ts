@@ -57,55 +57,81 @@ async function lineReply(replyToken: string, messages: any[]) {
 
 // ====== Webhook本体 ======
 export async function POST(req: NextRequest) {
+  // ※ セーフモード：絶対に throw しない。常に 200 で返す（LINEの再送ループ防止）
+  let rawBody = "";
+  let signature: string | null = null;
+
   try {
-    const rawBody = await req.text();
-    const signature = req.headers.get("x-line-signature");
+    rawBody = await req.text(); // ★ 1回しか読まない
+    signature = req.headers.get("x-line-signature") || null;
 
-    // Debug Logs
-    console.log("[LINE] headers", Object.fromEntries(req.headers));
-    console.log("[LINE] raw length", rawBody.length);
+    // 見えるログ（ここで落ちない）
+    console.log("[LINE][SAFE] len=", rawBody.length, "sig=", !!signature);
 
-    if (!verifyLineSignature(rawBody, signature)) {
-      console.warn("[LINE] invalid signature");
-      return new NextResponse("invalid signature", { status: 401 });
+    // ランタイムとenv確認ログ（500の定番チェック）
+    if (process.env.LINE_CHANNEL_SECRET?.length) {
+      // ok
+    } else {
+      console.warn("[LINE][SAFE] LINE_CHANNEL_SECRET is missing");
+    }
+    if (process.env.LINE_CHANNEL_ACCESS_TOKEN?.length) {
+      // ok
+    } else {
+      console.warn("[LINE][SAFE] LINE_CHANNEL_ACCESS_TOKEN is missing");
     }
 
-    const body = rawBody ? JSON.parse(rawBody) : { events: [] };
+    // 署名検証（NGでも 200 で返す—まずは落ちないことを最優先）
+    let verified = false;
+    try {
+      verified = verifyLineSignature(rawBody, signature);
+    } catch (e: any) {
+      console.error("[LINE][SAFE] verify error", e?.message || e);
+    }
+    if (!verified) {
+      console.warn(
+        "[LINE][SAFE] invalid signature (but returning 200 for debug)"
+      );
+      return NextResponse.json(
+        { ok: false, reason: "invalid-signature" },
+        { status: 200 }
+      );
+    }
+
+    // JSON 解析（失敗しても 200）
+    let body: any = null;
+    try {
+      body = rawBody ? JSON.parse(rawBody) : { events: [] };
+    } catch (e: any) {
+      console.error("[LINE][SAFE] json parse error", e?.message || e);
+      return NextResponse.json(
+        { ok: false, reason: "json-parse-failed" },
+        { status: 200 }
+      );
+    }
+
+    const events = body?.events ?? [];
     console.log(
-      "[LINE] events",
-      (body.events ?? []).map((e: any) => ({
-        type: e.type,
-        ts: e.timestamp,
-        userId: e?.source?.userId,
-      }))
+      "[LINE][SAFE] events =",
+      events.length,
+      events.map((e: any) => e.type)
     );
 
-    const supabase = getServiceClient();
-
-    for (const event of body.events ?? []) {
-      // ✅ 友だち追加：line_user_id を保存して挨拶返信
-      if (event.type === "follow") {
-        const lineUserId: string | undefined = event.source?.userId;
-
-        if (lineUserId) {
-          console.log("[LINE] follow from userId:", lineUserId);
-          // Supabase に upsert
-          const { error } = await supabase
-            .from("user_profiles")
-            .upsert(
-              { line_user_id: lineUserId },
-              { onConflict: "line_user_id" }
-            );
-          if (error) console.error("Supabase upsert error", error);
-          else console.log("Supabase upsert success");
+    // 最小動作：message: "ping" → "pong"
+    for (const event of events) {
+      if (event?.type === "message" && event?.message?.type === "text") {
+        const txt = String(event.message.text || "")
+          .trim()
+          .toLowerCase();
+        if (txt === "ping") {
+          const ok = await lineReply(event.replyToken, [
+            { type: "text", text: "pong" },
+          ]);
+          console.log("[LINE][SAFE] reply pong =", ok);
         }
-
-        console.log("[LIFF URL check]", { RAW_USER_LIFF_ID, USER_LIFF_URL });
-        const uri = isValidLiffUrl(USER_LIFF_URL)
-          ? USER_LIFF_URL
-          : "https://liff.line.me/YOUR_LIFF_ID"; // ← 念のためのフォールバック
-
-        await lineReply(event.replyToken, [
+      }
+      // follow 返信（URIはあなたの実装のままでもOK）
+      if (event?.type === "follow") {
+        const ok = await lineReply(event.replyToken, [
           {
             type: "text",
             text: "ご登録ありがとうございます！下のボタンからミニアプリを開けます👇",
@@ -116,25 +142,20 @@ export async function POST(req: NextRequest) {
             template: {
               type: "buttons",
               text: "ミニアプリを開く",
-              actions: [{ type: "uri", label: "開く", uri }],
+              actions: [{ type: "uri", label: "開く", uri: USER_LIFF_URL }],
             },
           },
         ]);
-      }
-
-      // ✅ テスト：トークで「ping」と送ると「pong」を返す
-      if (event.type === "message" && event.message?.type === "text") {
-        const txt = (event.message.text || "").trim().toLowerCase();
-        if (txt === "ping") {
-          await lineReply(event.replyToken, [{ type: "text", text: "pong" }]);
-        }
+        console.log("[LINE][SAFE] follow reply =", ok);
       }
     }
 
+    // ここまで来たら常に 200
     return NextResponse.json({ ok: true });
   } catch (e: any) {
-    console.error("[LINE Webhook] fatal", e?.message || e);
-    return new NextResponse("internal error", { status: 500 });
+    // どんな例外でも 200 を返す（ログだけ残す）
+    console.error("[LINE][SAFE] fatal", e?.message || e);
+    return NextResponse.json({ ok: false, reason: "fatal" }, { status: 200 });
   }
 }
 

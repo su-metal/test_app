@@ -10,6 +10,8 @@ export async function linePush(toUserId: string, messages: any[]) {
     },
     body: JSON.stringify({ to: toUserId, messages }),
   });
-  if (!r.ok) console.error("linePush error", r.status, await r.text());
+  if (!r.ok) {
+    console.error("linePush error", r.status, await r.text());
+  }
   return r.ok;
 }

@@ -749,7 +749,7 @@ function useOrders() {
           if (curMin >= endMin) {
             // ▲時間外：オーバーライド指定がない場合はエラーで止める
             if (!opts?.override) {
-              setErr('受取時間を過ぎたため、引換できません（店舗裁量で受け渡すこともできます）');
+              setErr('受取時間外なので、引換できません（店舗裁量で受け渡すこともできます）');
               return;
             }
             // ▼オーバーライド指定あり：続行（監査が必要なら RPC/UPDATE にフィールド追加を）
@@ -3023,7 +3023,7 @@ function OrdersPage() {
   const [overrideAsk, setOverrideAsk] = useState(false);
 
   return (
-    <main className="mx-auto max-w-[448px] lg:max-w-6xl px-4 py-5 space-y-6">
+    <main className="mx-auto max-w-[448px] md:max-w-4xl lg:max-w-6xl px-4 py-5 space-y-6">
       {!ready && (<div className="rounded-xl border bg-white p-4 text-sm text-zinc-600">読み込み中…</div>)}
       {err ? (<div className="rounded-xl border bg-red-50 p-4 text-sm text-red-700 flex items-center justify-between"><span>{err}</span><button onClick={retry} className="rounded-lg bg-red-600 text-white px-3 py-1 text-xs">リトライ</button></div>) : null}
       <section>
@@ -3041,7 +3041,7 @@ function OrdersPage() {
           >未引換を一括削除</button>
         </div>
         {pending.length === 0 ? (<div className="rounded-xl border bg-white p-6 text-sm text-zinc-600">現在、受取待ちの注文はありません。</div>) : (
-          <div className="grid grid-cols-1 gap-4">{pending.map(o => (<OrderCard key={o.id} order={o} onHandoff={setCurrent} />))}</div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">{pending.map(o => (<OrderCard key={o.id} order={o} onHandoff={setCurrent} />))}</div>
         )}
       </section>
       <section>
@@ -3056,7 +3056,7 @@ function OrdersPage() {
           >一括削除</button>
         </div>
         {fulfilled.length === 0 ? (<div className="rounded-xl border bg-white p-6 text-sm text-zinc-600">まだ受け渡し済みの注文はありません。</div>) : (
-          <div className="grid grid-cols-1 gap-4 opacity-90">{fulfilled.map(o => (<OrderCard key={o.id} order={o} onHandoff={() => { }} />))}</div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 opacity-90">{fulfilled.map(o => (<OrderCard key={o.id} order={o} onHandoff={() => { }} />))}</div>
         )}
       </section>
       {current && (

@@ -1591,6 +1591,45 @@ function CompactTicketCard({
 }
 
 
+// ▼ 開閉用アイコン
+const Caret = ({ open }: { open: boolean }) => (
+    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden className={[
+        "transition-transform duration-200",
+        open ? "rotate-180" : "rotate-0"
+    ].join(" ")}>
+        <path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+);
+
+// ▼ 「店舗詳細を見る」ボタン（見た目＆アクセシビリティ統一）
+function DisclosureButton({
+    open, onClick, controlsId, children,
+}: { open: boolean; onClick: () => void; controlsId: string; children: React.ReactNode }) {
+    return (
+        <button
+            type="button"
+            onClick={onClick}
+            aria-expanded={open}
+            aria-controls={controlsId}
+            className={[
+                "w-full h-12 rounded-xl border",
+                "bg-white hover:bg-zinc-50 text-zinc-800",
+                "flex items-center justify-between px-3",
+                "shadow-sm transition-colors focus:outline-none focus:ring-2 focus:ring-zinc-900/10"
+            ].join(" ")}
+        >
+            <span className="flex items-center gap-2">
+                <span className="inline-block rounded-md bg-zinc-100 px-1.5 py-0.5 text-[11px]">i</span>
+                <span className="text-sm font-medium">
+                    {children}
+                </span>
+            </span>
+            <Caret open={open} />
+        </button>
+    );
+}
+
+
 
 export default function UserPilotApp() {
 
@@ -3944,12 +3983,33 @@ export default function UserPilotApp() {
                                                     <button
                                                         type="button"
                                                         onClick={() => setMetaOpen(prev => ({ ...prev, [s.id]: !prev[s.id] }))}
-                                                        className="w-full my-3 text-center text-sm text-zinc-600 hover:text-zinc-800"
                                                         aria-expanded={isOpen}
                                                         aria-controls={`shop-meta-${s.id}`}
+                                                        className="w-full my-3 text-center"
                                                     >
-                                                        {isOpen ? "店舗詳細を閉じる" : "店舗詳細を見る"}
+                                                        {/* テキスト＋アイコンを“ひとかたまり”で中央配置 */}
+                                                        <span
+                                                            className="
+      inline-flex items-center justify-center gap-1.5
+      px-3 py-2
+      text-sm text-zinc-700
+      bg-transparent
+      hover:opacity-80 focus:outline-none focus:ring-2 focus:ring-zinc-400/40
+      transition"
+                                                        >
+                                                            <span className="leading-none">
+                                                                {isOpen ? "店舗詳細を閉じる" : "店舗詳細を見る"}
+                                                            </span>
+                                                            {/* テキストの“すぐ右”にディスクロージャーアイコン */}
+                                                            <svg
+                                                                className={`h-[14px] w-[14px] transition-transform ${isOpen ? "rotate-180" : ""}`}
+                                                                viewBox="0 0 24 24" aria-hidden="true"
+                                                            >
+                                                                <path d="M6 9l6 6 6-6" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+                                                            </svg>
+                                                        </span>
                                                     </button>
+
                                                 </div>
 
 

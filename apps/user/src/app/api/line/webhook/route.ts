@@ -1,10 +1,22 @@
+// apps/user/src/app/api/line/webhook/route.ts
 export const runtime = "nodejs";
 
 import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
 import { createClient } from "@supabase/supabase-js";
 
-// ====== Supabase Server Client (service_role) ======
+/* =========================
+   0) 環境変数（Vercelに設定必須）
+   - LINE_CHANNEL_SECRET
+   - LINE_CHANNEL_ACCESS_TOKEN
+   - SUPABASE_URL
+   - SUPABASE_SERVICE_ROLE_KEY
+   - USER_LIFF_ID  ← 例: 1651234567-abcd12（ID“だけ”）
+   ========================= */
+
+/* =========================
+   1) Supabase（Server専用：service_role）
+   ========================= */
 function getServiceClient() {
   const url = process.env.SUPABASE_URL!;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY!;
@@ -13,8 +25,10 @@ function getServiceClient() {
   });
 }
 
-// ====== LIFF URL（https://liff.line.me/<LIFF_ID> 形式）======
-const RAW_USER_LIFF_ID = process.env.USER_LIFF_ID ?? "YOUR_LIFF_ID"; // ← IDだけを入力
+/* =========================
+   2) LIFF URLの正規化（https://liff.line.me/<ID>）
+   ========================= */
+const RAW_USER_LIFF_ID = process.env.USER_LIFF_ID ?? "YOUR_LIFF_ID";
 function makeLiffUrl(idOrUrl: string): string {
   let s = (idOrUrl || "").trim();
   s = s.replace(/^https?:\/\/[^/]+\/?/i, "");
@@ -28,7 +42,9 @@ function isValidLiffUrl(u: string): boolean {
 }
 const USER_LIFF_URL = makeLiffUrl(RAW_USER_LIFF_ID);
 
-// ====== 署名検証 ======
+/* =========================
+   3) 署名検証
+   ========================= */
 function verifyLineSignature(rawBody: string, signature: string | null) {
   const secret = process.env.LINE_CHANNEL_SECRET;
   if (!secret) return false;
@@ -39,7 +55,9 @@ function verifyLineSignature(rawBody: string, signature: string | null) {
   return !!signature && hmac === signature;
 }
 
-// ====== LINE Messaging API 返信関数 ======
+/* =========================
+   4) Messaging API（reply）
+   ========================= */
 async function lineReply(replyToken: string, messages: any[]) {
   const res = await fetch("https://api.line.me/v2/bot/message/reply", {
     method: "POST",
@@ -55,83 +73,65 @@ async function lineReply(replyToken: string, messages: any[]) {
   return res.ok;
 }
 
-// ====== Webhook本体 ======
+/* =========================
+   5) Webhook 本体
+   ========================= */
 export async function POST(req: NextRequest) {
-  // ※ セーフモード：絶対に throw しない。常に 200 で返す（LINEの再送ループ防止）
-  let rawBody = "";
-  let signature: string | null = null;
-
   try {
-    rawBody = await req.text(); // ★ 1回しか読まない
-    signature = req.headers.get("x-line-signature") || null;
+    // A) rawBody を1回だけ読む
+    const rawBody = await req.text();
+    const signature = req.headers.get("x-line-signature");
 
-    // 見えるログ（ここで落ちない）
-    console.log("[LINE][SAFE] len=", rawBody.length, "sig=", !!signature);
+    // B) デバッグログ（見え方の確認用）
+    console.log("[LINE] len=", rawBody.length, "sig=", !!signature);
 
-    // ランタイムとenv確認ログ（500の定番チェック）
-    if (process.env.LINE_CHANNEL_SECRET?.length) {
-      // ok
-    } else {
-      console.warn("[LINE][SAFE] LINE_CHANNEL_SECRET is missing");
-    }
-    if (process.env.LINE_CHANNEL_ACCESS_TOKEN?.length) {
-      // ok
-    } else {
-      console.warn("[LINE][SAFE] LINE_CHANNEL_ACCESS_TOKEN is missing");
+    // C) 署名検証
+    if (!verifyLineSignature(rawBody, signature)) {
+      console.warn("[LINE] invalid signature");
+      return new NextResponse("invalid signature", { status: 401 });
     }
 
-    // 署名検証（NGでも 200 で返す—まずは落ちないことを最優先）
-    let verified = false;
-    try {
-      verified = verifyLineSignature(rawBody, signature);
-    } catch (e: any) {
-      console.error("[LINE][SAFE] verify error", e?.message || e);
-    }
-    if (!verified) {
-      console.warn(
-        "[LINE][SAFE] invalid signature (but returning 200 for debug)"
-      );
-      return NextResponse.json(
-        { ok: false, reason: "invalid-signature" },
-        { status: 200 }
-      );
-    }
+    // D) JSON 化
+    const body = rawBody ? JSON.parse(rawBody) : { events: [] };
 
-    // JSON 解析（失敗しても 200）
-    let body: any = null;
-    try {
-      body = rawBody ? JSON.parse(rawBody) : { events: [] };
-    } catch (e: any) {
-      console.error("[LINE][SAFE] json parse error", e?.message || e);
-      return NextResponse.json(
-        { ok: false, reason: "json-parse-failed" },
-        { status: 200 }
-      );
-    }
-
-    const events = body?.events ?? [];
+    // E) まずはイベントの要点を必ず出す（ここで userId を確認できます）
     console.log(
-      "[LINE][SAFE] events =",
-      events.length,
-      events.map((e: any) => e.type)
+      "[LINE] events",
+      (body.events ?? []).map((e: any) => ({
+        type: e.type,
+        source: e?.source?.type,
+        userId: e?.source?.userId,
+        msg: e?.message?.type,
+      }))
     );
 
-    // 最小動作：message: "ping" → "pong"
-    for (const event of events) {
-      if (event?.type === "message" && event?.message?.type === "text") {
-        const txt = String(event.message.text || "")
-          .trim()
-          .toLowerCase();
-        if (txt === "ping") {
-          const ok = await lineReply(event.replyToken, [
-            { type: "text", text: "pong" },
-          ]);
-          console.log("[LINE][SAFE] reply pong =", ok);
+    // F) Supabase クライアント
+    const supa = getServiceClient();
+
+    // G) イベント処理
+    for (const event of body.events ?? []) {
+      /* --- ❶ follow: userId を DB に保存（= line_user_id） --- */
+      if (event.type === "follow") {
+        const lineUserId: string | undefined = event.source?.userId; // ← Uxxxxxxxx...
+        if (lineUserId) {
+          const { error } = await supa
+            .from("user_profiles")
+            .upsert(
+              { line_user_id: lineUserId },
+              { onConflict: "line_user_id" }
+            );
+          if (error) {
+            console.error("Supabase upsert error", error);
+          } else {
+            console.log("[LINE] saved line_user_id:", lineUserId);
+          }
         }
-      }
-      // follow 返信（URIはあなたの実装のままでもOK）
-      if (event?.type === "follow") {
-        const ok = await lineReply(event.replyToken, [
+
+        // あいさつ＋ミニアプリ起動ボタン
+        const uri = isValidLiffUrl(USER_LIFF_URL)
+          ? USER_LIFF_URL
+          : "https://liff.line.me/YOUR_LIFF_ID"; // フォールバック（必要なら置換）
+        await lineReply(event.replyToken, [
           {
             type: "text",
             text: "ご登録ありがとうございます！下のボタンからミニアプリを開けます👇",
@@ -142,24 +142,35 @@ export async function POST(req: NextRequest) {
             template: {
               type: "buttons",
               text: "ミニアプリを開く",
-              actions: [{ type: "uri", label: "開く", uri: USER_LIFF_URL }],
+              actions: [{ type: "uri", label: "開く", uri }],
             },
           },
         ]);
-        console.log("[LINE][SAFE] follow reply =", ok);
+      }
+
+      /* --- ❷ 動作テスト: 「ping」→「pong」 --- */
+      if (event.type === "message" && event.message?.type === "text") {
+        const txt = String(event.message.text || "")
+          .trim()
+          .toLowerCase();
+        if (txt === "ping") {
+          await lineReply(event.replyToken, [{ type: "text", text: "pong" }]);
+        }
       }
     }
 
-    // ここまで来たら常に 200
+    // H) すぐに 200 を返す
     return NextResponse.json({ ok: true });
   } catch (e: any) {
-    // どんな例外でも 200 を返す（ログだけ残す）
-    console.error("[LINE][SAFE] fatal", e?.message || e);
-    return NextResponse.json({ ok: false, reason: "fatal" }, { status: 200 });
+    console.error("[LINE] fatal", e?.message || e);
+    // ここで 500 を返すとLINEが再送してくるため、必要なら 200 にしてもOK
+    return new NextResponse("internal error", { status: 500 });
   }
 }
 
-// ====== GETメソッド制限 ======
+/* =========================
+   6) GET は 405
+   ========================= */
 export function GET() {
   return new NextResponse("Method Not Allowed", { status: 405 });
 }

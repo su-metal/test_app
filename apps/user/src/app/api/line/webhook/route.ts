@@ -105,8 +105,31 @@ export async function POST(req: NextRequest) {
     );
 
     const supa = getServiceClientOrNull();
+    let collected = 0;
+    let upserted = 0;
 
     for (const event of body.events ?? []) {
+      // 任意イベントで userId を収集し upsert（冪等）
+      const anyUserId: string | undefined = event?.source?.userId;
+      if (anyUserId) {
+        collected++;
+        if (supa) {
+          try {
+            const { error } = await supa
+              .from("line_users")
+              .upsert({ line_user_id: anyUserId }, { onConflict: "line_user_id" });
+            if (error) {
+              console.error("[LINE webhook] upsert error", error?.message || error);
+            } else {
+              upserted++;
+            }
+          } catch (e: any) {
+            console.error("[LINE webhook] upsert fatal", e?.message || e);
+          }
+        } else {
+          console.warn("[LINE webhook] skip upsert: supabase env missing");
+        }
+      }
       // 友だち追加：userId 保存（Supabase未設定ならスキップ）
       if (event.type === "follow") {
         const lineUserId: string | undefined = event.source?.userId;
@@ -157,7 +180,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    return NextResponse.json({ ok: true });
+    return NextResponse.json({ ok: true, collected, upserted });
   } catch (e: any) {
     console.error("[LINE] fatal", e?.message || e);
     // 開発中は 200 にして再送ループを防いでもOK（安定後は500でも可）

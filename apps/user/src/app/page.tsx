@@ -1466,12 +1466,15 @@ function TinyQR({
 function CompactTicketCard({
     o,
     pickupLabelFor,
+    presetPickupLabel,
     isOpen,
     onToggle,
     onDelete,
 }: {
     o: Order;
     pickupLabelFor: (storeId: string, productSlotNo?: number | null) => string | null;
+    /** 商品に紐づく受取時間（プリセット）ラベル。可能なら product のスロットから算出した値を渡す */
+    presetPickupLabel?: string | null;
     isOpen: boolean;
     onToggle: () => void;
     onDelete?: () => void;
@@ -1481,7 +1484,8 @@ function CompactTicketCard({
     })();
     const created = new Date(o.createdAt);
     const selectedPickup = o?.lines?.[0]?.item?.pickup || "";
-    const presetPickup = pickupLabelFor?.(o.shopId) || "";
+    // 店側の現在スロットではなく、購入商品の設定枠のみを表示
+    const presetPickup = String(presetPickupLabel || "");
     const norm = (s: string) => (s || "").replace(/[—–~\-]/g, "〜");
     const expired = selectedPickup ? isPickupExpired(selectedPickup) : false;
     const panelId = `ticket-${o.id}`;
@@ -4399,6 +4403,7 @@ export default function UserPilotApp() {
                                                 key={o.id}
                                                 o={o}
                                                 pickupLabelFor={pickupLabelFor}
+                                                presetPickupLabel={(() => { const firstLine = (o?.lines?.[0] ?? null) as any; const pid = String(firstLine?.item?.id ?? ""); const dp = (dbProducts || []).find((p: any) => String(p?.id) === pid); const slotNo = (dp as any)?.pickup_slot_no; return (typeof slotNo === 'number') ? (pickupLabelFor(o.shopId, slotNo) || '') : ''; })()}
                                                 isOpen={isOpen}
                                                 onToggle={() => setOpenTicketIdOrder(isOpen ? null : o.id)}
                                                 onDelete={() => {

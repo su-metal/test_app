@@ -80,6 +80,55 @@ export async function GET(req: Request) {
     const rows = await res.json();
     const row = Array.isArray(rows) ? rows[0] : rows;
 
+    // TODO(req v2): move stock decrement into a DB transaction (RPC) for atomicity
+    try {
+      const qtyById = new Map<string, number>();
+      for (const it of items) {
+        const id = String(it.id);
+        const q = Math.max(0, Number(it.qty) || 0);
+        qtyById.set(id, (qtyById.get(id) || 0) + q);
+      }
+
+      if (qtyById.size > 0) {
+        const idsIn = Array.from(qtyById.keys()).map(encodeURIComponent).join(',');
+        const qRes = await fetch(`${API_URL}/rest/v1/products?id=in.(${idsIn})&select=id,stock,store_id`, {
+          method: 'GET',
+          headers: { apikey: ANON, Authorization: `Bearer ${ANON}` },
+          cache: 'no-store',
+        });
+        if (qRes.ok) {
+          const curRows = (await qRes.json()) as Array<{ id: string; stock?: number; store_id?: string }>;
+          for (const r of curRows) {
+            const pid = String(r.id);
+            const dec = qtyById.get(pid) || 0;
+            if (!dec) continue;
+            const current = Math.max(0, Number(r.stock || 0) || 0);
+            const next = Math.max(0, current - dec);
+            try {
+              const u = await fetch(`${API_URL}/rest/v1/products?id=eq.${encodeURIComponent(pid)}&store_id=eq.${encodeURIComponent(store_id)}`, {
+                method: 'PATCH',
+                headers: {
+                  apikey: ANON,
+                  Authorization: `Bearer ${ANON}`,
+                  'Content-Type': 'application/json',
+                  Prefer: 'return=minimal',
+                },
+                body: JSON.stringify({ stock: next }),
+              });
+              if (!u.ok) {
+                const t = await u.text().catch(() => '');
+                console.error('[stripe/fulfill] stock update failed', pid, u.status, t);
+              }
+            } catch (e) {
+              console.error('[stripe/fulfill] stock update error', pid, e);
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.error('[stripe/fulfill] stock decrement block error', e);
+    }
+
     // フロントのローカル履歴へ反映しやすい形で返す
     const orderForClient = {
       id: String(row?.id ?? ""),

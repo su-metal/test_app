@@ -1,12 +1,5 @@
 "use client";
 import { useState } from 'react';
-import { createClient } from '@supabase/supabase-js';
-
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-);
-
 export default function Login() {
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -18,21 +11,25 @@ export default function Login() {
     const form = e.currentTarget as any;
     const email = form.email.value as string;
     const password = form.password.value as string;
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
-    setLoading(false);
-    if (error) { setErrorMsg(error.message); return; }
-    const next = new URLSearchParams(location.search).get('next') || '/';
-    location.replace(next);
+    try {
+      const r = await fetch('/api/auth/login/password', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email, password }) });
+      setLoading(false);
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) { setErrorMsg(j?.error || 'ログインに失敗しました'); return; }
+      if (j?.need_store_select) {
+        location.replace('/select-store');
+        return;
+      }
+      const next = new URLSearchParams(location.search).get('next') || '/';
+      location.replace(next);
+    } catch (err) {
+      setLoading(false);
+      setErrorMsg((err as any)?.message || 'ログインに失敗しました');
+      return;
+    }
   }
 
-  async function onResetPassword() {
-    const email = (document.querySelector('input[name="email"]') as HTMLInputElement | null)?.value || '';
-    const input = window.prompt('パスワード再設定用のメールアドレスを入力してください', email);
-    if (!input) return;
-    const { error } = await supabase.auth.resetPasswordForEmail(input, { redirectTo: window.location.origin + '/login' });
-    if (error) alert(error.message); else alert('再設定用のメールを送信しました');
-  }
-
+  async function onResetPassword() { alert('パスワードリセットは未設定です'); }\n
   return (
     <form onSubmit={onSubmit} className="p-6 space-y-4 max-w-sm mx-auto">
       <h1 className="text-xl font-semibold">店舗ログイン</h1>
@@ -52,4 +49,5 @@ export default function Login() {
     </form>
   );
 }
+
 

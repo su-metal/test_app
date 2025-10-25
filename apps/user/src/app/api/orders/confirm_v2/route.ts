@@ -2,8 +2,10 @@
 export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
+import { cookies } from "next/headers";
 import { createClient } from "@supabase/supabase-js";
 import { linePush } from "@/lib/line";
+import { COOKIE_NAME as USER_COOKIE, verifySessionCookie } from "@/lib/session";
 
 const supabase = createClient(
   process.env.SUPABASE_URL!,
@@ -13,49 +15,43 @@ const supabase = createClient(
 type Body = {
   items: Array<{ sku: string; qty: number }>;
   total: number;
-  lineUserId: string; // 必須（LIFFの sub, "U..."）
-  pickupStart?: string | null; // 任意（ISO）。なければ now() を入れる
-  storeId?: string | null; // あるテーブルなら渡す
-  customer?: string | null; // あるテーブルなら渡す
+  lineUserId?: string; // サーバセッションで確定
+  pickupStart?: string | null; // 任意（ISO）。なければ now() 使用
+  storeId?: string | null; // 任意テーブルなら任意
+  customer?: string | null; // 任意テーブルなら任意
 };
 
 export async function POST(req: Request) {
   try {
     const body = (await req.json()) as Body;
 
-    if (!body?.lineUserId) {
-      return NextResponse.json(
-        { ok: false, error: "LINE_USER_ID_REQUIRED" },
-        { status: 400 }
-      );
-    }
+    const secret = process.env.USER_SESSION_SECRET || process.env.LINE_CHANNEL_SECRET || "";
+    if (!secret) return NextResponse.json({ ok: false, error: "server-misconfig:secret" }, { status: 500 });
+    const c = await cookies();
+    const sess = verifySessionCookie(c.get(USER_COOKIE)?.value, secret);
+    if (!sess) return NextResponse.json({ ok: false, error: "no-line-session" }, { status: 401 });
+    const lineUserId = sess.sub;
+
     if (!Array.isArray(body?.items) || body.items.length === 0) {
-      return NextResponse.json(
-        { ok: false, error: "ITEMS_REQUIRED" },
-        { status: 400 }
-      );
+      return NextResponse.json({ ok: false, error: "ITEMS_REQUIRED" }, { status: 400 });
     }
     if (typeof body?.total !== "number") {
-      return NextResponse.json(
-        { ok: false, error: "TOTAL_REQUIRED" },
-        { status: 400 }
-      );
+      return NextResponse.json({ ok: false, error: "TOTAL_REQUIRED" }, { status: 400 });
     }
 
     const pickupStartIso =
-      (body.pickupStart && new Date(body.pickupStart).toISOString()) ||
-      new Date().toISOString();
+      (body.pickupStart && new Date(body.pickupStart).toISOString()) || new Date().toISOString();
 
     const insertPayload: any = {
       status: "PENDING",
       total: body.total,
-      items: body.items ?? null, // jsonbがあれば
-      customer: body.customer ?? null, // textがあれば
+      items: body.items ?? null, // jsonb想定
+      customer: body.customer ?? null, // text想定
       store_id: body.storeId ?? null, // NOT NULLなら必須で渡す
       pickup_start: pickupStartIso,
       reminded_at: null,
-      line_user_id: body.lineUserId, // ★ここだけ必須
-      placed_at: new Date().toISOString(), // 列があれば
+      line_user_id: lineUserId, // 必須
+      placed_at: new Date().toISOString(),
     };
 
     const { data: order, error: insertErr } = await supabase
@@ -75,7 +71,7 @@ export async function POST(req: Request) {
     if (!order.line_user_id) {
       const { error: fixErr } = await supabase
         .from("orders")
-        .update({ line_user_id: body.lineUserId })
+        .update({ line_user_id: lineUserId })
         .eq("id", order.id)
         .is("line_user_id", null); // 冪等
       if (fixErr)
@@ -85,23 +81,21 @@ export async function POST(req: Request) {
         );
     }
 
-    // 任意：到達確認の軽いPush（失敗は致命にしない）
+    // 簡易Push
     try {
-      await linePush(body.lineUserId, [
-        {
-          type: "text",
-          text: "🍜 ご注文を受け付けました。受け取り10分前にリマインドします。",
-        },
+      await linePush(lineUserId, [
+        { type: "text", text: "✅ ご注文ありがとうございます。受け取り10分前にリマインドします。" },
       ]);
     } catch (e) {
       console.error("[orders/confirm_v2] push warn:", (e as any)?.message ?? e);
     }
 
     const res = NextResponse.json({ ok: true, orderId: order.id });
-    res.headers.set("x-orders-confirm", "user-app@v2"); // 識別ヘッダ
+    res.headers.set("x-orders-confirm", "user-app@v2");
     return res;
   } catch (e) {
     console.error("[orders/confirm_v2] fatal:", (e as any)?.message ?? e);
     return NextResponse.json({ ok: false }, { status: 500 });
   }
 }
+

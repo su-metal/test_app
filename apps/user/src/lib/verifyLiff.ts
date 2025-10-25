@@ -11,6 +11,10 @@ export async function verifyLiffIdToken(authorizationHeader: string | null | und
   const m = header.match(/^Bearer\s+(.+)$/i);
   if (!m) throw new Error("Authorization ヘッダーが Bearer 形式ではありません");
   const idToken = m[1].trim();
+  return verifyLiffTokenString(idToken);
+}
+
+export async function verifyLiffTokenString(idToken: string): Promise<string> {
   if (!idToken) throw new Error("ID トークンが空です");
 
   const channelId = process.env.LINE_LOGIN_CHANNEL_ID || process.env.LINE_CHANNEL_ID || "";

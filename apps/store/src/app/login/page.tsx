@@ -29,7 +29,7 @@ export default function Login() {
     }
   }
 
-  async function onResetPassword() { alert('パスワードリセットは未設定です'); }\n
+  async function onResetPassword() { alert('パスワードリセットは未設定です'); }
   return (
     <form onSubmit={onSubmit} className="p-6 space-y-4 max-w-sm mx-auto">
       <h1 className="text-xl font-semibold">店舗ログイン</h1>

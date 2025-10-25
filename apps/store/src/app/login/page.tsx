@@ -11,9 +11,22 @@ export default function Login() {
     const form = e.currentTarget as any;
     const email = form.email.value as string;
     const password = form.password.value as string;
-    try { const r = await fetch('/api/auth/login/password', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email, password }) }); setLoading(false); if (!r.ok) { const j = await r.json().catch(() => ({})); setErrorMsg(j?.error || 'ログインに失敗しました'); return; } } catch (err) { setLoading(false); setErrorMsg((err as any)?.message || 'ログインに失敗しました'); return; }
-    const next = new URLSearchParams(location.search).get('next') || '/';
-    location.replace(next);
+    try {
+      const r = await fetch('/api/auth/login/password', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email, password }) });
+      setLoading(false);
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) { setErrorMsg(j?.error || 'ログインに失敗しました'); return; }
+      if (j?.need_store_select) {
+        location.replace('/select-store');
+        return;
+      }
+      const next = new URLSearchParams(location.search).get('next') || '/';
+      location.replace(next);
+    } catch (err) {
+      setLoading(false);
+      setErrorMsg((err as any)?.message || 'ログインに失敗しました');
+      return;
+    }
   }
 
   async function onResetPassword() { alert('パスワードリセットは未設定です'); }\n

@@ -3328,7 +3328,7 @@ function PickupPresetPage() {
       await upsertPickupPresets(presets);
 
       // 旧: SDK 直 upsert は無効化
-      if (false) {
+      if (true) {
         const payload = SLOT_NUMBERS.map((s) => ({
           // TODO(req v2): store_id は固定値禁止。常にログインユーザーの店舗IDを使用
           store_id: myStoreId2,

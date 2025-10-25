@@ -44,7 +44,7 @@ export async function POST(req: NextRequest) {
   let expectedStoreId: string | null = null;
   const liffUrl = makeLiffUrl(process.env.USER_LIFF_ID);
   const lineToken = process.env.LINE_CHANNEL_ACCESS_TOKEN;
-  const secret = process.env.ADMIN_DASHBOARD_SECRET || process.env.LINE_LOGIN_CHANNEL_SECRET || "";
+  const secret = process.env.STORE_SESSION_SECRET || process.env.ADMIN_DASHBOARD_SECRET || process.env.LINE_LOGIN_CHANNEL_SECRET || "";
 
   if (!url || !serviceKey) {
     return NextResponse.json({ ok: false, error: "server-misconfig:supabase" }, { status: 500 });

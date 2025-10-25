@@ -14,24 +14,28 @@ declare global {
 
 export default function SupabaseBoot() {
     useEffect(() => {
-        // 1) env → window へ載せる（App RouterのSSR/CSR差吸収用）
+        // 1) env を window にブリッジ（SSR/CSR 共通）
         if (!window.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_URL) {
             window.NEXT_PUBLIC_SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL as string;
         }
         if (!window.NEXT_PUBLIC_SUPABASE_ANON_KEY && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) {
             window.NEXT_PUBLIC_SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY as string;
         }
-        // 選択済みの店舗IDを localStorage から反映（env へはフォールバックしない）
-        try {
-            const saved = typeof window !== 'undefined' ? localStorage.getItem('store:selected') : null;
-            if (saved) {
-                window.__STORE_ID__ = saved;
-            }
-        } catch {
-            /* noop */
-        }
 
-        // 2) Supabase クライアントを一度だけ生成して保持
+        // 2) サーバーセッションから店舗IDを取得し __STORE_ID__ に反映（localStorage 依存を撤廃）
+        (async () => {
+            try {
+                const r = await fetch('/api/auth/session/inspect', { cache: 'no-store' });
+                const j = await r.json().catch(() => ({} as any));
+                if (r.ok && typeof j?.store_id === 'string') {
+                    window.__STORE_ID__ = j.store_id || '';
+                } else {
+                    window.__STORE_ID__ = '';
+                }
+            } catch { window.__STORE_ID__ = ''; }
+        })();
+
+        // 3) Supabase クライアントの単一生成
         if (!window.__supabase) {
             const url = window.NEXT_PUBLIC_SUPABASE_URL;
             const key = window.NEXT_PUBLIC_SUPABASE_ANON_KEY;
@@ -43,3 +47,4 @@ export default function SupabaseBoot() {
 
     return null;
 }
+

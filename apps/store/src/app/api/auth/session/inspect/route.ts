@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { COOKIE_NAME, verifySessionCookie } from "@/lib/session";
 
 export async function GET() {
-  const secret = process.env.ADMIN_DASHBOARD_SECRET || process.env.LINE_LOGIN_CHANNEL_SECRET || "";
+  const secret = process.env.STORE_SESSION_SECRET || process.env.ADMIN_DASHBOARD_SECRET || process.env.LINE_LOGIN_CHANNEL_SECRET || "";
   if (!secret) return NextResponse.json({ error: "server-misconfig:secret" }, { status: 500 });
   const c = await cookies();
   const sess = verifySessionCookie(c.get(COOKIE_NAME)?.value, secret);
@@ -12,4 +12,3 @@ export async function GET() {
 }
 
 export const runtime = "nodejs";
-

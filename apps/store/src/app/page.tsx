@@ -777,6 +777,20 @@ function useOrders() {
         prev.map(o => (o.id === String(row.id) ? mapOrder(row) : o)),
       );
       orderChan.post({ type: 'ORDER_FULFILLED', orderId: String(row.id), at: Date.now() });
+
+      // TODO(req v2): fulfill_order 側で COMPLETED まで遷移＆通知トリガを内包する設計に統合。
+      // 現状は UI 操作 → RPC（受け渡し）→ 即時 Push API で通知。失敗してもオペレーションは継続。
+      try {
+        fetch('/api/store/orders/complete', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ orderId: String(row.id) }),
+        }).then(async (r) => {
+          if (!r.ok) {
+            console.warn('[complete] push api error', r.status, await r.text());
+          }
+        }).catch(() => {/* noop */});
+      } catch {/* noop */}
     }
   }, [supabase, orders, orderChan, setOrders, setErr]);
 

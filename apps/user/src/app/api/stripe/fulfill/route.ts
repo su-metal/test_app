@@ -1,6 +1,8 @@
 // app/api/stripe/fulfill/route.ts
 import Stripe from "stripe";
 import { NextResponse } from "next/server";
+import { cookies } from "next/headers";
+import { COOKIE_NAME as USER_COOKIE, verifySessionCookie } from "@/lib/session";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
 
@@ -71,6 +73,27 @@ export async function GET(req: Request) {
     }
     const pick = parsePickupLabelToJstIsoRange(pickup_label);
 
+    // LINE ユーザーID（Stripe メタ or PI メタ or Cookie）
+    let lineUserId: string | undefined = (session.metadata?.line_user_id as string | undefined);
+    try {
+      if (!lineUserId) {
+        const pi: any = session.payment_intent;
+        const metaVal = pi?.metadata?.line_user_id;
+        if (typeof metaVal === 'string' && metaVal.trim()) lineUserId = metaVal.trim();
+      }
+    } catch { /* noop */ }
+    if (!lineUserId) {
+      try {
+        const secret = process.env.USER_SESSION_SECRET || process.env.LINE_CHANNEL_SECRET || "";
+        if (secret) {
+          const c = await cookies();
+          const sess = verifySessionCookie(c.get(USER_COOKIE)?.value, secret);
+          const sub = sess?.sub && String(sess.sub).trim();
+          if (sub) lineUserId = sub;
+        }
+      } catch { /* noop */ }
+    }
+
     // Supabase REST へ INSERT（RLSが許可されている前提）
     const payload: any = {
       store_id,
@@ -80,6 +103,7 @@ export async function GET(req: Request) {
       total, // 数値
       status: "PENDING", // 店側で引換完了に更新する前の状態
     };
+    if (lineUserId) (payload as any).line_user_id = lineUserId;
 
     if (pick?.start) payload.pickup_start = pick.start;
     if (pick?.end) payload.pickup_end = pick.end;

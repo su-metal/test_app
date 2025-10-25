@@ -1,6 +1,8 @@
 // apps/user/src/app/api/stripe/create-checkout-session/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import Stripe from "stripe";
+import { cookies } from 'next/headers';
+import { COOKIE_NAME as USER_COOKIE, verifySessionCookie } from '@/lib/session';
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
 
@@ -14,7 +16,17 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
  *   returnUrl: string
  * }
  */
-export async function POST(req: NextRequest) {
+export async function POST(req: NextRequest) {  // LINE ユーザーID（存在時のみ）
+  let lineUserId: string | undefined;
+  try {
+    const secret = process.env.USER_SESSION_SECRET || process.env.LINE_CHANNEL_SECRET || "";
+    if (secret) {
+      const c = await cookies();
+      const sess = verifySessionCookie(c.get(USER_COOKIE)?.value, secret);
+      const sub = sess?.sub && String(sess.sub).trim();
+      if (sub) lineUserId = sub;
+    }
+  } catch { /* noop */ }
   try {
     const { storeId, userEmail, lines, pickup, returnUrl } = await req.json();
 
@@ -62,7 +74,10 @@ export async function POST(req: NextRequest) {
 
       // ★ カード選択を出すキー3点
       customer: customerId,
-      payment_intent_data: { setup_future_usage: "off_session" },
+      payment_intent_data: {
+        setup_future_usage: "off_session",
+        ...(lineUserId ? { metadata: { line_user_id: lineUserId } } : {}),
+      },
 
       // ★ 型にある指定だけを使う
       payment_method_types: ["card"],
@@ -72,7 +87,8 @@ export async function POST(req: NextRequest) {
 
       // fulfill 側の要件: store_id, items_json, pickup_label, email
       metadata: {
-        store_id: String(storeId ?? ""),
+        ...(lineUserId ? { line_user_id: lineUserId } : {}),
+                store_id: String(storeId ?? ""),
         items_json: JSON.stringify(lines ?? []),
         pickup_label: String(pickup ?? ""),
         email: String(userEmail ?? ""),

@@ -1,0 +1,1 @@
+https://developers.line.biz/ja/docs/liff/

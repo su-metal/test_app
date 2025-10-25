@@ -39,16 +39,15 @@ type Body = { orderId?: string };
 export async function POST(req: NextRequest) {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  const expectedStoreId = process.env.NEXT_PUBLIC_STORE_ID;
+  // セッションに格納された選択中の店舗IDで判定
+  // TODO(req v2): DB 側RLSも store_id による越境防止を厳密化
+  let expectedStoreId: string | null = null;
   const liffUrl = makeLiffUrl(process.env.USER_LIFF_ID);
   const lineToken = process.env.LINE_CHANNEL_ACCESS_TOKEN;
   const secret = process.env.ADMIN_DASHBOARD_SECRET || process.env.LINE_LOGIN_CHANNEL_SECRET || "";
 
   if (!url || !serviceKey) {
     return NextResponse.json({ ok: false, error: "server-misconfig:supabase" }, { status: 500 });
-  }
-  if (!expectedStoreId) {
-    return NextResponse.json({ ok: false, error: "server-misconfig:store" }, { status: 500 });
   }
   if (!lineToken) {
     return NextResponse.json({ ok: false, error: "server-misconfig:line-token" }, { status: 500 });
@@ -62,8 +61,12 @@ export async function POST(req: NextRequest) {
     const cookieStore = await cookies();
     const sess = verifySessionCookie(cookieStore.get(COOKIE_NAME)?.value, secret);
     if (!sess) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
+    expectedStoreId = String(sess.store_id || "").trim() || null;
   } catch {
     return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
+  }
+  if (!expectedStoreId) {
+    return NextResponse.json({ ok: false, error: "store_not_selected" }, { status: 400 });
   }
 
   let body: Body | null = null;

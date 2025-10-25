@@ -16,7 +16,6 @@ type OrdersRow = {
 
 function getStoreId() {
   if (typeof window !== "undefined" && (window as any).__STORE_ID__) return String((window as any).__STORE_ID__);
-  if (typeof process !== "undefined" && process.env?.NEXT_PUBLIC_STORE_ID) return String(process.env.NEXT_PUBLIC_STORE_ID);
   return "";
 }
 

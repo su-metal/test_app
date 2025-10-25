@@ -14,15 +14,12 @@ type PresetRow = {
 
 export async function POST(req: NextRequest) {
   const secret = process.env.ADMIN_DASHBOARD_SECRET || process.env.LINE_LOGIN_CHANNEL_SECRET || "";
-  const expectedStoreId = process.env.NEXT_PUBLIC_STORE_ID;
+  let expectedStoreId: string | null = null;
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
   if (!url || !serviceKey) {
     return new Response(JSON.stringify({ error: "server misconfig: supabase" }), { status: 500 });
-  }
-  if (!expectedStoreId) {
-    return new Response(JSON.stringify({ error: "server misconfig: store id" }), { status: 500 });
   }
   if (!secret) {
     return new Response(JSON.stringify({ error: "server misconfig: secret" }), { status: 500 });
@@ -32,6 +29,8 @@ export async function POST(req: NextRequest) {
     const cookieStore = await cookies();
     const sess = verifySessionCookie(cookieStore.get(COOKIE_NAME)?.value, secret);
     if (!sess) return new Response(JSON.stringify({ error: "unauthorized" }), { status: 401 });
+    expectedStoreId = String(sess.store_id || "").trim() || null;
+    if (!expectedStoreId) return new Response(JSON.stringify({ error: "store_not_selected" }), { status: 400 });
 
     const body = (await req.json().catch(() => ({}))) as { rows?: PresetRow[]; current_slot_no?: 1 | 2 | 3 };
     const rows = Array.isArray(body.rows) ? body.rows : [];

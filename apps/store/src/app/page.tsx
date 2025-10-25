@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 import React, { useMemo, useState, useEffect, useRef, useCallback } from "react";
 import { createClient, type RealtimeChannel } from "@supabase/supabase-js";
 
@@ -88,9 +88,7 @@ type Slot = "main" | "sub1" | "sub2";
 const slotJp = (s: Slot) => (s === "main" ? "メイン" : s === "sub1" ? "サブ1" : "サブ2");
 
 const getStoreId = () =>
-  (typeof window !== "undefined" && (window as any).__STORE_ID__) ||
-  (typeof process !== "undefined" && (process.env?.NEXT_PUBLIC_STORE_ID as string | undefined)) ||
-  "default";
+  (typeof window !== "undefined" && (window as any).__STORE_ID__) || "";
 
 const yen = (n: number) => n.toLocaleString("ja-JP", { style: "currency", currency: "JPY" });
 const since = (iso: string) => {
@@ -258,9 +256,16 @@ const StoreSwitcher = React.memo(function StoreSwitcher() {
     try { return localStorage.getItem('store:selected') || getStoreId(); } catch { return getStoreId(); }
   });
   useEffect(() => setSel(getStoreId()), []);
-  const onChange = useCallback((e: React.ChangeEvent<HTMLSelectElement>) => {
+  const onChange = useCallback(async (e: React.ChangeEvent<HTMLSelectElement>) => {
     const v = e.target.value; setSel(v);
     try { localStorage.setItem('store:selected', v); } catch { }
+    try {
+      await fetch('/api/auth/session/set-store', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ storeId: v }),
+      });
+    } catch { /* noop */ }
     (window as any).__STORE_ID__ = v; location.reload();
   }, []);
   return (
@@ -1779,7 +1784,7 @@ function useImageUpload() {
 
     const sid = getStoreId();
     if (!before) throw new Error("対象商品が存在しません");
-    if (!sid) throw new Error("店舗IDが未設定です（NEXT_PUBLIC_STORE_ID）");
+    if (!sid) throw new Error("店舗IDが未設定です（セッション）");
     if (String(before.store_id ?? "") !== String(sid)) {
       throw new Error("他店舗の商品は更新できません");
     }
@@ -1834,7 +1839,7 @@ function useImageUpload() {
 
     const sid = getStoreId();
     if (!before) throw new Error("対象商品が存在しません");
-    if (!sid) throw new Error("店舗IDが未設定です（NEXT_PUBLIC_STORE_ID）");
+    if (!sid) throw new Error("店舗IDが未設定です（セッション）");
     if (String(before.store_id ?? "") !== String(sid)) {
       throw new Error("他店舗の商品は更新できません");
     }

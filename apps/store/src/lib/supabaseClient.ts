@@ -9,8 +9,7 @@ if (!process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY)
 // RLS ポリシーで `x-store-id` ヘッダを参照するため、
 // クライアントのデフォルトヘッダに店舗IDを付与する
 const storeId = (typeof window !== 'undefined' && (window as any).__STORE_ID__)
-  || (process.env.NEXT_PUBLIC_STORE_ID as string | undefined)
-  || 'default';
+  || '';
 
 export const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,

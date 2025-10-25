@@ -3213,9 +3213,17 @@ export default function UserPilotApp() {
 
         try {
             setIsPaying(true);
+            // A-1: LIFF の ID トークンを取得して Authorization に付与
+            let idToken: string | undefined;
+            try {
+                const { default: liff } = await import("@line/liff");
+                idToken = liff.getIDToken() || undefined;
+            } catch {}
+            if (!idToken) { throw new Error("LIFF のログインが必要です。アプリ内ブラウザで開いてください。"); }
+
             const res = await fetch("/api/stripe/create-checkout-session", {
                 method: "POST",
-                headers: { "Content-Type": "application/json" },
+                headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
                 body: JSON.stringify({
                     storeId: g.storeId,
                     userEmail,

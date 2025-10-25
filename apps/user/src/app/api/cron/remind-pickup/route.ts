@@ -1,71 +1,83 @@
-// apps/user/src/app/api/cron/remind-pickup/route.ts
 export const runtime = "nodejs";
 
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import { linePush } from "@/lib/line";
 
-const supabase = createClient(
-  process.env.SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY! // Service Role
-);
+/**
+ * 受取リマインドを一時停止するための停止ルート。
+ * - REMIND_PICKUP_ENABLED が "true" でない限り、即座にスキップ応答を返す。
+ * - 認証（Authorization: Bearer <CRON_SECRET>）が設定されていればチェックする。
+ * - 将来の再開時は環境変数だけで復活できる。
+ */
 
-const WINDOW_MINUTES = 5; // cron間隔
-const REMIND_BEFORE_MIN = 10; // 受け取り予定の10分前
-
-export async function POST() {
-  try {
-    // 時刻窓の計算（UTC）
-    const now = new Date();
-    const lower = new Date(
-      now.getTime() + (REMIND_BEFORE_MIN - WINDOW_MINUTES / 2) * 60_000
-    );
-    const upper = new Date(
-      now.getTime() + (REMIND_BEFORE_MIN + WINDOW_MINUTES / 2) * 60_000
-    );
-
-    const { data: orders, error } = await supabase
-      .from("orders")
-      .select("id, status, pickup_start, reminded_at, line_user_id")
-      .is("reminded_at", null)
-      .eq("status", "PENDING")
-      .not("line_user_id", "is", null)
-      .gte("pickup_start", lower.toISOString())
-      .lte("pickup_start", upper.toISOString());
-
-    if (error) throw error;
-
-    let sent = 0;
-
-    for (const o of orders ?? []) {
-      const to = (o as any).line_user_id as string | null;
-      if (!to) continue; // 保険（NOT NULL 条件だが二重防御）
-
-      // LINE push（シンプルテキスト）
-      await linePush(to, [
+const supabase =
+  process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY
+    ? createClient(
+        process.env.SUPABASE_URL,
+        process.env.SUPABASE_SERVICE_ROLE_KEY,
         {
-          type: "text",
-          text: "まもなく受け取り予定です。店舗でチケットをご提示ください。",
-        },
-      ]);
+          auth: { autoRefreshToken: false, persistSession: false },
+        }
+      )
+    : null;
 
-      // 送信後に reminded_at を記録（冪等確保）
-      const { error: updErr } = await supabase
-        .from("orders")
-        .update({ reminded_at: new Date().toISOString() })
-        .eq("id", (o as any).id);
-      if (updErr) throw updErr;
-
-      sent++;
-    }
-
-    return NextResponse.json({ ok: true, checked: orders?.length ?? 0, sent });
-  } catch (e: any) {
-    console.error("[remind-pickup] error:", e?.message ?? e);
+export async function POST(req: NextRequest) {
+  // 0) 認証（任意・設定されていれば必須化）
+  const auth = req.headers.get("authorization") || "";
+  const secret = process.env.CRON_SECRET || "";
+  if (secret && auth !== `Bearer ${secret}`) {
     return NextResponse.json(
-      { ok: false, error: String(e?.message ?? e) },
-      { status: 500 }
+      { ok: false, error: "unauthorized" },
+      { status: 401 }
     );
   }
+
+  // 1) フィーチャーフラグで完全停止（デフォルトOFF）
+  if (process.env.REMIND_PICKUP_ENABLED !== "true") {
+    return NextResponse.json({ ok: true, skipped: true, reason: "disabled" });
+  }
+
+  // --- ここから下は将来の再開用の雛形（現時点では通らない） -----------------
+
+  // 同時実行防止ロック（任意：再開時に有効）
+  if (supabase) {
+    const { data: lock, error: lockErr } = await supabase.rpc(
+      "pg_try_advisory_lock",
+      {
+        key: 922337, // 固定任意キー（プロジェクト内でユニークに）
+      }
+    );
+    if (lockErr) {
+      console.error("[cron] lock error:", lockErr.message);
+      return NextResponse.json(
+        { ok: false, reason: "lock-error" },
+        { status: 200 }
+      );
+    }
+    if (lock !== true) {
+      return NextResponse.json({
+        ok: true,
+        skipped: true,
+        reason: "already-running",
+      });
+    }
+
+    try {
+      // 本来の処理（再開時に実装を戻す）
+      return NextResponse.json({ ok: true, skipped: true, reason: "no-op" });
+    } finally {
+      try {
+        await supabase.rpc("pg_advisory_unlock", { key: 922337 });
+      } catch {
+        /* noop */
+      }
+    }
+  }
+
+  // Supabase未設定時のフォールバック
+  return NextResponse.json({ ok: true, skipped: true, reason: "no-supabase" });
 }
 
+export function GET() {
+  return new NextResponse("Method Not Allowed", { status: 405 });
+}

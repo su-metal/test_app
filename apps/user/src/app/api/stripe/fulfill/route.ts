@@ -47,11 +47,13 @@ export async function GET(req: Request) {
     const total = items.reduce((a, it) => a + (Number(it.price) || 0) * (Number(it.qty) || 0), 0);
 
     function parsePickupLabelToJstIsoRange(label: string | undefined): { start?: string; end?: string } {
+      // ラベルの区切り文字に依存せず、最初の2つの HH:MM を抽出
+      // TODO(req v2): メタデータに構造化した開始/終了を持たせる
       const text = String(label || "").trim();
       if (!text) return {};
-      const m = text.match(/(\d{1,2}:\d{2})\s*[?\-??~]\s*(\d{1,2}:\d{2})/);
-      if (!m) return {};
-      const [_, a, b] = m;
+      const times = text.match(/\b(\d{1,2}:\d{2})\b/g);
+      if (!times || times.length < 2) return {};
+      const [a, b] = times;
       const pad = (s: string) => (s.length === 1 ? `0${s}` : s);
       const toIso = (hhmm: string) => {
         const [hh, mm] = hhmm.split(":");

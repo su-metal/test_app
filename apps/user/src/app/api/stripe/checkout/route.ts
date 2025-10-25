@@ -1,5 +1,7 @@
 // app/api/stripe/checkout/route.ts
 import Stripe from "stripe";
+import { cookies } from "next/headers";
+import { COOKIE_NAME as USER_COOKIE, verifySessionCookie } from "@/lib/session";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
 
@@ -45,6 +47,18 @@ export async function POST(req: Request) {
       throw new Error("NEXT_PUBLIC_BASE_URL is not set");
     }
 
+    // LINE ユーザーID（存在時のみ）
+    let lineUserId: string | undefined;
+    try {
+      const secret = process.env.USER_SESSION_SECRET || process.env.LINE_CHANNEL_SECRET || "";
+      if (secret) {
+        const c = await cookies();
+        const sess = verifySessionCookie(c.get(USER_COOKIE)?.value, secret);
+        const sub = sess?.sub && String(sess.sub).trim();
+        if (sub) lineUserId = sub;
+      }
+    } catch { /* noop */ }
+
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
       ui_mode: "embedded",
@@ -61,11 +75,13 @@ export async function POST(req: Request) {
       metadata: {
         store_id: storeId ?? "",
         ...(pickupLabel ? { pickup_label: pickupLabel } : {}),
+        ...(lineUserId ? { line_user_id: lineUserId } : {}),
       },
       payment_intent_data: {
         metadata: {
           store_id: storeId ?? "",
           ...(pickupLabel ? { pickup_label: pickupLabel } : {}),
+          ...(lineUserId ? { line_user_id: lineUserId } : {}),
         },
       },
     });

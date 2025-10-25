@@ -93,7 +93,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "ORDER_NOT_FOUND" }, { status: 404 });
   }
   if (String((order as any).store_id || "") !== expectedStoreId) {
-    return NextResponse.json({ ok: false, error: "forbidden:store-mismatch" }, { status: 403 });
+    return NextResponse.json({ ok: false, error: "membership-not-found" }, { status: 403 });
   }
 
   // 2) ステータスを COMPLETED に更新（冪等: 既に COMPLETED/REDEEMED/FULFILLED でもOK）

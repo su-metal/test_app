@@ -5,10 +5,10 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 declare global {
     interface Window {
         __supabase?: SupabaseClient<any>;
-        __STORE_ID__?: string;
+        __STORE_ID__?: string | null;
         NEXT_PUBLIC_SUPABASE_URL?: string;
         NEXT_PUBLIC_SUPABASE_ANON_KEY?: string;
-        NEXT_PUBLIC_STORE_ID?: string;
+        
     }
 }
 
@@ -27,12 +27,16 @@ export default function SupabaseBoot() {
             try {
                 const r = await fetch('/api/auth/session/inspect', { cache: 'no-store' });
                 const j = await r.json().catch(() => ({} as any));
-                if (r.ok && typeof j?.store_id === 'string') {
-                    window.__STORE_ID__ = j.store_id || '';
-                } else {
-                    window.__STORE_ID__ = '';
-                }
-            } catch { window.__STORE_ID__ = ''; }
+                const sid = (r.ok && typeof j?.store_id === 'string') ? (j.store_id as string).trim() : '';
+                window.__STORE_ID__ = sid || null;
+                try {
+                    const keys = ['store:selected', 'storeId'];
+                    for (const k of keys) {
+                        const v = localStorage.getItem(k);
+                        if (v === '' || v === 'null' || v === 'undefined') localStorage.removeItem(k);
+                    }
+                } catch {}
+            } catch { window.__STORE_ID__ = null; }
         })();
 
         // 3) Supabase クライアントの単一生成

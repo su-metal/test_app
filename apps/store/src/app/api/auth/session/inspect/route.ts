@@ -8,7 +8,9 @@ export async function GET() {
   const c = await cookies();
   const sess = verifySessionCookie(c.get(COOKIE_NAME)?.value, secret);
   if (!sess) return NextResponse.json({ error: "no-session" }, { status: 401 });
-  return NextResponse.json({ ok: true, sub: sess.sub, store_id: sess.store_id ?? null });
+  // 空文字は null に正規化（UUID 比較エラー回避）
+  const sid = (typeof sess.store_id === 'string' ? sess.store_id : '').trim();
+  return NextResponse.json({ ok: true, sub: sess.sub, store_id: sid || null });
 }
 
 export const runtime = "nodejs";

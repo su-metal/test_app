@@ -32,7 +32,7 @@ export async function POST(req: NextRequest) {
     const expectedStoreId = String(sess.store_id || "");
     if (!expectedStoreId) return NextResponse.json({ ok: false, error: "store_not_selected" }, { status: 400 });
     if (String((prodOwner as any).store_id || "") !== expectedStoreId) {
-      return NextResponse.json({ ok: false, error: "forbidden:store-mismatch" }, { status: 403 });
+      return NextResponse.json({ ok: false, error: "membership-not-found" }, { status: 403 });
     }
     const baseDir = `products/${productId}`;
 

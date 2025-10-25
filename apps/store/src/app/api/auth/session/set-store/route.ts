@@ -12,40 +12,45 @@ export async function POST(req: NextRequest) {
 
   const cookieStore = await cookies();
   const sess = verifySessionCookie(cookieStore.get(COOKIE_NAME)?.value, secret);
-  if (!sess) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  if (!sess) return NextResponse.json({ error: "no-operator-session" }, { status: 401 });
 
   let body: { storeId?: string } = {};
   try { body = (await req.json()) as any; } catch { /* noop */ }
   const storeId = String(body.storeId || "").trim();
-  if (!storeId) return NextResponse.json({ error: "STORE_ID_REQUIRED" }, { status: 400 });
-
-  // メンバーシップ確認: store_members or stores.fallback(line_user_id)
-  const admin = getSupabaseAdmin();
-  const lineUserId = sess.sub;
-
-  // store_members に存在するか
-  const { data: members, error: memErr } = await admin
-    .from("store_members")
-    .select("store_id, line_user_id, role")
-    .eq("store_id", storeId)
-    .eq("line_user_id", lineUserId)
-    .limit(1);
-  if (memErr) return NextResponse.json({ error: memErr.message }, { status: 500 });
-
-  let allowed = (members?.length ?? 0) > 0;
-  if (!allowed) {
-    // フォールバック: stores.line_user_id = sub であるか
-    const { data: stores, error: stErr } = await admin
-      .from("stores")
-      .select("id, line_user_id")
-      .eq("id", storeId)
-      .eq("line_user_id", lineUserId)
-      .limit(1);
-    if (stErr) return NextResponse.json({ error: stErr.message }, { status: 500 });
-    allowed = (stores?.length ?? 0) > 0;
+  if (!storeId) return NextResponse.json({ error: "invalid-store-id" }, { status: 400 });
+  // 軽いUUID形式チェック（ハイフン含む36桁）
+  if (!/^\w{8}-\w{4}-\w{4}-\w{4}-\w{12}$/i.test(storeId)) {
+    return NextResponse.json({ error: "invalid-store-id" }, { status: 400 });
   }
 
-  if (!allowed) return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  const admin = getSupabaseAdmin();
+  const operatorUserId = sess.sub;
+
+  // 店舗の実在確認
+  const { data: storeRow, error: stFindErr } = await admin
+    .from("stores")
+    .select("id, auth_user_id")
+    .eq("id", storeId)
+    .single();
+  if (stFindErr || !storeRow) return NextResponse.json({ error: "invalid-store-id" }, { status: 400 });
+
+  // メンバーシップ確認:
+  // 1) store_members.operator_user_id 優先
+  let allowed = false;
+  try {
+    const { data: m1, error: m1err } = await admin
+      .from("store_members")
+      .select("store_id, operator_user_id")
+      .eq("store_id", storeId)
+      .eq("operator_user_id", operatorUserId)
+      .limit(1);
+    if (!m1err && (m1?.length ?? 0) > 0) allowed = true;
+  } catch { /* ignore */ }
+  // 2) フォールバック: stores.auth_user_id === operatorUserId
+  if (!allowed) {
+    if ((storeRow as any).auth_user_id && String((storeRow as any).auth_user_id) === operatorUserId) allowed = true;
+  }
+  if (!allowed) return NextResponse.json({ error: "membership-not-found" }, { status: 403 });
 
   // Cookie を再発行 (store_id 更新)
   const value = issueSessionCookie(sess.sub, secret, storeId);

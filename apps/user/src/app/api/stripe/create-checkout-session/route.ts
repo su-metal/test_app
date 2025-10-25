@@ -94,11 +94,13 @@ export async function POST(req: NextRequest) {
       return Math.floor(Math.random() * 1_000_000).toString().padStart(6, "0");
     }
     function parsePickupLabelToJstIsoRange(label?: string): { start?: string; end?: string } {
+      // ラベル中の最初の2つの「HH:MM」を取り出してISO(+09:00)へ変換
+      // TODO(req v2): 受取スロットの構造化引き渡しに移行（ラベル依存を排除）
       const text = String(label || "").trim();
       if (!text) return {};
-      const m = text.match(/(\d{1,2}:\d{2})\s*[?\-??~]\s*(\d{1,2}:\d{2})/);
-      if (!m) return {};
-      const [_, a, b] = m;
+      const times = text.match(/\b(\d{1,2}:\d{2})\b/g);
+      if (!times || times.length < 2) return {};
+      const [a, b] = times;
       const pad = (s: string) => (s.length === 1 ? `0${s}` : s);
       const toIso = (hhmm: string) => {
         const [hh, mm] = hhmm.split(":");

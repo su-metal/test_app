@@ -1,7 +1,9 @@
 // apps/user/src/app/api/stripe/create-checkout-session/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import Stripe from "stripe";
-import { verifyLiffIdToken } from "@/lib/verifyLiff";
+import { verifyLiffIdToken, verifyLiffTokenString } from "@/lib/verifyLiff";
+import { cookies } from "next/headers";
+import { COOKIE_NAME as USER_COOKIE, verifySessionCookie } from "@/lib/session";
 
 export const runtime = "nodejs"; // Stripe は Node ランタイム
 
@@ -18,16 +20,41 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
  * }
  */
 export async function POST(req: NextRequest) {
-  // A-1: Authorization: Bearer <LIFF_ID_TOKEN> を必須にして検証
+  // A-1: Authorization Bearer → x-liff-id-token → サーバ発行 Cookie の順に検証（段階的フォールバック）
   let lineUserId = "";
+  let body: any = null;
   try {
-    lineUserId = await verifyLiffIdToken(req.headers.get("authorization"));
+    const auth = req.headers.get("authorization");
+    if (auth) {
+      lineUserId = await verifyLiffIdToken(auth);
+    } else {
+      const h2 = req.headers.get("x-liff-id-token");
+      if (h2) lineUserId = await verifyLiffTokenString(h2);
+    }
+    if (!lineUserId) {
+      body = await req.json().catch(() => null);
+      const tokenInBody: string | undefined = body?.id_token || body?.idToken;
+      if (tokenInBody) lineUserId = await verifyLiffTokenString(String(tokenInBody));
+    }
+    if (!lineUserId) {
+      // 最後のフォールバック: サーバ発行の HMAC セッション Cookie
+      const secret = process.env.USER_SESSION_SECRET || process.env.LINE_CHANNEL_SECRET || "";
+      if (secret) {
+        const c = await cookies();
+        const sess = verifySessionCookie(c.get(USER_COOKIE)?.value, secret);
+        const sub = sess?.sub && String(sess.sub).trim();
+        if (sub) lineUserId = sub;
+      }
+    }
+    if (!lineUserId) {
+      return NextResponse.json({ error: "unauthorized", detail: "Authorization ヘッダーが Bearer 形式ではありません" }, { status: 401 });
+    }
   } catch (e: any) {
     return NextResponse.json({ error: "unauthorized", detail: e?.message || String(e) }, { status: 401 });
   }
 
   try {
-    const { storeId, userEmail, lines, pickup, returnUrl } = await req.json();
+    const { storeId, userEmail, lines, pickup, returnUrl } = body ?? (await req.json());
 
     if (!Array.isArray(lines) || lines.length === 0) {
       return NextResponse.json({ error: "line_items is empty" }, { status: 400 });

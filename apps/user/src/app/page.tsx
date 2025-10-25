@@ -3231,8 +3231,10 @@ export default function UserPilotApp() {
                     pickup: pickupLabel,
                     // 決済完了後の戻り先（Embedded Checkout 用）
                     // TODO(req v2): 成功ページでの決済検証/注文整合の拡張
+                    id_token: idToken,
                     returnUrl: `${location.origin}/checkout/success`,
                 }),
+                credentials: 'include',
             });
 
             // 404/HTMLエラー対策：常に text を一度読む

@@ -1,16 +1,6 @@
 "use client";
 import { useEffect } from "react";
-import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-
-declare global {
-    interface Window {
-        __supabase?: SupabaseClient<any>;
-        __STORE_ID__?: string | null;
-        NEXT_PUBLIC_SUPABASE_URL?: string;
-        NEXT_PUBLIC_SUPABASE_ANON_KEY?: string;
-        
-    }
-}
+import { createClient } from "@supabase/supabase-js";
 
 export default function SupabaseBoot() {
     useEffect(() => {
@@ -25,18 +15,21 @@ export default function SupabaseBoot() {
         // 2) サーバーセッションから店舗IDを取得し __STORE_ID__ に反映（localStorage 依存を撤廃）
         (async () => {
             try {
-                const r = await fetch('/api/auth/session/inspect', { cache: 'no-store' });
+                const r = await fetch("/api/auth/session/inspect", { cache: "no-store" });
                 const j = await r.json().catch(() => ({} as any));
-                const sid = (r.ok && typeof j?.store_id === 'string') ? (j.store_id as string).trim() : '';
-                window.__STORE_ID__ = sid || null;
+                const sid = (r.ok && typeof j?.store_id === "string") ? (j.store_id as string).trim() : "";
+                window.__STORE_ID__ = sid || undefined;
+
                 try {
-                    const keys = ['store:selected', 'storeId'];
+                    const keys = ["store:selected", "storeId"];
                     for (const k of keys) {
                         const v = localStorage.getItem(k);
-                        if (v === '' || v === 'null' || v === 'undefined') localStorage.removeItem(k);
+                        if (v === "" || v === "null" || v === "undefined") localStorage.removeItem(k);
                     }
-                } catch {}
-            } catch { window.__STORE_ID__ = null; }
+                } catch { }
+            } catch {
+                window.__STORE_ID__ = undefined;
+            }
         })();
 
         // 3) Supabase クライアントの単一生成
@@ -44,11 +37,12 @@ export default function SupabaseBoot() {
             const url = window.NEXT_PUBLIC_SUPABASE_URL;
             const key = window.NEXT_PUBLIC_SUPABASE_ANON_KEY;
             if (url && key) {
-                try { window.__supabase = createClient(url, key); } catch { }
+                try {
+                    window.__supabase = createClient(url, key);
+                } catch { }
             }
         }
     }, []);
 
     return null;
 }
-

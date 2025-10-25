@@ -1,78 +1,61 @@
-// apps/store/middleware.ts
+// apps/store/src/middleware.ts
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 
 /**
- * 認証判定（副作用なし・Cookieのみ）
- * - SupabaseのCookieは環境により sb-access-token / sb-access-token-<project> など可変
- * - 将来の変更にも強いように前方一致で検出
+ * ログイン不要で通すパス（/login, 認証API, 静的アセット等）
+ * ここに列挙されたものは保護しません。
  */
-function hasSupabaseSession(req: NextRequest): boolean {
-  const cookies = req.cookies;
-  // 最低限の2種類（access/refresh）のどちらかがあれば「一旦ログイン済み」とみなす
-  const hasAccess = cookies
-    .getAll()
-    .some((c) => c.name.startsWith("sb-access-token"));
-  const hasRefresh = cookies
-    .getAll()
-    .some((c) => c.name.startsWith("sb-refresh-token"));
-  return hasAccess || hasRefresh;
-}
+const isPublicPath = (pathname: string) =>
+  pathname.startsWith("/login") ||
+  pathname.startsWith("/api/auth/") ||
+  pathname.startsWith("/_next/") ||
+  pathname.startsWith("/favicon") ||
+  pathname.startsWith("/assets") ||
+  pathname === "/robots.txt" ||
+  pathname === "/sitemap.xml";
 
-/**
- * 認証不要のパス（ホワイトリスト）
- * - ここに列挙されたものは middleware の対象外（副作用を避ける）
- */
-const PUBLIC_PATH_PREFIXES = [
-  "/login",
-  "/api", // APIは認証方式が別のことが多いので除外
-  "/_next", // Next.js静的アセット
-  "/favicon.ico",
-  "/robots.txt",
-  "/sitemap.xml",
-  "/manifest.webmanifest",
-  "/assets",
-  "/images",
-  "/static",
-  "/fonts",
-];
-
-function isPublicPath(pathname: string): boolean {
-  return PUBLIC_PATH_PREFIXES.some(
-    (p) => pathname === p || pathname.startsWith(`${p}/`)
-  );
+/** 未ログイン（store_session が無い/明らかに不正）なら true */
+function isUnauthed(req: NextRequest) {
+  const cookie = req.cookies.get("store_session")?.value ?? "";
+  return !cookie || cookie.length < 16;
 }
 
 export function middleware(req: NextRequest) {
-  const { pathname, search } = new URL(req.url);
+  const { pathname } = req.nextUrl;
 
-  // 1) 事前除外：プリフライト / 公開パス は素通し（副作用ゼロ）
-  if (req.method === "OPTIONS" || isPublicPath(pathname)) {
+  // 公開パスはそのまま通す
+  if (isPublicPath(pathname)) return NextResponse.next();
+
+  const unauthed = isUnauthed(req);
+
+  // API は 401 JSON を返す（/api/auth/* は isPublicPath で除外済み）
+  if (pathname.startsWith("/api/")) {
+    if (unauthed) {
+      return new NextResponse(JSON.stringify({ error: "unauthorized" }), {
+        status: 401,
+        headers: { "content-type": "application/json; charset=utf-8" },
+      });
+    }
     return NextResponse.next();
   }
 
-  // 2) 認証チェック
-  if (!hasSupabaseSession(req)) {
-    // 元の行き先を next= に保存して /login へ
-    const loginUrl = new URL("/login", req.url);
-    if (pathname !== "/login") {
-      const next = pathname + (search || "");
-      loginUrl.searchParams.set("next", next);
-    }
-    return NextResponse.redirect(loginUrl);
+  // ページは /login へリダイレクト
+  if (unauthed) {
+    const url = req.nextUrl.clone();
+    url.pathname = "/login";
+    url.search = ""; // クエリを残したい場合はここで調整
+    return NextResponse.redirect(url);
   }
 
-  // 3) 認証OKならそのまま
+  // 認証済みはそのまま
   return NextResponse.next();
 }
 
 /**
- * matcher は「保護したいURL集合」に対して広めに適用しつつ、
- * 主要な静的配下は除外する正規表現を使用
+ * 重要: トップ(`/`)を含む全パスに適用。
+ * 除外は isPublicPath 側で制御します。
  */
 export const config = {
-  matcher: [
-    // 例: /api, /_next, /favicon.ico などは除外
-    "/((?!api|_next/static|_next/image|favicon.ico|robots.txt|sitemap.xml|assets|images|static|fonts|manifest.webmanifest).*)",
-  ],
+  matcher: ["/:path*"],
 };

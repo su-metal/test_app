@@ -3306,7 +3306,7 @@ export default function UserPilotApp() {
                     onClick={() => changeQty(sid, it, -1)}
                     aria-label="数量を減らす"
                 >−</button>
-                <span className="mx-2 min-w-[1.5rem] font-semibold  text-lg text-center tabular-nums">{reserved}</span>
+                <span className="mx-2 min-w-[1.5rem] font-semibold  text-xl text-center tabular-nums">{reserved}</span>
                 <button
                     type="button"
                     className="w-9 h-9 text-[10px] leading-none rounded-full border cursor-pointer disabled:opacity-40 flex items-center justify-center"

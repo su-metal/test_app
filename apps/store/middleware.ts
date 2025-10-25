@@ -41,8 +41,4 @@ export function middleware(req: NextRequest) {
  * - favicon / assets / robots / sitemap
  * それ以外の全パス（トップ `/` を含む）に適用。
  */
-export const config = {
-  matcher: [
-    "/((?!login|api/auth|_next/static|_next/image|favicon\\.ico|assets|robots\\.txt|sitemap\\.xml).*)",
-  ],
-};
+export const config = { matcher: ["/:path*"] };

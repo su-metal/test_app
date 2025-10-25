@@ -21,13 +21,75 @@
 - ルートスクリプト
   - `pnpm dev`: 2 アプリ同時起動（store: :3001、user: :3002）。
   - `pnpm dev:store` / `pnpm dev:user`: 個別起動。
+  - `pnpm seed:stores:locations`: 店舗座標の投入補助スクリプト。
 - フレームワーク/ライブラリ（特記ない限りルート管理）
-  - next 15.5.x（App Router）、react 19.1.x、react-dom 19.1.x。
+  - next 15.5.4（App Router）、react 19.1.0、react-dom 19.1.0。
   - `@supabase/supabase-js` ^2.74（ルート依存、両アプリで使用）。
   - Tailwind CSS 4 + PostCSS + Autoprefixer。
 - TypeScript
-  - strict 有効、`skipLibCheck` true、`moduleResolution: bundler`。
+- strict 有効、`skipLibCheck` true、`moduleResolution: bundler`。
   - パスエイリアス: 各アプリ内で `@/*` → `./src/*`。
+
+依存関係（現在）
+
+- ルート dependencies: `@line/liff`, `@supabase/supabase-js`, `jose`, `leaflet`
+- ルート devDependencies: `typescript`, `tailwindcss`, `postcss`, `autoprefixer`, `concurrently`, `@types/react`, `@types/react-dom`, `@types/leaflet`
+- apps/store 依存（主要）: `next@15.5.4`, `react@19.1.0`, `react-dom@19.1.0`, `sharp`
+- apps/user 依存（主要）: `next@15.5.4`, `react@19.1.0`, `react-dom@19.1.0`, `react-leaflet`, `leaflet`, `qrcode`, `stripe`, `@stripe/stripe-js`, `@stripe/react-stripe-js`
+
+フォルダ/ファイル構成（要点のみ）
+
+- ルート
+  - `apps/store`, `apps/user`, `packages/shared`
+  - `docs/`（正式ドキュメント）／`document/`（重複あり・参照は docs 優先）
+  - `supabase/`（バックアップとマイグレーション）
+  - `pnpm-workspace.yaml`, `package.json`, `pnpm-lock.yaml`
+- apps/store（主要）
+  - 画面: `apps/store/src/app/page.tsx`, `apps/store/src/app/analytics/page.tsx`, `apps/store/src/app/login/page.tsx`, `apps/store/src/app/select-store/page.tsx`
+  - レイアウト/初期化: `apps/store/src/app/layout.tsx`（env を window にブリッジ）, `apps/store/src/app/SupabaseBoot.tsx`, `apps/store/src/app/LiffBoot.tsx`
+  - 型: `apps/store/src/types/window.d.ts`, `apps/store/src/types/window.supabase.d.ts`
+  - ライブラリ: `apps/store/src/lib/*`（`supabaseClient.ts` ほか）
+  - 管理画面: `apps/store/src/app/admin/applications/page.tsx`
+  - API（存在するもの）:
+    - 管理・申請: 
+      - `apps/store/src/app/api/admin/store-applications/list/route.ts`
+      - `apps/store/src/app/api/admin/approve-store/route.ts`
+      - `apps/store/src/app/api/admin/tools/bootstrap-auth-users/route.ts`
+      - `apps/store/src/app/api/admin/tools/reset-store-passwords/route.ts`
+    - 認証/セッション:
+      - `apps/store/src/app/api/auth/line/silent-login/route.ts`
+      - `apps/store/src/app/api/auth/login/password/route.ts`
+      - `apps/store/src/app/api/auth/session/inspect/route.ts`
+      - `apps/store/src/app/api/auth/session/list-stores/route.ts`
+      - `apps/store/src/app/api/auth/session/select-store/route.ts`
+      - `apps/store/src/app/api/auth/session/set-store/route.ts`
+    - 画像アップロード/削除:
+      - `apps/store/src/app/api/images/upload/route.ts`
+      - `apps/store/src/app/api/images/delete/route.ts`
+    - プリセット/受け取り設定:
+      - `apps/store/src/app/api/store/pickup-presets/route.ts`
+      - `apps/store/src/app/api/presets/upsert/route.ts`
+    - 受け渡し完了（店→ユーザー反映トリガ）:
+      - `apps/store/src/app/api/store/orders/complete/route.ts`
+    - 開発補助:
+      - `apps/store/src/app/api/dev/set-password/route.ts`
+- apps/user（主要）
+  - 画面: `apps/user/src/app/page.tsx`, `apps/user/src/app/checkout/{success,cancel,complete}/page.tsx`, `apps/user/src/app/layout.tsx`, `apps/user/src/app/LiffBoot.tsx`
+  - ライブラリ: `apps/user/src/lib/supabase.ts`（単一生成）, `pickupSlots.ts`, `session.ts`, `line.ts`
+  - 地図: `apps/user/src/components/{MapView.tsx,MapEmbedWithFallback.tsx}`
+  - 受け取り時間 UI: `apps/user/src/components/PickupTimeSelector.tsx`
+  - LIFF: `apps/user/src/app/liff/apply/page.tsx`
+  - API（存在するもの）:
+    - Stripe/Checkout:
+      - `apps/user/src/app/api/stripe/{create-checkout-session,create-intent,checkout,fulfill,pay-with-saved}/route.ts`
+      - `apps/user/src/app/api/checkout/embedded/route.ts`
+      - 互換: `apps/user/src/app/api/create-checkout-session/route.ts`
+    - 注文確認: `apps/user/src/app/api/orders/{confirm,confirm_v2}/route.ts`
+    - 地図/ルーティング: `apps/user/src/app/api/{maps-static,osrm}/route.ts`, プロキシ: `apps/user/src/app/api/proxy/osrm/route.ts`
+    - LINE: `apps/user/src/app/api/line/{webhook,attach}/route.ts`, 開発: `apps/user/src/app/api/dev/line/push/route.ts`
+    - Cron（通知テスト）: `apps/user/src/app/api/cron/{remind-pickup,thank-completed}/route.ts`
+- packages
+  - `packages/shared/`（現状ソース空、将来共有コード想定）
 
 環境変数
 
@@ -84,76 +146,24 @@ Realtime とポリシーのチェックリスト
 - ユーザー側（UI）: `paid`（未引換）, `redeemed`（引換済み）, `refunded`（返金済み・将来）
 - 表示文言: `paid` → 「未引換」、`redeemed` → 「引換済み」
 
-アプリ構成の要点
-
-- apps/store
-  - `src/app/layout.tsx`: env を `window` へブリッジ、グローバルスタイル。
-  - `src/app/page.tsx`: 店 UI（商品 CRUD、注文一覧、受け渡し、在庫連携）。
-  - `src/app/analytics/page.tsx`: 簡易分析画面（存在する場合）。
-  - `src/types/window.d.ts`: Window 拡張。
-  - 店舗スイッチャー: ヘッダー右上セレクタ。`localStorage('store:selected')` に保存し `window.__STORE_ID__` に反映。
-  - LIFF 起動（任意）: `src/app/LiffBoot.tsx`。
-- apps/user
-  - `src/app/page.tsx`: ユーザーフロー（ショップ/カート/注文/アカウント、Realtime + ポーリング、トースト、QR 等）。
-  - `src/app/layout.tsx`: フォント/グローバルスタイル。`<LiffBoot />` を含む。
-  - `src/lib/supabase.ts`: クライアント単一生成。
-  - `src/components/MapView.tsx` / `MapEmbedWithFallback.tsx`: 地図/埋め込み。
-  - 受け取り時間: UI `src/components/PickupTimeSelector.tsx`、ロジック `src/lib/pickupSlots.ts`。
-  - LIFF 起動（任意）: `src/app/LiffBoot.tsx`。
-
-API/機能の配置（user）
-
-- Stripe 関連 API:
-  - `apps/user/src/app/api/stripe/create-checkout-session/route.ts`
-  - `apps/user/src/app/api/stripe/create-intent/route.ts`
-  - `apps/user/src/app/api/stripe/checkout/route.ts`
-  - `apps/user/src/app/api/stripe/fulfill/route.ts`
-  - `apps/user/src/app/api/stripe/pay-with-saved/route.ts`
-  - `apps/user/src/app/api/checkout/embedded/route.ts`
-  - `apps/user/src/app/api/create-checkout-session/route.ts`（互換/移行用）
-- 地図/ルーティング:
-  - `apps/user/src/app/api/maps-static/route.ts`
-  - `apps/user/src/app/api/osrm/route.ts`
-- LINE 連携:
-  - Webhook: `apps/user/src/app/api/line/webhook/route.ts`
-  - LIFF: `NEXT_PUBLIC_LIFF_ID` を利用し `src/app/LiffBoot.tsx` で初期化
-- 申請関連:
-  - `apps/user/src/app/api/store-applications/route.ts`
-- チェックアウト結果:
-  - `apps/user/src/app/checkout/success/page.tsx` / `apps/user/src/app/checkout/cancel/page.tsx`
-
-API/機能の配置（store）
-
-- 管理・申請:
-  - `apps/store/src/app/api/admin/store-applications/list/route.ts`
-  - `apps/store/src/app/api/admin/approve-store/route.ts`
-  - `apps/store/src/app/api/admin/tools/bootstrap-auth-users/route.ts`
-  - 画面: `apps/store/src/app/api/admin/applications/page.tsx`
-- 画像アップロード:
-  - `apps/store/src/app/api/images/upload/route.ts`
-  - `apps/store/src/app/api/images/delete/route.ts`
-- LINE 認証/サインイン（silent-login）:
-  - `apps/store/src/app/api/auth/line/silent-login/route.ts`
-- プリセット/受け取り設定:
-  - `apps/store/src/app/api/store/pickup-presets/route.ts`
-  - `apps/store/src/app/api/presets/upsert/route.ts`
-- 開発補助:
-  - `apps/store/src/app/api/dev/set-password/route.ts`
-
-Supabase データベース構成（現行実装に基づく）
+DB 構成（現行実装に基づく）
 
 - スキーマ: `public`
-- `stores` / `products` / `orders` テーブルのカラムは本文の通り。既知の差分吸収:
-  - 在庫列名のゆらぎは `stock ?? quantity ?? stock_count` を吸収（DB は最終的に `stock` に統一）。
-  - `orders.id` は uuid 推奨（現状 text 互換あり）。
-  - `orders.status` は店側 `PENDING`/`FULFILLED` を使用、ユーザー側 UI は `paid`/`redeemed` にマップして表示。
-  - Realtime は `postgres_changes (UPDATE)` を有効化、`REPLICA IDENTITY FULL` 推奨。
+- 代表テーブル（詳細は `docs/最新DB構成.md` を正とする）:
+  - `stores`（店舗基本情報、位置情報・カテゴリ等含む）
+  - `products`（在庫は現行 `stock`。過去互換で `quantity`/`stock_count` を吸収）
+  - `orders`（`id` は uuid 推奨、`status` は店側 `PENDING`/`FULFILLED` を使用）
+  - `store_pickup_presets`（受け取りスロット設定）
+  - `store_applications`（加盟申請）
+  - `line_users`（LINE ユーザー連携）
+  - `user_profiles`（将来の認証拡張用プロフィール）
+- Realtime: `postgres_changes (UPDATE)` を `public.orders` に対して有効化。`REPLICA IDENTITY FULL` 推奨。
+- RLS: 匿名（anon）で `products`/`orders` の必要な `select` を許可。
 
 ドキュメント配置（注意）
 
 - 正式ドキュメントは `docs/` 配下を正とします。
 - `document/` 配下に同名/類似ドキュメントの重複が存在しますが、整合性の観点から参照は `docs/` を優先してください（差分がある場合は要件書を優先し、必要に応じて `TODO(req v2)` を残す）。
-- 旧記載の `/dogs` ディレクトリは本リポジトリに存在しないため、本ガイドから削除しました。
 
 コーディング規約（必ず遵守）
 
@@ -164,6 +174,7 @@ Supabase データベース構成（現行実装に基づく）
   - クライアントでは Node 専用 API を使わない。
 - UI 文言は日本語で統一（「未引換」「引換済み」「返金済み」）。
 - 6 桁コード比較は必ず `normalizeCode6` を使用（store/user 双方に実装あり）。
+- 店舗スイッチャー: ヘッダー右上セレクタ。`localStorage('store:selected')` に保存し `window.__STORE_ID__` に反映（`/select-store`/セッション API 連動）。
 
 実行とビルド
 

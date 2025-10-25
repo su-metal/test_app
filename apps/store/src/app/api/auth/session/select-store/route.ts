@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { COOKIE_NAME, verifySessionCookie, issueSessionCookie } from "@/lib/session";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
+import { isUuidLike } from "@/lib/uuid";
 
 export const runtime = "nodejs";
 
@@ -17,6 +18,7 @@ export async function POST(req: Request) {
   try { body = (await req.json()) as any; } catch {}
   const storeId = String(body.storeId || "").trim();
   if (!storeId) return NextResponse.json({ error: "invalid-store-id" }, { status: 400 });
+  if (!isUuidLike(storeId)) return NextResponse.json({ error: "invalid-store-id" }, { status: 400 });
 
   const admin = getSupabaseAdmin();
 
@@ -40,7 +42,7 @@ export async function POST(req: Request) {
       .limit(1);
     if ((s1?.length ?? 0) > 0) allowed = true;
   }
-  if (!allowed) return NextResponse.json({ error: "forbidden:store-mismatch" }, { status: 403 });
+  if (!allowed) return NextResponse.json({ error: "membership-not-found" }, { status: 403 });
 
   const value = issueSessionCookie(sess.sub, secret, storeId);
   const res = NextResponse.json({ ok: true, store_id: storeId });

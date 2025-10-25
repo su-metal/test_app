@@ -48,10 +48,6 @@ export async function POST(req: NextRequest) {
       for (const r of own || []) storeIds.add(String((r as any).id));
     } catch {}
 
-    if (storeIds.size === 0) {
-      return NextResponse.json({ error: "membership-not-found" }, { status: 403 });
-    }
-
     let value = "";
     let body: any = { ok: true, operator_user_id: operatorUserId };
     if (storeIds.size === 1) {
@@ -59,7 +55,7 @@ export async function POST(req: NextRequest) {
       value = issueSessionCookie(operatorUserId, secret, only);
       body.store_id = only;
     } else {
-      // 複数所属: 一旦 store_id 未設定のセッションを発行し、選択画面へ誘導
+      // 0 件または複数所属: store_id 未設定のセッションを発行し、選択画面へ誘導
       value = issueSessionCookie(operatorUserId, secret);
       body.need_store_select = true;
     }

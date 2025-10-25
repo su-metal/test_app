@@ -30,7 +30,7 @@ export async function GET() {
       .eq("auth_user_id", sess.sub);
     for (const r of own || []) ids.add(String((r as any).id));
 
-    if (ids.size === 0) return NextResponse.json({ error: "membership-not-found" }, { status: 403 });
+    if (ids.size === 0) return NextResponse.json({ ok: true, stores: [] });
 
     // fetch names
     const { data: items } = await admin

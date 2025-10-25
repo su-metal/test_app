@@ -29,13 +29,13 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                   window.NEXT_PUBLIC_SUPABASE_ANON_KEY = ${JSON.stringify(supabaseKey)};
                   window.__SUPABASE_URL__ = window.NEXT_PUBLIC_SUPABASE_URL;
                   window.__SUPABASE_ANON_KEY__ = window.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-                  window.__STORE_ID__ = '';
+                  window.__STORE_ID__ = null;
                 } catch(e) {
                   window.NEXT_PUBLIC_SUPABASE_URL = ${JSON.stringify(supabaseUrl)};
                   window.NEXT_PUBLIC_SUPABASE_ANON_KEY = ${JSON.stringify(supabaseKey)};
                   window.__SUPABASE_URL__ = window.NEXT_PUBLIC_SUPABASE_URL;
                   window.__SUPABASE_ANON_KEY__ = window.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-                  window.__STORE_ID__ = '';
+                  window.__STORE_ID__ = null;
                 }
               })();
             `,

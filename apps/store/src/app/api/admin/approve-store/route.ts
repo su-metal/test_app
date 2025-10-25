@@ -71,11 +71,18 @@ export async function POST(req: Request) {
   await supabaseAdmin.from('store_pickup_presets').upsert(presets, { onConflict: 'store_id,slot_no' });
   await supabaseAdmin.from('stores').update({ current_pickup_slot_no: 1 }).eq('id', storeId);
 
+  // メンバーシップ(owner)を付与
+  // TODO(req v2): store_members.requires_pw_update を用意し初回PW変更を強制
+  await supabaseAdmin
+    .from('store_members')
+    .upsert({ store_id: storeId, operator_user_id: created.user.id, role: 'owner' } as any, { onConflict: 'store_id,operator_user_id' });
+
   const { error: uerr } = await supabaseAdmin
     .from("store_applications")
     .update({ status: "approved" })
     .eq("id", app.id);
   if (uerr) return NextResponse.json({ error: uerr.message }, { status: 500 });
 
-  return NextResponse.json({ ok: true });
+  // TODO(req v2): 初期パスワード通知（メール/LINE）
+  return NextResponse.json({ ok: true, store_id: storeId, operator_user_id: created.user.id });
 }

@@ -87,8 +87,14 @@ type Product = {
 type Slot = "main" | "sub1" | "sub2";
 const slotJp = (s: Slot) => (s === "main" ? "メイン" : s === "sub1" ? "サブ1" : "サブ2");
 
-const getStoreId = () =>
-  (typeof window !== "undefined" && (window as any).__STORE_ID__) || "";
+const getStoreId = () => {
+  const sid = (typeof window !== "undefined" && (window as any).__STORE_ID__) || "";
+  if (sid) return String(sid);
+  try {
+    const v = typeof window !== 'undefined' ? localStorage.getItem('store:selected') : null;
+    return (v && v.trim()) ? v.trim() : "";
+  } catch { return ""; }
+};
 
 const yen = (n: number) => n.toLocaleString("ja-JP", { style: "currency", currency: "JPY" });
 const since = (iso: string) => {
@@ -181,7 +187,10 @@ function useSupabase() {
     const sid = getStoreId();
     if (!url || !key) return null;
     try {
-      const sb = createClient(url, key, { global: { headers: { 'x-store-id': String(sid || '') } } });
+      // 空文字の x-store-id を送らない
+      const headers: Record<string, string> = {};
+      if (String(sid || '').trim()) headers['x-store-id'] = String(sid);
+      const sb = createClient(url, key, { global: { headers } });
       (w as any).__supabase = sb;
       return sb;
     } catch {
@@ -260,7 +269,7 @@ const StoreSwitcher = React.memo(function StoreSwitcher() {
     const v = e.target.value; setSel(v);
     try { localStorage.setItem('store:selected', v); } catch { }
     try {
-      await fetch('/api/auth/session/set-store', {
+      await fetch('/api/auth/session/select-store', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ storeId: v }),
@@ -301,10 +310,12 @@ function usePickupPresets() {
   const load = useCallback(async () => {
     if (!supabase) return;
     setLoading(true);
+    const sidForPreset = getStoreId();
+    if (!String(sidForPreset || '').trim()) { setLoading(false); return; }
     const { data, error } = await supabase
       .from("store_pickup_presets")
       .select("slot_no,name,start_time,end_time")
-      .eq("store_id", getStoreId())
+      .eq("store_id", sidForPreset)
       .order("slot_no", { ascending: true });
 
     if (!error && Array.isArray(data)) {
@@ -365,6 +376,7 @@ function useProducts() {
       cleanup();
 
       const sid = getStoreId();
+      if (!String(sid || '').trim()) return;
       const ch = (supabase as any)
         .channel(chanName)
         .on('postgres_changes',
@@ -659,11 +671,13 @@ function useOrders() {
 
   const fetchAndSubscribe = useCallback(async () => {
     if (!supabase) { setReady(true); return; }
+    const sid = getStoreId();
+    if (!String(sid || '').trim()) { setErr('店舗が未選択です。店舗を選択してください。'); setReady(true); return; }
     setErr(null); cleanup();
     const { data, error } = await supabase
       .from('orders')
       .select('id,store_id,code,customer,items,total,placed_at,status,pickup_start,pickup_end')
-      .eq('store_id', getStoreId())
+      .eq('store_id', sid)
       .order('placed_at', { ascending: false });
     if (error) {
       setErr(error.message || 'データ取得に失敗しました');

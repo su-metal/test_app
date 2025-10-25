@@ -8,8 +8,7 @@ if (!process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY)
 
 // RLS ポリシーで `x-store-id` ヘッダを参照するため、
 // クライアントのデフォルトヘッダに店舗IDを付与する
-const storeId = (typeof window !== 'undefined' && (window as any).__STORE_ID__)
-  || '';
+const rawStoreId = (typeof window !== 'undefined' && (window as any).__STORE_ID__) || '';
 
 export const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
@@ -17,7 +16,8 @@ export const supabase = createClient(
   {
     global: {
       headers: {
-        'x-store-id': storeId,
+        // 空文字を送らない
+        ...(rawStoreId ? { 'x-store-id': String(rawStoreId) } : {}),
       },
     },
   }

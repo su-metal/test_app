@@ -24,21 +24,47 @@ export async function POST(req: NextRequest) {
   let lineUserId = "";
   let body: any = null;
   try {
-    const auth = req.headers.get("authorization");
-    if (auth) {
-      lineUserId = await verifyLiffIdToken(auth);
-    } else {
-      const h2 = req.headers.get("x-liff-id-token");
-      if (h2) lineUserId = await verifyLiffTokenString(h2);
+    // --- 開発判定 ---
+    const host = req.headers.get("host") || "";
+    const isLocalHost =
+      /^localhost(?::\d+)?$/.test(host) ||
+      /^127\.0\.0\.1(?::\d+)?$/.test(host) ||
+      /^\[::1\](?::\d+)?$/.test(host);
+
+    // --- 認証（順に試す） ---
+    // 0) localhost + dev_skip_liff=true の明示時はスキップ
+    //    ※ 一度だけ body を読み、以降は変数を再利用
+    body = body ?? (await req.json().catch(() => null));
+    const wantDevSkip = Boolean(body?.dev_skip_liff === true);
+
+    if (isLocalHost && wantDevSkip) {
+      lineUserId = "dev_local_user"; // 開発用ダミー
     }
+
+    // 1) Authorization: Bearer ...（LIFF ID トークン）
     if (!lineUserId) {
-      body = await req.json().catch(() => null);
+      const auth = req.headers.get("authorization");
+      if (auth) {
+        lineUserId = await verifyLiffIdToken(auth);
+      } else {
+        const h2 = req.headers.get("x-liff-id-token");
+        if (h2) lineUserId = await verifyLiffTokenString(h2);
+      }
+    }
+
+    // 2) body.id_token / body.idToken（フォーム経由）
+    if (!lineUserId) {
       const tokenInBody: string | undefined = body?.id_token || body?.idToken;
-      if (tokenInBody) lineUserId = await verifyLiffTokenString(String(tokenInBody));
+      if (tokenInBody)
+        lineUserId = await verifyLiffTokenString(String(tokenInBody));
     }
+
+    // 3) サーバー署名 HMAC セッション Cookie
     if (!lineUserId) {
-      // フォールバック: サーバー署名 HMAC セッション Cookie
-      const secret = process.env.USER_SESSION_SECRET || process.env.LINE_CHANNEL_SECRET || "";
+      const secret =
+        process.env.USER_SESSION_SECRET ||
+        process.env.LINE_CHANNEL_SECRET ||
+        "";
       if (secret) {
         const c = await cookies();
         const sess = verifySessionCookie(c.get(USER_COOKIE)?.value, secret);
@@ -46,22 +72,39 @@ export async function POST(req: NextRequest) {
         if (sub) lineUserId = sub;
       }
     }
+
+    // 4) それでも無ければ 401（ただし localhost + dev_skip_liff のときは通過済み）
     if (!lineUserId) {
-      return NextResponse.json({ error: "unauthorized", detail: "Authorization ヘッダーか Bearer トークンが必要です" }, { status: 401 });
+      return NextResponse.json(
+        {
+          error: "unauthorized",
+          detail: "Authorization ヘッダーか Bearer トークンが必要です",
+        },
+        { status: 401 }
+      );
     }
   } catch (e: any) {
-    return NextResponse.json({ error: "unauthorized", detail: e?.message || String(e) }, { status: 401 });
+    return NextResponse.json(
+      { error: "unauthorized", detail: e?.message || String(e) },
+      { status: 401 }
+    );
   }
 
   try {
-    const { storeId, userEmail, lines, pickup, returnUrl } = body ?? (await req.json());
+    const { storeId, userEmail, lines, pickup, returnUrl } =
+      body ?? (await req.json());
 
     if (!Array.isArray(lines) || lines.length === 0) {
-      return NextResponse.json({ error: "line_items is empty" }, { status: 400 });
+      return NextResponse.json(
+        { error: "line_items is empty" },
+        { status: 400 }
+      );
     }
 
     const currency = "jpy";
-    const line_items: Stripe.Checkout.SessionCreateParams.LineItem[] = (lines as Array<any>)
+    const line_items: Stripe.Checkout.SessionCreateParams.LineItem[] = (
+      lines as Array<any>
+    )
       .map((l: any) => ({
         quantity: Math.max(0, Number(l?.qty) || 0),
         price_data: {
@@ -79,7 +122,10 @@ export async function POST(req: NextRequest) {
     const API_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
     const ANON = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
     if (!API_URL || !ANON) {
-      return NextResponse.json({ error: "server-misconfig:supabase" }, { status: 500 });
+      return NextResponse.json(
+        { error: "server-misconfig:supabase" },
+        { status: 500 }
+      );
     }
 
     const items = (lines as Array<any>).map((l) => ({
@@ -88,9 +134,15 @@ export async function POST(req: NextRequest) {
       qty: Math.max(0, Number(l?.qty) || 0),
       price: Math.max(0, Math.floor(Number(l?.price) || 0)),
     }));
-    const total = items.reduce((a, it) => a + (Number(it.price) || 0) * (Number(it.qty) || 0), 0);
+    const total = items.reduce(
+      (a, it) => a + (Number(it.price) || 0) * (Number(it.qty) || 0),
+      0
+    );
 
-    function parsePickupLabelToJstIsoRange(label?: string): { start?: string; end?: string } {
+    function parsePickupLabelToJstIsoRange(label?: string): {
+      start?: string;
+      end?: string;
+    } {
       // ラベル中の最初の2つの「HH:MM」を抽出してISO(+09:00)へ変換
       // TODO(req v2): 受取スロットの構造化引き渡しに移行（ラベル依存を排除）
       const text = String(label || "").trim();
@@ -101,7 +153,12 @@ export async function POST(req: NextRequest) {
       const pad = (s: string) => (s.length === 1 ? `0${s}` : s);
       const toIso = (hhmm: string) => {
         const [hh, mm] = hhmm.split(":");
-        const parts = new Intl.DateTimeFormat("ja-JP", { timeZone: "Asia/Tokyo", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date());
+        const parts = new Intl.DateTimeFormat("ja-JP", {
+          timeZone: "Asia/Tokyo",
+          year: "numeric",
+          month: "2-digit",
+          day: "2-digit",
+        }).formatToParts(new Date());
         const y = parts.find((p) => p.type === "year")?.value ?? "1970";
         const mo = parts.find((p) => p.type === "month")?.value ?? "01";
         const d = parts.find((p) => p.type === "day")?.value ?? "01";
@@ -118,9 +175,13 @@ export async function POST(req: NextRequest) {
     // -------- 1) Customer 取得または作成（任意） --------
     let customerId: string | undefined;
     if (userEmail) {
-      const existing = await stripe.customers.list({ email: userEmail, limit: 1 });
+      const existing = await stripe.customers.list({
+        email: userEmail,
+        limit: 1,
+      });
       if (existing.data.length > 0) customerId = existing.data[0].id;
-      else customerId = (await stripe.customers.create({ email: userEmail })).id;
+      else
+        customerId = (await stripe.customers.create({ email: userEmail })).id;
     }
 
     // -------- 2) セッション作成（支払いフローのみ） --------
@@ -132,7 +193,7 @@ export async function POST(req: NextRequest) {
         setup_future_usage: "off_session",
         // fulfill 側の補助参照用
         metadata: {
-          line_user_id: lineUserId || undefined,
+          line_user_id: String(lineUserId ?? ""),
         },
       },
       payment_method_types: ["card"],
@@ -144,7 +205,7 @@ export async function POST(req: NextRequest) {
         pickup_label: String(pickup ?? ""),
         items_json: JSON.stringify(items),
         email: String(userEmail ?? ""),
-        line_user_id: lineUserId || undefined,
+        line_user_id: String(lineUserId ?? ""),
         // TODO(req v2): ラベルではなく構造化した start/end または slot_no を渡す
         // start_iso: pick.start, end_iso: pick.end,
         total_yen: String(total),
@@ -153,10 +214,15 @@ export async function POST(req: NextRequest) {
     };
 
     const session = await stripe.checkout.sessions.create(params);
-    return NextResponse.json({ client_secret: session.client_secret }, { status: 200 });
+    return NextResponse.json(
+      { client_secret: session.client_secret },
+      { status: 200 }
+    );
   } catch (err: any) {
     console.error("[create-checkout-session] error:", err?.message || err);
-    return NextResponse.json({ error: err?.message ?? "unknown" }, { status: 400 });
+    return NextResponse.json(
+      { error: err?.message ?? "unknown" },
+      { status: 400 }
+    );
   }
 }
-

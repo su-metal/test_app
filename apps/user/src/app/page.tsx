@@ -3242,26 +3242,43 @@ export default function UserPilotApp() {
         try {
             setIsPaying(true);
             // A-1: LIFF の ID トークンを取得して Authorization に付与
+            // A-1: 開発環境(localhost)では LIFF ログインをスキップ
+            const isLocal = typeof window !== "undefined" && (
+                location.hostname === "localhost" ||
+                location.hostname === "127.0.0.1" ||
+                location.hostname === "[::1]"
+            );
+
+            // LIFF の ID トークン（本番のみ必須）
             let idToken: string | undefined;
-            try {
-                const { default: liff } = await import("@line/liff");
-                idToken = liff.getIDToken() || undefined;
-            } catch { }
-            if (!idToken) { throw new Error("LIFF のログインが必要です。アプリ内ブラウザで開いてください。"); }
+            if (!isLocal) {
+                try {
+                    const { default: liff } = await import("@line/liff");
+                    idToken = liff.getIDToken() || undefined;
+                } catch { /* noop */ }
+                if (!idToken) {
+                    throw new Error("LIFF のログインが必要です。アプリ内ブラウザで開いてください。");
+                }
+            }
+
 
             const res = await fetch("/api/stripe/create-checkout-session", {
                 method: "POST",
-                headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
+                headers: {
+                    "Content-Type": "application/json",
+                    // 本番のみ Authorization を付ける
+                    ...(idToken ? { Authorization: `Bearer ${idToken}` } : {}),
+                },
                 body: JSON.stringify({
                     storeId: g.storeId,
                     userEmail,
                     lines: linesPayload,
                     pickup: pickupLabel,
-                    // 決済完了後の戻り先（Embedded Checkout 用）
-                    // TODO(req v2): 成功ページでの決済検証/注文整合の拡張
-                    id_token: idToken,
+                    // 本番では id_token を渡す。localhost では渡さない（サーバ側で緩和する想定）
+                    ...(idToken ? { id_token: idToken } : { dev_skip_liff: true }),
                     returnUrl: `${location.origin}/checkout/success`,
                 }),
+
                 credentials: 'include',
             });
 

@@ -8,6 +8,8 @@ import PickupTimeSelector, { type PickupSlot } from "@/components/PickupTimeSele
 import { EmbeddedCheckoutProvider, EmbeddedCheckout, useStripe, useElements, PaymentElement } from "@stripe/react-stripe-js";
 import type { QRCodeRenderersOptions } from "qrcode";
 import type { ReactNode } from 'react';
+import { normalizeCode6 } from "@/lib/code6";
+
 
 
 
@@ -644,14 +646,6 @@ const norm = (v: unknown): string => {
     return s.trim().replace(/[\s_-]/g, "").replace(/[^0-9A-Za-z]/g, "").toUpperCase();
 };
 
-// 6桁コード専用: 数字のみ抽出し、左ゼロ埋めで6桁に揃える
-const normalizeCode6 = (v: unknown): string => {
-    const digits = String(v ?? "").replace(/\D/g, "");
-    if (digits.length === 6) return digits;
-    if (digits.length < 6) return digits.padStart(6, '0');
-    // 6桁より長い場合は比較に使わない（不一致扱い）
-    return digits.slice(-6);
-};
 
 // ---- Toast（非同期通知） ----
 type ToastKind = "info" | "success" | "error";

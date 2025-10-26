@@ -3395,7 +3395,7 @@ export default function UserPilotApp() {
             <div className="inline-flex items-center rounded-full px-0 py-1 text-sm select-none">
                 <button
                     type="button"
-                    className="w-10 h-10 text-[10px] leading-none rounded-full border cursor-pointer disabled:opacity-40 flex items-center justify-center"
+                    className="w-9 h-9 text-[10px] leading-none rounded-full border cursor-pointer disabled:opacity-40 flex items-center justify-center"
                     disabled={reserved <= 0}
                     onClick={() => changeQty(sid, it, -1)}
                     aria-label="数量を減らす"

@@ -7,7 +7,29 @@ import { COOKIE_NAME as USER_COOKIE, verifySessionCookie } from "@/lib/session";
 
 export const runtime = "nodejs"; // Stripe は Node 実行
 
+// Stripe クライアント（型の都合で apiVersion は未指定：ライブラリ同梱に合わせる）
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
+
+// ─────────────────────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────────────────────
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+const SUPABASE_ANON = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+
+function assertEnv() {
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY || !SUPABASE_ANON) {
+    throw new Error("server-misconfig:supabase env missing");
+  }
+}
+
+function genOrderCode(len = 6) {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // 読みやすい集合
+  let s = "";
+  for (let i = 0; i < len; i++)
+    s += chars[Math.floor(Math.random() * chars.length)];
+  return s;
+}
 
 /**
  * 期待ボディ
@@ -15,15 +37,20 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
  *   storeId?: string,
  *   userEmail?: string,
  *   lines: { id?: string; name: string; price: number; qty: number }[],
- *   pickup?: string,
- *   returnUrl: string
+ *   pickup?: string,  // 例 "18:30〜18:40"
+ *   returnUrl: string,
+ *   dev_skip_liff?: boolean // localhost 限定
  * }
  */
 export async function POST(req: NextRequest) {
   // A-1: 認証（LIFF or サーバー署名 Cookie）
   let lineUserId = "";
   let body: any = null;
+
   try {
+    // 一度だけ body を読む（以降は変数を再利用）
+    body = body ?? (await req.json().catch(() => null));
+
     // --- 開発判定 ---
     const host = req.headers.get("host") || "";
     const isLocalHost =
@@ -31,12 +58,7 @@ export async function POST(req: NextRequest) {
       /^127\.0\.0\.1(?::\d+)?$/.test(host) ||
       /^\[::1\](?::\d+)?$/.test(host);
 
-    // --- 認証（順に試す） ---
-    // 0) localhost + dev_skip_liff=true の明示時はスキップ
-    //    ※ 一度だけ body を読み、以降は変数を再利用
-    body = body ?? (await req.json().catch(() => null));
     const wantDevSkip = Boolean(body?.dev_skip_liff === true);
-
     if (isLocalHost && wantDevSkip) {
       lineUserId = "dev_local_user"; // 開発用ダミー
     }
@@ -73,7 +95,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // 4) それでも無ければ 401（ただし localhost + dev_skip_liff のときは通過済み）
+    // 4) いずれも無ければ 401
     if (!lineUserId) {
       return NextResponse.json(
         {
@@ -91,6 +113,8 @@ export async function POST(req: NextRequest) {
   }
 
   try {
+    assertEnv();
+
     const { storeId, userEmail, lines, pickup, returnUrl } =
       body ?? (await req.json());
 
@@ -100,34 +124,12 @@ export async function POST(req: NextRequest) {
         { status: 400 }
       );
     }
-
-    const currency = "jpy";
-    const line_items: Stripe.Checkout.SessionCreateParams.LineItem[] = (
-      lines as Array<any>
-    )
-      .map((l: any) => ({
-        quantity: Math.max(0, Number(l?.qty) || 0),
-        price_data: {
-          currency,
-          unit_amount: Math.max(0, Math.floor(Number(l?.price) || 0)),
-          product_data: {
-            name: String(l?.name || "商品"),
-            metadata: { product_id: String(l?.id ?? "") },
-          },
-        },
-      }))
-      .filter((li) => (Number(li.quantity) || 0) > 0);
-
-    // 環境チェック（匿名キーは fulfill でも使用）
-    const API_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-    const ANON = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
-    if (!API_URL || !ANON) {
-      return NextResponse.json(
-        { error: "server-misconfig:supabase" },
-        { status: 500 }
-      );
+    if (!returnUrl) {
+      return NextResponse.json({ error: "missing returnUrl" }, { status: 400 });
     }
 
+    // ── 金額/品目整形（必ず数値化） ──
+    const currency = "jpy";
     const items = (lines as Array<any>).map((l) => ({
       id: String(l?.id ?? ""),
       name: String(l?.name ?? ""),
@@ -138,82 +140,130 @@ export async function POST(req: NextRequest) {
       (a, it) => a + (Number(it.price) || 0) * (Number(it.qty) || 0),
       0
     );
+    const line_items: Stripe.Checkout.SessionCreateParams.LineItem[] = items
+      .map((it) => ({
+        quantity: it.qty,
+        price_data: {
+          currency,
+          unit_amount: it.price,
+          product_data: {
+            name: it.name || "商品",
+            metadata: { product_id: it.id },
+          },
+        },
+      }))
+      .filter((li) => (Number(li.quantity) || 0) > 0);
 
-    function parsePickupLabelToJstIsoRange(label?: string): {
-      start?: string;
-      end?: string;
-    } {
-      // ラベル中の最初の2つの「HH:MM」を抽出してISO(+09:00)へ変換
-      // TODO(req v2): 受取スロットの構造化引き渡しに移行（ラベル依存を排除）
-      const text = String(label || "").trim();
-      if (!text) return {};
-      const times = text.match(/\b(\d{1,2}:\d{2})\b/g);
-      if (!times || times.length < 2) return {};
-      const [a, b] = times;
-      const pad = (s: string) => (s.length === 1 ? `0${s}` : s);
-      const toIso = (hhmm: string) => {
-        const [hh, mm] = hhmm.split(":");
-        const parts = new Intl.DateTimeFormat("ja-JP", {
-          timeZone: "Asia/Tokyo",
-          year: "numeric",
-          month: "2-digit",
-          day: "2-digit",
-        }).formatToParts(new Date());
-        const y = parts.find((p) => p.type === "year")?.value ?? "1970";
-        const mo = parts.find((p) => p.type === "month")?.value ?? "01";
-        const d = parts.find((p) => p.type === "day")?.value ?? "01";
-        return `${y}-${mo}-${d}T${pad(hh)}:${pad(mm)}:00+09:00`;
-      };
-      return { start: toIso(a), end: toIso(b) };
+    // ── Pull: 受取ラベルはそのまま metadata へ（構造化は将来） ──
+    const pickup_label = String(pickup ?? "");
+
+    // ─────────────────────────────────────────────────────
+    // 1) プレオーダーを orders に作成（status=PENDING, payment_status=UNPAID）
+    //    → id と短い引換コードを発行
+    // ─────────────────────────────────────────────────────
+    const orderCode = genOrderCode(6);
+
+    // 保存する初期値
+    const preOrderPayload: Record<string, any> = {
+      store_id: String(storeId ?? ""),
+      line_user_id: String(lineUserId ?? ""),
+      status: "PENDING", // 引換前
+      payment_status: "UNPAID",
+      code: orderCode,
+      total_amount: total,
+      pickup_time_label: pickup_label, // 既存カラムに合わせて名称調整してください
+      // 必要に応じて items_json を残す
+      items_json: JSON.stringify(items),
+      // 監査用
+      created_at: new Date().toISOString(),
+    };
+
+    const insertRes = await fetch(`${SUPABASE_URL}/rest/v1/orders`, {
+      method: "POST",
+      headers: {
+        apikey: SUPABASE_SERVICE_ROLE_KEY,
+        Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+        "Content-Type": "application/json",
+        Prefer: "return=representation",
+      },
+      body: JSON.stringify(preOrderPayload),
+    });
+    if (!insertRes.ok) {
+      const txt = await insertRes.text().catch(() => "");
+      console.error(
+        "[create-checkout-session] pre-order insert failed:",
+        insertRes.status,
+        txt
+      );
+      return NextResponse.json(
+        { error: "preorder-insert-failed", detail: txt },
+        { status: 500 }
+      );
     }
-    // ここでは使用しないが、将来の要件でmetadataをISOで持つ場合に備える
-    const pick = parsePickupLabelToJstIsoRange(String(pickup || ""));
+    const inserted = (await insertRes.json()) as Array<{
+      id: string;
+      code?: string;
+    }>;
+    const orderId = inserted?.[0]?.id;
+    const orderShortCode = inserted?.[0]?.code || orderCode;
+    if (!orderId) {
+      return NextResponse.json(
+        { error: "preorder-id-missing" },
+        { status: 500 }
+      );
+    }
 
-    // 事前INSERTは行わない。支払い完了後(fulfill)にのみDBへINSERTする。
-    // 必要データは Session/PI の metadata に格納する。
-
-    // -------- 1) Customer 取得または作成（任意） --------
+    // ─────────────────────────────────────────────────────
+    // 2) Stripe セッション作成（order_id を Session/PI の両方に付与）
+    // ─────────────────────────────────────────────────────
+    // 既存顧客の再利用（任意）
     let customerId: string | undefined;
     if (userEmail) {
-      const existing = await stripe.customers.list({
-        email: userEmail,
-        limit: 1,
-      });
-      if (existing.data.length > 0) customerId = existing.data[0].id;
-      else
-        customerId = (await stripe.customers.create({ email: userEmail })).id;
+      try {
+        const existing = await stripe.customers.list({
+          email: userEmail,
+          limit: 1,
+        });
+        if (existing.data.length > 0) customerId = existing.data[0].id;
+        else
+          customerId = (await stripe.customers.create({ email: userEmail })).id;
+      } catch {
+        // 顧客作成は必須ではないので握りつぶす
+      }
     }
 
-    // -------- 2) セッション作成（支払いフローのみ） --------
     const params: Stripe.Checkout.SessionCreateParams = {
       ui_mode: "embedded",
       mode: "payment",
       customer: customerId,
       payment_intent_data: {
         setup_future_usage: "off_session",
-        // fulfill 側の補助参照用
         metadata: {
+          order_id: orderId, // ← PI 側 metadata（保険）
           line_user_id: String(lineUserId ?? ""),
+          store_id: String(storeId ?? ""),
         },
       },
       payment_method_types: ["card"],
       line_items,
+      // 決済完了後の戻り先
       return_url: `${returnUrl}?session_id={CHECKOUT_SESSION_ID}`,
+      // セッション側にも order_id を重複格納（Webhook が拾いやすい）
       metadata: {
-        // 決済完了後に INSERT するための情報を持たせる
+        order_id: orderId, // ← セッション側 metadata（第一参照）
         store_id: String(storeId ?? ""),
-        pickup_label: String(pickup ?? ""),
+        pickup_label: pickup_label,
         items_json: JSON.stringify(items),
         email: String(userEmail ?? ""),
         line_user_id: String(lineUserId ?? ""),
-        // TODO(req v2): ラベルではなく構造化した start/end または slot_no を渡す
-        // start_iso: pick.start, end_iso: pick.end,
         total_yen: String(total),
       },
-      // client_reference_id は事前注文がないため未設定
+      // 参照用の短い相関 ID（UI 側やダッシュボードで見やすく）
+      client_reference_id: orderShortCode,
     };
 
     const session = await stripe.checkout.sessions.create(params);
+
     return NextResponse.json(
       { client_secret: session.client_secret },
       { status: 200 }

@@ -7,18 +7,17 @@ import { COOKIE_NAME as USER_COOKIE, verifySessionCookie } from "@/lib/session";
 
 export const runtime = "nodejs"; // Stripe は Node 実行
 
-// Stripe クライアント（型の都合で apiVersion は未指定：ライブラリ同梱に合わせる）
+// Stripe クライアント（型の都合で apiVersion は未指定：ライブラリ同梱のデフォルトに合わせる）
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
 
 // ─────────────────────────────────────────────────────────────
-// Helpers
+// ENV / Helpers
 // ─────────────────────────────────────────────────────────────
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-const SUPABASE_ANON = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 
 function assertEnv() {
-  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY || !SUPABASE_ANON) {
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
     throw new Error("server-misconfig:supabase env missing");
   }
 }
@@ -37,7 +36,7 @@ function genOrderCode(len = 6) {
  *   storeId?: string,
  *   userEmail?: string,
  *   lines: { id?: string; name: string; price: number; qty: number }[],
- *   pickup?: string,  // 例 "18:30〜18:40"
+ *   pickup?: string,  // 例 "18:30〜18:40"（本APIではDB送信しない／metadataのみ）
  *   returnUrl: string,
  *   dev_skip_liff?: boolean // localhost 限定
  * }
@@ -154,16 +153,12 @@ export async function POST(req: NextRequest) {
       }))
       .filter((li) => (Number(li.quantity) || 0) > 0);
 
-    // ── Pull: 受取ラベルはそのまま metadata へ（構造化は将来） ──
-    const pickup_label = String(pickup ?? "");
-
     // ─────────────────────────────────────────────────────
     // 1) プレオーダーを orders に作成（status=PENDING, payment_status=UNPAID）
-    //    → id と短い引換コードを発行
+    //    ※ スキーマに存在が確実な項目のみ送る（created_at 等は送らない）
     // ─────────────────────────────────────────────────────
     const orderCode = genOrderCode(6);
 
-    // 保存する初期値
     const preOrderPayload: Record<string, any> = {
       store_id: String(storeId ?? ""),
       line_user_id: String(lineUserId ?? ""),
@@ -171,11 +166,8 @@ export async function POST(req: NextRequest) {
       payment_status: "UNPAID",
       code: orderCode,
       total_amount: total,
-      pickup_time_label: pickup_label, // 既存カラムに合わせて名称調整してください
-      // 必要に応じて items_json を残す
       items_json: JSON.stringify(items),
-      // 監査用
-      created_at: new Date().toISOString(),
+      // pickup は DB カラム不明のため送らない（metadata のみで保持）
     };
 
     const insertRes = await fetch(`${SUPABASE_URL}/rest/v1/orders`, {
@@ -252,7 +244,7 @@ export async function POST(req: NextRequest) {
       metadata: {
         order_id: orderId, // ← セッション側 metadata（第一参照）
         store_id: String(storeId ?? ""),
-        pickup_label: pickup_label,
+        pickup_label: String(pickup ?? ""), // DB には送らず metadata のみ
         items_json: JSON.stringify(items),
         email: String(userEmail ?? ""),
         line_user_id: String(lineUserId ?? ""),

@@ -5,10 +5,14 @@ import { verifyLiffIdToken, verifyLiffTokenString } from "@/lib/verifyLiff";
 import { cookies } from "next/headers";
 import { COOKIE_NAME as USER_COOKIE, verifySessionCookie } from "@/lib/session";
 
-export const runtime = "nodejs";
+export const runtime = "nodejs"; // Stripe は Node 実行
 
+// Stripe クライアント（型の都合で apiVersion は未指定：ライブラリ同梱のデフォルトに合わせる）
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
 
+// ─────────────────────────────────────────────────────────────
+// ENV / Helpers
+// ─────────────────────────────────────────────────────────────
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 
@@ -18,35 +22,47 @@ function assertEnv() {
   }
 }
 
+function genShortCode(len = 6) {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // 読みやすい集合
+  let s = "";
+  for (let i = 0; i < len; i++)
+    s += chars[Math.floor(Math.random() * chars.length)];
+  return s;
+}
+
 /**
  * 期待ボディ
  * {
  *   storeId?: string,
  *   userEmail?: string,
  *   lines: { id?: string; name: string; price: number; qty: number }[],
- *   pickup?: string,
+ *   pickup?: string,         // 例 "18:30〜18:40"（DBへは送らず Stripe metadata のみに格納）
  *   returnUrl: string,
- *   dev_skip_liff?: boolean
+ *   dev_skip_liff?: boolean  // localhost 限定
  * }
  */
 export async function POST(req: NextRequest) {
-  // ---- 認証（既存ロジックを踏襲）----
+  // A-1: 認証（LIFF or サーバー署名 Cookie）
   let lineUserId = "";
   let body: any = null;
 
   try {
+    // 一度だけ body を読む（以降は変数を再利用）
     body = body ?? (await req.json().catch(() => null));
 
+    // --- 開発判定 ---
     const host = req.headers.get("host") || "";
     const isLocalHost =
       /^localhost(?::\d+)?$/.test(host) ||
       /^127\.0\.0\.1(?::\d+)?$/.test(host) ||
       /^\[::1\](?::\d+)?$/.test(host);
+
     const wantDevSkip = Boolean(body?.dev_skip_liff === true);
     if (isLocalHost && wantDevSkip) {
-      lineUserId = "dev_local_user";
+      lineUserId = "dev_local_user"; // 開発用ダミー
     }
 
+    // 1) Authorization: Bearer ...（LIFF ID トークン）
     if (!lineUserId) {
       const auth = req.headers.get("authorization");
       if (auth) {
@@ -57,12 +73,14 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // 2) body.id_token / body.idToken（フォーム経由）
     if (!lineUserId) {
       const tokenInBody: string | undefined = body?.id_token || body?.idToken;
       if (tokenInBody)
         lineUserId = await verifyLiffTokenString(String(tokenInBody));
     }
 
+    // 3) サーバー署名 HMAC セッション Cookie
     if (!lineUserId) {
       const secret =
         process.env.USER_SESSION_SECRET ||
@@ -76,6 +94,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // 4) いずれも無ければ 401
     if (!lineUserId) {
       return NextResponse.json(
         {
@@ -108,7 +127,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "missing returnUrl" }, { status: 400 });
     }
 
-    // ---- 金額/品目整形 ----
+    // ── 金額/品目整形（必ず数値化） ──
     const currency = "jpy";
     const items = (lines as Array<any>).map((l) => ({
       id: String(l?.id ?? ""),
@@ -134,40 +153,19 @@ export async function POST(req: NextRequest) {
       }))
       .filter((li) => (Number(li.quantity) || 0) > 0);
 
-    // ---- 店舗名を stores.name から取得（後で orders.store_name と metadata に使用）----
-    let storeName: string | undefined;
-    if (storeId) {
-      try {
-        const r = await fetch(
-          `${SUPABASE_URL}/rest/v1/stores?id=eq.${encodeURIComponent(
-            String(storeId)
-          )}&select=name`,
-          {
-            headers: {
-              apikey: SUPABASE_SERVICE_ROLE_KEY,
-              Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
-            },
-            cache: "no-store",
-          }
-        );
-        if (r.ok) {
-          const rows = (await r.json()) as Array<{ name?: string | null }>;
-          const n = rows?.[0]?.name;
-          if (n && typeof n === "string" && n.trim()) storeName = n.trim();
-        }
-      } catch {}
-    }
+    // ─────────────────────────────────────────────────────
+    // 1) プレオーダーを orders に作成（status=PENDING, payment_status=UNPAID）
+    //    ※ スキーマ未定義の列は一切送らない（created_at / items_json / pickup_* など）
+    // ─────────────────────────────────────────────────────
+    const orderCode = genShortCode(6);
 
-    // ─────────────────────────────────────────────────────
-    // 1) プレオーダー INSERT（DB側で code 採番）。store_name も orders に保存。
-    // ─────────────────────────────────────────────────────
     const preorder: Record<string, any> = {
       store_id: String(storeId ?? ""),
       line_user_id: String(lineUserId ?? ""),
-      status: "PENDING",
+      status: "PENDING", // 引換前
       payment_status: "UNPAID",
-      total, // 列名は total
-      ...(storeName ? { store_name: storeName } : {}),
+      code: orderCode,
+      total, // ← total_amount ではなく total
     };
 
     const insertRes = await fetch(`${SUPABASE_URL}/rest/v1/orders`, {
@@ -183,7 +181,7 @@ export async function POST(req: NextRequest) {
     if (!insertRes.ok) {
       const txt = await insertRes.text().catch(() => "");
       console.error(
-        "[create-checkout-session] preorder insert failed:",
+        "[create-checkout-session] pre-order insert failed:",
         insertRes.status,
         txt
       );
@@ -192,13 +190,12 @@ export async function POST(req: NextRequest) {
         { status: 500 }
       );
     }
-
     const inserted = (await insertRes.json()) as Array<{
       id: string;
-      code?: string | null;
+      code?: string;
     }>;
     const orderId = inserted?.[0]?.id;
-    let orderCodeFromDb: string | undefined = inserted?.[0]?.code ?? undefined;
+    const orderShortCode = inserted?.[0]?.code || orderCode;
     if (!orderId) {
       return NextResponse.json(
         { error: "preorder-id-missing" },
@@ -206,32 +203,8 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // INSERT返りに code が無い設計のときは再取得で補完
-    if (!orderCodeFromDb) {
-      try {
-        const getRes = await fetch(
-          `${SUPABASE_URL}/rest/v1/orders?id=eq.${encodeURIComponent(
-            orderId
-          )}&select=code`,
-          {
-            headers: {
-              apikey: SUPABASE_SERVICE_ROLE_KEY,
-              Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
-            },
-            cache: "no-store",
-          }
-        );
-        if (getRes.ok) {
-          const rows = (await getRes.json()) as Array<{ code?: string | null }>;
-          const c = rows?.[0]?.code;
-          if (typeof c === "string" && c.trim()) orderCodeFromDb = c.trim();
-        }
-      } catch {}
-    }
-
     // ─────────────────────────────────────────────────────
     // 2) Stripe セッション作成（order_id を Session/PI の両方に付与）
-    //    店舗名(store_name)と code は metadata にも載せる。client_reference_id は code が取れたときのみ。
     // ─────────────────────────────────────────────────────
     // 既存顧客の再利用（任意）
     let customerId: string | undefined;
@@ -244,7 +217,9 @@ export async function POST(req: NextRequest) {
         if (existing.data.length > 0) customerId = existing.data[0].id;
         else
           customerId = (await stripe.customers.create({ email: userEmail })).id;
-      } catch {}
+      } catch {
+        // 顧客作成は必須ではないので握りつぶす
+      }
     }
 
     const params: Stripe.Checkout.SessionCreateParams = {
@@ -254,30 +229,32 @@ export async function POST(req: NextRequest) {
       payment_intent_data: {
         setup_future_usage: "off_session",
         metadata: {
-          order_id: orderId,
+          order_id: orderId, // ← PI 側 metadata（フォールバック）
           line_user_id: String(lineUserId ?? ""),
           store_id: String(storeId ?? ""),
-          ...(storeName ? { store_name: storeName } : {}),
-          ...(orderCodeFromDb ? { code: orderCodeFromDb } : {}),
         },
       },
       payment_method_types: ["card"],
       line_items,
+      // 決済完了後の戻り先
       return_url: `${returnUrl}?session_id={CHECKOUT_SESSION_ID}`,
+      // セッション側にも order_id を重複格納（Webhook が第一参照）
       metadata: {
-        order_id: orderId,
+        order_id: orderId, // ← セッション metadata（第一参照）
         store_id: String(storeId ?? ""),
-        pickup_label: String(pickup ?? ""),
+        pickup_label: String(pickup ?? ""), // DB には送らず metadata のみ
         email: String(userEmail ?? ""),
         line_user_id: String(lineUserId ?? ""),
+        // 冗長情報（任意）
         total_yen: String(total),
-        ...(storeName ? { store_name: storeName } : {}),
-        ...(orderCodeFromDb ? { code: orderCodeFromDb } : {}),
+        items_json: JSON.stringify(items),
       },
-      ...(orderCodeFromDb ? { client_reference_id: orderCodeFromDb } : {}),
+      // ダッシュボードやUIでの突合を楽にする短い相関コード
+      client_reference_id: orderShortCode,
     };
 
     const session = await stripe.checkout.sessions.create(params);
+
     return NextResponse.json(
       { client_secret: session.client_secret },
       { status: 200 }

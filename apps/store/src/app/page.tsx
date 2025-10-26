@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 import React, { useMemo, useState, useEffect, useRef, useCallback } from "react";
 import { createClient, type RealtimeChannel } from "@supabase/supabase-js";
 
@@ -768,7 +768,7 @@ function useOrders() {
           if (curMin >= endMin) {
             // ▲時間外：オーバーライド指定がない場合はエラーで止める
             if (!opts?.override) {
-              setErr('受取時間外なので、引換できません（店舗裁量で受け渡すこともできます）');
+              setErr('受取時間外です。店舗裁量で受け渡す場合は「時間外でも受け渡す」を押してください。');
               return;
             }
             // ▼オーバーライド指定あり：続行（監査が必要なら RPC/UPDATE にフィールド追加を）
@@ -778,6 +778,24 @@ function useOrders() {
     } catch {
       // 取得に失敗しても処理は継続（ネットワーク揺らぎ対策）
     }
+
+
+    // ▼ 注文ごとの受取時間での厳密判定（override 無しでは止める）
+    {
+      const startTs = target.pickupStart ? Date.parse(target.pickupStart) : NaN;
+      const endTs = target.pickupEnd ? Date.parse(target.pickupEnd) : NaN;
+      const now = Date.now();
+      const outside =
+        (Number.isFinite(startTs) && now < startTs) ||
+        (Number.isFinite(endTs) && now > endTs);
+
+      if (outside && !opts?.override) {
+        setErr('受取時間外です。店舗裁量で受け渡す場合は「時間外でも受け渡す」を押してください。');
+        return;
+      }
+    }
+
+
     // ★ RPC 呼び出し（DB側で作成済みの fulfill_order(uuid, text) を使う）
     const { data, error } = await supabase.rpc('fulfill_order', {
       p_store_id: getStoreId(),
@@ -808,8 +826,8 @@ function useOrders() {
           if (!r.ok) {
             console.warn('[complete] push api error', r.status, await r.text());
           }
-        }).catch(() => {/* noop */});
-      } catch {/* noop */}
+        }).catch(() => {/* noop */ });
+      } catch {/* noop */ }
     }
   }, [supabase, orders, orderChan, setOrders, setErr]);
 
@@ -3171,9 +3189,26 @@ function OrdersPage() {
                     if (!storeOk) { setCodeErr('店舗が一致しません'); return; }
                     if (raw.length !== 6) { setCodeErr('6桁のコードを入力してください'); return; }
                     if (raw !== expectedCode) { setCodeErr('コードが一致しません'); return; }
-                    fulfill(current!.id); // ←通常（時間外はエラー表示）
+
+                    // ▼ ここで注文の受取時間に対する「時間外」判定（ISOをUTCで比較）
+                    const startTs = current?.pickupStart ? Date.parse(current.pickupStart) : NaN;
+                    const endTs = current?.pickupEnd ? Date.parse(current.pickupEnd) : NaN;
+                    const now = Date.now();
+                    const outside =
+                      (Number.isFinite(startTs) && now < startTs) ||
+                      (Number.isFinite(endTs) && now > endTs);
+
+                    if (outside) {
+                      // 通常経路では通さず、必ず「時間外でも受け渡す」ダイアログを出す
+                      setOverrideAsk(true);
+                      return;
+                    }
+
+                    // 時間内 → 通常受取を実行
+                    fulfill(current!.id);
                     setCurrent(null); setCodeInput(""); setCodeErr(null);
                   }}
+
                   className={`rounded-xl px-4 py-2 text-sm text-white ${canFulfill ? 'bg-zinc-900' : 'bg-zinc-400 cursor-not-allowed'}`}
                   disabled={!canFulfill}
                 >受け渡し</button>

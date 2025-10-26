@@ -22,7 +22,6 @@ function assertEnv() {
   }
 }
 
-// ← ここを“数字のみ・6桁”に変更
 function genShortCode(len = 6) {
   const digits = "0123456789";
   let s = "";
@@ -30,7 +29,6 @@ function genShortCode(len = 6) {
     s += digits[Math.floor(Math.random() * digits.length)];
   return s;
 }
-
 /**
  * 期待ボディ
  * {
@@ -155,50 +153,19 @@ export async function POST(req: NextRequest) {
       .filter((li) => (Number(li.quantity) || 0) > 0);
 
     // ─────────────────────────────────────────────────────
-    // 店舗名の取得（存在すれば使用）
-    // ─────────────────────────────────────────────────────
-    let storeName: string | undefined;
-    if (storeId) {
-      try {
-        const r = await fetch(
-          `${SUPABASE_URL}/rest/v1/stores?id=eq.${encodeURIComponent(
-            String(storeId)
-          )}&select=name`,
-          {
-            headers: {
-              apikey: SUPABASE_SERVICE_ROLE_KEY,
-              Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
-            },
-            cache: "no-store",
-          }
-        );
-        if (r.ok) {
-          const rows = (await r.json()) as Array<{ name?: string | null }>;
-          const n = rows?.[0]?.name;
-          if (n && typeof n === "string" && n.trim()) storeName = n.trim();
-        }
-      } catch {
-        // 取得失敗は致命ではないので握りつぶす
-      }
-    }
-
-    // ─────────────────────────────────────────────────────
     // 1) プレオーダーを orders に作成（status=PENDING, payment_status=UNPAID）
-    //    ※ 既存ロジックは維持。total 列を使用。store_name は「取得できたときだけ」送信。
+    //    ※ スキーマ未定義の列は一切送らない（created_at / items_json / pickup_* など）
     // ─────────────────────────────────────────────────────
     const orderCode = genShortCode(6);
 
-    const preorderBase: Record<string, any> = {
+    const preorder: Record<string, any> = {
       store_id: String(storeId ?? ""),
       line_user_id: String(lineUserId ?? ""),
       status: "PENDING", // 引換前
       payment_status: "UNPAID",
-      code: orderCode, // ← 6桁の“数字のみ”
-      total, // 列名は total
+      code: orderCode,
+      total, // ← total_amount ではなく total
     };
-    const preorder = storeName
-      ? { ...preorderBase, store_name: storeName }
-      : preorderBase;
 
     const insertRes = await fetch(`${SUPABASE_URL}/rest/v1/orders`, {
       method: "POST",
@@ -237,7 +204,6 @@ export async function POST(req: NextRequest) {
 
     // ─────────────────────────────────────────────────────
     // 2) Stripe セッション作成（order_id を Session/PI の両方に付与）
-    //    ※ 店舗名は metadata にも冗長格納（デバッグ/将来拡張用）
     // ─────────────────────────────────────────────────────
     // 既存顧客の再利用（任意）
     let customerId: string | undefined;
@@ -262,10 +228,9 @@ export async function POST(req: NextRequest) {
       payment_intent_data: {
         setup_future_usage: "off_session",
         metadata: {
-          order_id: orderId, // PI 側 metadata（フォールバック）
+          order_id: orderId, // ← PI 側 metadata（フォールバック）
           line_user_id: String(lineUserId ?? ""),
           store_id: String(storeId ?? ""),
-          ...(storeName ? { store_name: storeName } : {}),
         },
       },
       payment_method_types: ["card"],
@@ -274,13 +239,14 @@ export async function POST(req: NextRequest) {
       return_url: `${returnUrl}?session_id={CHECKOUT_SESSION_ID}`,
       // セッション側にも order_id を重複格納（Webhook が第一参照）
       metadata: {
-        order_id: orderId, // セッション metadata（第一参照）
+        order_id: orderId, // ← セッション metadata（第一参照）
         store_id: String(storeId ?? ""),
         pickup_label: String(pickup ?? ""), // DB には送らず metadata のみ
         email: String(userEmail ?? ""),
         line_user_id: String(lineUserId ?? ""),
+        // 冗長情報（任意）
         total_yen: String(total),
-        ...(storeName ? { store_name: storeName } : {}),
+        items_json: JSON.stringify(items),
       },
       // ダッシュボードやUIでの突合を楽にする短い相関コード
       client_reference_id: orderShortCode,

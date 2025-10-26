@@ -5,12 +5,12 @@ import { verifyLiffIdToken, verifyLiffTokenString } from "@/lib/verifyLiff";
 import { cookies } from "next/headers";
 import { COOKIE_NAME as USER_COOKIE, verifySessionCookie } from "@/lib/session";
 
-export const runtime = "nodejs"; // Stripe は Node ランタイム
+export const runtime = "nodejs"; // Stripe は Node 実行
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
 
 /**
- * 入力例（フロントからのボディ）
+ * 期待ボディ
  * {
  *   storeId?: string,
  *   userEmail?: string,
@@ -20,7 +20,7 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
  * }
  */
 export async function POST(req: NextRequest) {
-  // A-1: Authorization Bearer → x-liff-id-token → サーバ発行 Cookie の順に検証（段階的フォールバック）
+  // A-1: 認証（LIFF or サーバー署名 Cookie）
   let lineUserId = "";
   let body: any = null;
   try {
@@ -37,7 +37,7 @@ export async function POST(req: NextRequest) {
       if (tokenInBody) lineUserId = await verifyLiffTokenString(String(tokenInBody));
     }
     if (!lineUserId) {
-      // 最後のフォールバック: サーバ発行の HMAC セッション Cookie
+      // フォールバック: サーバー署名 HMAC セッション Cookie
       const secret = process.env.USER_SESSION_SECRET || process.env.LINE_CHANNEL_SECRET || "";
       if (secret) {
         const c = await cookies();
@@ -47,7 +47,7 @@ export async function POST(req: NextRequest) {
       }
     }
     if (!lineUserId) {
-      return NextResponse.json({ error: "unauthorized", detail: "Authorization ヘッダーが Bearer 形式ではありません" }, { status: 401 });
+      return NextResponse.json({ error: "unauthorized", detail: "Authorization ヘッダーか Bearer トークンが必要です" }, { status: 401 });
     }
   } catch (e: any) {
     return NextResponse.json({ error: "unauthorized", detail: e?.message || String(e) }, { status: 401 });
@@ -75,7 +75,7 @@ export async function POST(req: NextRequest) {
       }))
       .filter((li) => (Number(li.quantity) || 0) > 0);
 
-    // B-2: プレオーダー（仮注文）作成
+    // 環境チェック（匿名キーは fulfill でも使用）
     const API_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
     const ANON = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
     if (!API_URL || !ANON) {
@@ -90,11 +90,8 @@ export async function POST(req: NextRequest) {
     }));
     const total = items.reduce((a, it) => a + (Number(it.price) || 0) * (Number(it.qty) || 0), 0);
 
-    function code6(): string {
-      return Math.floor(Math.random() * 1_000_000).toString().padStart(6, "0");
-    }
     function parsePickupLabelToJstIsoRange(label?: string): { start?: string; end?: string } {
-      // ラベル中の最初の2つの「HH:MM」を取り出してISO(+09:00)へ変換
+      // ラベル中の最初の2つの「HH:MM」を抽出してISO(+09:00)へ変換
       // TODO(req v2): 受取スロットの構造化引き渡しに移行（ラベル依存を排除）
       const text = String(label || "").trim();
       if (!text) return {};
@@ -112,42 +109,13 @@ export async function POST(req: NextRequest) {
       };
       return { start: toIso(a), end: toIso(b) };
     }
+    // ここでは使用しないが、将来の要件でmetadataをISOで持つ場合に備える
     const pick = parsePickupLabelToJstIsoRange(String(pickup || ""));
 
-    const preOrderPayload: any = {
-      store_id: String(storeId ?? ""),
-      code: code6(),
-      customer: String(userEmail ?? "guest@example.com"),
-      items,
-      total,
-      status: "PENDING", // 店側DBの状態: 受け取り待ち
-      line_user_id: lineUserId,
-    };
-    if (pick?.start) preOrderPayload.pickup_start = pick.start;
-    if (pick?.end) preOrderPayload.pickup_end = pick.end;
+    // 事前INSERTは行わない。支払い完了後(fulfill)にのみDBへINSERTする。
+    // 必要データは Session/PI の metadata に格納する。
 
-    const preRes = await fetch(`${API_URL}/rest/v1/orders?select=id,code`, {
-      method: "POST",
-      headers: {
-        apikey: ANON,
-        Authorization: `Bearer ${ANON}`,
-        "Content-Type": "application/json",
-        Prefer: "return=representation",
-      },
-      body: JSON.stringify(preOrderPayload),
-      cache: "no-store",
-    });
-    if (!preRes.ok) {
-      const t = await preRes.text().catch(() => "");
-      return NextResponse.json({ error: "preorder_failed", detail: `${preRes.status} ${t}` }, { status: 400 });
-    }
-    const preRows = await preRes.json();
-    const pre = Array.isArray(preRows) ? preRows[0] : preRows;
-    const orderId: string = String(pre?.id || "");
-    const orderCode: string = String(pre?.code || "");
-    if (!orderId) return NextResponse.json({ error: "preorder_id_missing" }, { status: 500 });
-
-    // -------- 1) Customer 既存メールで取得 or 作成（任意） --------
+    // -------- 1) Customer 取得または作成（任意） --------
     let customerId: string | undefined;
     if (userEmail) {
       const existing = await stripe.customers.list({ email: userEmail, limit: 1 });
@@ -155,24 +123,33 @@ export async function POST(req: NextRequest) {
       else customerId = (await stripe.customers.create({ email: userEmail })).id;
     }
 
-    // -------- 2) セッション生成（内部相関のみ） --------
+    // -------- 2) セッション作成（支払いフローのみ） --------
     const params: Stripe.Checkout.SessionCreateParams = {
       ui_mode: "embedded",
       mode: "payment",
       customer: customerId,
       payment_intent_data: {
         setup_future_usage: "off_session",
-        metadata: { order_id: orderId }, // 内部相関のみ
+        // fulfill 側の補助参照用
+        metadata: {
+          line_user_id: lineUserId || undefined,
+        },
       },
       payment_method_types: ["card"],
       line_items,
       return_url: `${returnUrl}?session_id={CHECKOUT_SESSION_ID}`,
       metadata: {
-        order_id: orderId,
-        store_id: String(storeId ?? ""), // 任意
-        pickup_label: String(pickup ?? ""), // 任意
+        // 決済完了後に INSERT するための情報を持たせる
+        store_id: String(storeId ?? ""),
+        pickup_label: String(pickup ?? ""),
+        items_json: JSON.stringify(items),
+        email: String(userEmail ?? ""),
+        line_user_id: lineUserId || undefined,
+        // TODO(req v2): ラベルではなく構造化した start/end または slot_no を渡す
+        // start_iso: pick.start, end_iso: pick.end,
+        total_yen: String(total),
       },
-      client_reference_id: orderCode || undefined,
+      // client_reference_id は事前注文がないため未設定
     };
 
     const session = await stripe.checkout.sessions.create(params);

@@ -1738,6 +1738,45 @@ export default function UserPilotApp() {
     const [userEmail] = useLocalStorageState<string>(K.user, "");
     const [tab, setTab] = useState<"home" | "cart" | "order" | "account">("home");
 
+    // --- URL ↔ タブ連携: 初期表示でURLからタブを読む（?tab= / #tab= / liff.state 対応）---
+    useEffect(() => {
+        if (typeof window === "undefined") return;
+
+        // 1) ?tab=xxx を参照
+        const qs = new URLSearchParams(window.location.search);
+        // 2) #tab=xxx（ハッシュでもOK）
+        const hs = new URLSearchParams(window.location.hash.replace(/^#\??/, ""));
+        // 3) LIFFの liff.state=?tab=xxx にも対応（エンコードされてくる想定）
+        const lsRaw = qs.get("liff.state");
+        const ls = (() => {
+            if (!lsRaw) return null;
+            try {
+                const s = lsRaw.startsWith("?") ? lsRaw.slice(1) : lsRaw;
+                return new URLSearchParams(s);
+            } catch { return null; }
+        })();
+
+        const pick =
+            (qs.get("tab") || hs.get("tab") || (ls && ls.get("tab"))) as
+            | "home" | "cart" | "order" | "account"
+            | null;
+
+        if (pick && ["home", "cart", "order", "account"].includes(pick)) {
+            setTab(pick);
+        }
+    }, []);
+
+    // --- URL ↔ タブ連携: タブ変更時に ?tab= をURLへ反映（履歴は汚さない）---
+    useEffect(() => {
+        if (typeof window === "undefined") return;
+        const url = new URL(window.location.href);
+        url.searchParams.set("tab", tab);
+        // ハッシュ方式も許容したい場合は以下を使う（どちらか片方でOK）
+        // url.hash = `tab=${tab}`;
+        history.replaceState(null, "", url.toString());
+    }, [tab]);
+
+
     // ヘッダー隠し（ホーム画面専用）
     const [hideHeader, setHideHeader] = useState(false);
     const lastScrollYRef = useRef(0);

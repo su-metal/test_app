@@ -1,302 +1,270 @@
-// apps/user/src/app/api/stripe/create-checkout-session/route.ts
-import { NextRequest, NextResponse } from "next/server";
+// apps/user/src/app/api/stripe/webhook/route.ts
 import Stripe from "stripe";
-import { verifyLiffIdToken, verifyLiffTokenString } from "@/lib/verifyLiff";
-import { cookies } from "next/headers";
-import { COOKIE_NAME as USER_COOKIE, verifySessionCookie } from "@/lib/session";
+import { NextRequest, NextResponse } from "next/server";
 
-export const runtime = "nodejs"; // Stripe は Node 実行
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic"; // 署名検証に raw body が必要
 
-// Stripe クライアント（型の都合で apiVersion は未指定：ライブラリ同梱のデフォルトに合わせる）
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
+// --- Stripe client (API version 固定) ---
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
+  apiVersion: "2025-09-30.clover",
+});
 
-// ─────────────────────────────────────────────────────────────
-// ENV / Helpers
-// ─────────────────────────────────────────────────────────────
+// --- ENV (必須) ---
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+const SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+const LINE_CHANNEL_ACCESS_TOKEN = process.env.LINE_CHANNEL_ACCESS_TOKEN!;
+const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET!;
 
-function assertEnv() {
-  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
-    throw new Error("server-misconfig:supabase env missing");
-  }
+// ─────────────────────────────────────────────────────────────
+// 冪等管理: processed_events
+// ─────────────────────────────────────────────────────────────
+async function recordProcessed(
+  eventId: string,
+  type: string,
+  orderId?: string
+) {
+  if (!SUPABASE_URL || !SERVICE_ROLE) return false;
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/processed_events`, {
+    method: "POST",
+    headers: {
+      apikey: SERVICE_ROLE,
+      Authorization: `Bearer ${SERVICE_ROLE}`,
+      "Content-Type": "application/json",
+      Prefer: "resolution=ignore-duplicates",
+    },
+    body: JSON.stringify({
+      event_id: eventId,
+      type,
+      order_id: orderId ?? null,
+    }),
+    cache: "no-store",
+  });
+  return res.ok;
 }
 
-// ← ここを“数字のみ・6桁”に変更
-function genShortCode(len = 6) {
-  const digits = "0123456789";
-  let s = "";
-  for (let i = 0; i < len; i++)
-    s += digits[Math.floor(Math.random() * digits.length)];
-  return s;
-}
-
-/**
- * 期待ボディ
- * {
- *   storeId?: string,
- *   userEmail?: string,
- *   lines: { id?: string; name: string; price: number; qty: number }[],
- *   pickup?: string,         // 例 "18:30〜18:40"（DBへは送らず Stripe metadata のみに格納）
- *   returnUrl: string,
- *   dev_skip_liff?: boolean  // localhost 限定
- * }
- */
-export async function POST(req: NextRequest) {
-  // A-1: 認証（LIFF or サーバー署名 Cookie）
-  let lineUserId = "";
-  let body: any = null;
-
-  try {
-    // 一度だけ body を読む（以降は変数を再利用）
-    body = body ?? (await req.json().catch(() => null));
-
-    // --- 開発判定 ---
-    const host = req.headers.get("host") || "";
-    const isLocalHost =
-      /^localhost(?::\d+)?$/.test(host) ||
-      /^127\.0\.0\.1(?::\d+)?$/.test(host) ||
-      /^\[::1\](?::\d+)?$/.test(host);
-
-    const wantDevSkip = Boolean(body?.dev_skip_liff === true);
-    if (isLocalHost && wantDevSkip) {
-      lineUserId = "dev_local_user"; // 開発用ダミー
-    }
-
-    // 1) Authorization: Bearer ...（LIFF ID トークン）
-    if (!lineUserId) {
-      const auth = req.headers.get("authorization");
-      if (auth) {
-        lineUserId = await verifyLiffIdToken(auth);
-      } else {
-        const h2 = req.headers.get("x-liff-id-token");
-        if (h2) lineUserId = await verifyLiffTokenString(h2);
-      }
-    }
-
-    // 2) body.id_token / body.idToken（フォーム経由）
-    if (!lineUserId) {
-      const tokenInBody: string | undefined = body?.id_token || body?.idToken;
-      if (tokenInBody)
-        lineUserId = await verifyLiffTokenString(String(tokenInBody));
-    }
-
-    // 3) サーバー署名 HMAC セッション Cookie
-    if (!lineUserId) {
-      const secret =
-        process.env.USER_SESSION_SECRET ||
-        process.env.LINE_CHANNEL_SECRET ||
-        "";
-      if (secret) {
-        const c = await cookies();
-        const sess = verifySessionCookie(c.get(USER_COOKIE)?.value, secret);
-        const sub = sess?.sub && String(sess.sub).trim();
-        if (sub) lineUserId = sub;
-      }
-    }
-
-    // 4) いずれも無ければ 401
-    if (!lineUserId) {
-      return NextResponse.json(
-        {
-          error: "unauthorized",
-          detail: "Authorization ヘッダーか Bearer トークンが必要です",
-        },
-        { status: 401 }
-      );
-    }
-  } catch (e: any) {
-    return NextResponse.json(
-      { error: "unauthorized", detail: e?.message || String(e) },
-      { status: 401 }
-    );
-  }
-
-  try {
-    assertEnv();
-
-    const { storeId, userEmail, lines, pickup, returnUrl } =
-      body ?? (await req.json());
-
-    if (!Array.isArray(lines) || lines.length === 0) {
-      return NextResponse.json(
-        { error: "line_items is empty" },
-        { status: 400 }
-      );
-    }
-    if (!returnUrl) {
-      return NextResponse.json({ error: "missing returnUrl" }, { status: 400 });
-    }
-
-    // ── 金額/品目整形（必ず数値化） ──
-    const currency = "jpy";
-    const items = (lines as Array<any>).map((l) => ({
-      id: String(l?.id ?? ""),
-      name: String(l?.name ?? ""),
-      qty: Math.max(0, Number(l?.qty) || 0),
-      price: Math.max(0, Math.floor(Number(l?.price) || 0)),
-    }));
-    const total = items.reduce(
-      (a, it) => a + (Number(it.price) || 0) * (Number(it.qty) || 0),
-      0
-    );
-    const line_items: Stripe.Checkout.SessionCreateParams.LineItem[] = items
-      .map((it) => ({
-        quantity: it.qty,
-        price_data: {
-          currency,
-          unit_amount: it.price,
-          product_data: {
-            name: it.name || "商品",
-            metadata: { product_id: it.id },
-          },
-        },
-      }))
-      .filter((li) => (Number(li.quantity) || 0) > 0);
-
-    // ─────────────────────────────────────────────────────
-    // 店舗名の取得（存在すれば使用）
-    // ─────────────────────────────────────────────────────
-    let storeName: string | undefined;
-    if (storeId) {
-      try {
-        const r = await fetch(
-          `${SUPABASE_URL}/rest/v1/stores?id=eq.${encodeURIComponent(
-            String(storeId)
-          )}&select=name`,
-          {
-            headers: {
-              apikey: SUPABASE_SERVICE_ROLE_KEY,
-              Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
-            },
-            cache: "no-store",
-          }
-        );
-        if (r.ok) {
-          const rows = (await r.json()) as Array<{ name?: string | null }>;
-          const n = rows?.[0]?.name;
-          if (n && typeof n === "string" && n.trim()) storeName = n.trim();
-        }
-      } catch {
-        // 取得失敗は致命ではないので握りつぶす
-      }
-    }
-
-    // ─────────────────────────────────────────────────────
-    // 1) プレオーダーを orders に作成（status=PENDING, payment_status=UNPAID）
-    //    ※ 既存ロジックは維持。total 列を使用。store_name は「取得できたときだけ」送信。
-    // ─────────────────────────────────────────────────────
-    const orderCode = genShortCode(6);
-
-    const preorderBase: Record<string, any> = {
-      store_id: String(storeId ?? ""),
-      line_user_id: String(lineUserId ?? ""),
-      status: "PENDING", // 引換前
-      payment_status: "UNPAID",
-      code: orderCode, // ← 6桁の“数字のみ”
-      total, // 列名は total
-    };
-    const preorder = storeName
-      ? { ...preorderBase, store_name: storeName }
-      : preorderBase;
-
-    const insertRes = await fetch(`${SUPABASE_URL}/rest/v1/orders`, {
-      method: "POST",
+async function isProcessed(eventId: string) {
+  if (!SUPABASE_URL || !SERVICE_ROLE) return false;
+  const r = await fetch(
+    `${SUPABASE_URL}/rest/v1/processed_events?event_id=eq.${encodeURIComponent(
+      eventId
+    )}&select=event_id`,
+    {
       headers: {
-        apikey: SUPABASE_SERVICE_ROLE_KEY,
-        Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+        apikey: SERVICE_ROLE,
+        Authorization: `Bearer ${SERVICE_ROLE}`,
+      },
+      cache: "no-store",
+    }
+  );
+  if (!r.ok) return false;
+  const rows = await r.json();
+  return Array.isArray(rows) && rows.length > 0;
+}
+
+// ─────────────────────────────────────────────────────────────
+// 注文更新: 支払済みに更新し、必要なら push
+// ─────────────────────────────────────────────────────────────
+async function patchOrderPaid(params: {
+  orderId: string;
+  paymentIntentId: string;
+  receiptUrl?: string | null;
+}) {
+  const { orderId, paymentIntentId, receiptUrl } = params;
+
+  const resp = await fetch(
+    `${SUPABASE_URL}/rest/v1/orders?id=eq.${encodeURIComponent(orderId)}`,
+    {
+      method: "PATCH",
+      headers: {
+        apikey: SERVICE_ROLE,
+        Authorization: `Bearer ${SERVICE_ROLE}`,
         "Content-Type": "application/json",
         Prefer: "return=representation",
       },
-      body: JSON.stringify(preorder),
-    });
-    if (!insertRes.ok) {
-      const txt = await insertRes.text().catch(() => "");
-      console.error(
-        "[create-checkout-session] pre-order insert failed:",
-        insertRes.status,
-        txt
-      );
-      return NextResponse.json(
-        { error: "preorder-insert-failed", detail: txt },
-        { status: 500 }
-      );
+      body: JSON.stringify({
+        // 既存
+        placed_at: new Date().toISOString(),
+        // 追加（status は PENDING のまま）
+        payment_status: "PAID",
+        paid_at: new Date().toISOString(),
+        stripe_payment_intent_id: paymentIntentId,
+        ...(receiptUrl ? { receipt_url: receiptUrl } : {}),
+      }),
     }
-    const inserted = (await insertRes.json()) as Array<{
-      id: string;
-      code?: string;
-    }>;
-    const orderId = inserted?.[0]?.id;
-    const orderShortCode = inserted?.[0]?.code || orderCode;
-    if (!orderId) {
-      return NextResponse.json(
-        { error: "preorder-id-missing" },
-        { status: 500 }
-      );
-    }
+  );
 
-    // ─────────────────────────────────────────────────────
-    // 2) Stripe セッション作成（order_id を Session/PI の両方に付与）
-    //    ※ 店舗名は metadata にも冗長格納（デバッグ/将来拡張用）
-    // ─────────────────────────────────────────────────────
-    // 既存顧客の再利用（任意）
-    let customerId: string | undefined;
-    if (userEmail) {
-      try {
-        const existing = await stripe.customers.list({
-          email: userEmail,
-          limit: 1,
-        });
-        if (existing.data.length > 0) customerId = existing.data[0].id;
-        else
-          customerId = (await stripe.customers.create({ email: userEmail })).id;
-      } catch {
-        // 顧客作成は必須ではないので握りつぶす
-      }
-    }
-
-    const params: Stripe.Checkout.SessionCreateParams = {
-      ui_mode: "embedded",
-      mode: "payment",
-      customer: customerId,
-      payment_intent_data: {
-        setup_future_usage: "off_session",
-        metadata: {
-          order_id: orderId, // PI 側 metadata（フォールバック）
-          line_user_id: String(lineUserId ?? ""),
-          store_id: String(storeId ?? ""),
-          ...(storeName ? { store_name: storeName } : {}),
-        },
-      },
-      payment_method_types: ["card"],
-      line_items,
-      // 決済完了後の戻り先
-      return_url: `${returnUrl}?session_id={CHECKOUT_SESSION_ID}`,
-      // セッション側にも order_id を重複格納（Webhook が第一参照）
-      metadata: {
-        order_id: orderId, // セッション metadata（第一参照）
-        store_id: String(storeId ?? ""),
-        pickup_label: String(pickup ?? ""), // DB には送らず metadata のみ
-        email: String(userEmail ?? ""),
-        line_user_id: String(lineUserId ?? ""),
-        total_yen: String(total),
-        ...(storeName ? { store_name: storeName } : {}),
-      },
-      // ダッシュボードやUIでの突合を楽にする短い相関コード
-      client_reference_id: orderShortCode,
-    };
-
-    const session = await stripe.checkout.sessions.create(params);
-
-    return NextResponse.json(
-      { client_secret: session.client_secret },
-      { status: 200 }
-    );
-  } catch (err: any) {
-    console.error("[create-checkout-session] error:", err?.message || err);
-    return NextResponse.json(
-      { error: err?.message ?? "unknown" },
-      { status: 400 }
-    );
+  if (!resp.ok) {
+    const txt = await resp.text().catch(() => "");
+    console.error("Supabase PATCH failed:", resp.status, txt);
+    throw new Error(`Supabase PATCH failed: ${resp.status}`);
   }
+
+  const rows = (await resp.json().catch(() => [])) as Array<{
+    line_user_id?: string | null;
+    code?: string | null;
+    total_amount?: number | null;
+    store_name?: string | null;
+    pickup_time_from?: string | null;
+    pickup_time_to?: string | null;
+  }>;
+  return Array.isArray(rows) ? rows[0] : null;
+}
+
+// ─────────────────────────────────────────────────────────────
+// LINE push（取得できたときのみ）
+// ─────────────────────────────────────────────────────────────
+async function pushLine(
+  userId: string,
+  payload: {
+    store_name?: string | null;
+    code?: string | null;
+    total_amount?: number | null;
+    pickup_time_from?: string | null;
+    pickup_time_to?: string | null;
+  }
+) {
+  if (!LINE_CHANNEL_ACCESS_TOKEN || !userId) return;
+
+  const liffId = process.env.NEXT_PUBLIC_LIFF_ID || "";
+  const ticketUrl = liffId ? `https://liff.line.me/${liffId}?tab=order` : "";
+
+  const pickup =
+    payload.pickup_time_from && payload.pickup_time_to
+      ? `${payload.pickup_time_from}〜${payload.pickup_time_to}`
+      : "受取時間は注文詳細でご確認ください";
+
+  const lines = [
+    "お支払いありがとうございます。ご注文を受け付けました 🎉",
+    payload.store_name ? `店舗：${payload.store_name}` : null,
+    payload.code ? `引換コード：${payload.code}` : null,
+    typeof payload.total_amount === "number"
+      ? `お支払い金額：¥${payload.total_amount.toLocaleString()}`
+      : null,
+    pickup,
+    "",
+    ticketUrl ? `チケットを表示：${ticketUrl}` : null,
+  ].filter(Boolean);
+
+  await fetch("https://api.line.me/v2/bot/message/push", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${LINE_CHANNEL_ACCESS_TOKEN}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      to: userId,
+      messages: [{ type: "text", text: lines.join("\n") }],
+    }),
+  });
+}
+
+// ─────────────────────────────────────────────────────────────
+// Route
+// ─────────────────────────────────────────────────────────────
+export async function POST(req: NextRequest) {
+  try {
+    const sig = req.headers.get("stripe-signature");
+    if (!sig || !STRIPE_WEBHOOK_SECRET) {
+      return new NextResponse("missing signature", { status: 400 });
+    }
+
+    // Raw body で署名検証
+    const raw = await req.text();
+    const event = stripe.webhooks.constructEvent(
+      raw,
+      sig,
+      STRIPE_WEBHOOK_SECRET
+    );
+
+    // 冪等性（重複配信の無視）
+    if (await isProcessed(event.id)) {
+      return new NextResponse("ok", { status: 200 });
+    }
+
+    if (event.type === "checkout.session.completed") {
+      const session = event.data.object as Stripe.Checkout.Session;
+
+      // --- 支払い情報（PI/領収書URL） ---
+      let paymentIntentId: string | null =
+        typeof session.payment_intent === "string"
+          ? session.payment_intent
+          : (session.payment_intent as any)?.id ?? null;
+
+      // まず session.metadata から
+      let orderId = String((session.metadata as any)?.order_id || "");
+      let receiptUrl: string | null = null;
+
+      // 必要情報補完のため PI を取得
+      let pi: Stripe.PaymentIntent | null = null;
+      try {
+        if (!paymentIntentId && session.payment_intent) {
+          paymentIntentId =
+            typeof session.payment_intent === "string"
+              ? session.payment_intent
+              : (session.payment_intent as any)?.id ?? null;
+        }
+        if (paymentIntentId) {
+          pi = await stripe.paymentIntents.retrieve(paymentIntentId, {
+            expand: ["latest_charge"],
+          });
+          const latestCharge =
+            typeof pi.latest_charge === "string"
+              ? null
+              : (pi.latest_charge as Stripe.Charge | null);
+          receiptUrl = latestCharge?.receipt_url ?? null;
+
+          // --- フォールバック: PI.metadata.order_id ---
+          const piMeta = (pi.metadata || {}) as Record<string, string>;
+          if (!orderId) orderId = String(piMeta.order_id || "");
+        }
+      } catch (e) {
+        // PI 取得失敗は致命ではない（receiptUrl/orderId フォールバック不可になるだけ）
+        console.warn(
+          "[stripe/webhook] payment_intent retrieve failed:",
+          (e as any)?.message
+        );
+      }
+
+      if (!orderId) {
+        console.error(
+          "[stripe/webhook] order_id not found in session.metadata and payment_intent.metadata"
+        );
+        await recordProcessed(event.id, event.type); // 記録だけしておく
+        return new NextResponse("ok", { status: 200 });
+      }
+
+      // --- 注文を PAID に更新 ---
+      const patched = await patchOrderPaid({
+        orderId,
+        paymentIntentId: paymentIntentId || "",
+        receiptUrl,
+      });
+
+      // --- push（line_user_id が取得できたら） ---
+      if (patched?.line_user_id) {
+        await pushLine(patched.line_user_id, {
+          store_name: patched.store_name,
+          code: patched.code,
+          total_amount: patched.total_amount,
+          pickup_time_from: patched.pickup_time_from,
+          pickup_time_to: patched.pickup_time_to,
+        });
+      }
+
+      await recordProcessed(event.id, event.type, orderId);
+      return new NextResponse("ok", { status: 200 });
+    }
+
+    // その他イベントは記録のみ
+    await recordProcessed(event.id, event.type);
+    return new NextResponse("ok", { status: 200 });
+  } catch (e: any) {
+    console.error("[stripe/webhook] error:", e?.message || e);
+    return new NextResponse("bad request", { status: 400 });
+  }
+}
+
+export function GET() {
+  return new NextResponse("Method Not Allowed", { status: 405 });
 }

@@ -22,7 +22,7 @@ function assertEnv() {
   }
 }
 
-function genOrderCode(len = 6) {
+function genShortCode(len = 6) {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // 読みやすい集合
   let s = "";
   for (let i = 0; i < len; i++)
@@ -36,9 +36,9 @@ function genOrderCode(len = 6) {
  *   storeId?: string,
  *   userEmail?: string,
  *   lines: { id?: string; name: string; price: number; qty: number }[],
- *   pickup?: string,  // 例 "18:30〜18:40"（本APIではDB送信しない／metadataのみ）
+ *   pickup?: string,         // 例 "18:30〜18:40"（DBへは送らず Stripe metadata のみに格納）
  *   returnUrl: string,
- *   dev_skip_liff?: boolean // localhost 限定
+ *   dev_skip_liff?: boolean  // localhost 限定
  * }
  */
 export async function POST(req: NextRequest) {
@@ -155,19 +155,17 @@ export async function POST(req: NextRequest) {
 
     // ─────────────────────────────────────────────────────
     // 1) プレオーダーを orders に作成（status=PENDING, payment_status=UNPAID）
-    //    ※ スキーマに存在が確実な項目のみ送る（created_at 等は送らない）
+    //    ※ スキーマ未定義の列は一切送らない（created_at / items_json / pickup_* など）
     // ─────────────────────────────────────────────────────
-    const orderCode = genOrderCode(6);
+    const orderCode = genShortCode(6);
 
-    const preOrderPayload: Record<string, any> = {
+    const preorder: Record<string, any> = {
       store_id: String(storeId ?? ""),
       line_user_id: String(lineUserId ?? ""),
       status: "PENDING", // 引換前
       payment_status: "UNPAID",
       code: orderCode,
-      total_amount: total,
-      items_json: JSON.stringify(items),
-      // pickup は DB カラム不明のため送らない（metadata のみで保持）
+      total, // ← total_amount ではなく total
     };
 
     const insertRes = await fetch(`${SUPABASE_URL}/rest/v1/orders`, {
@@ -178,7 +176,7 @@ export async function POST(req: NextRequest) {
         "Content-Type": "application/json",
         Prefer: "return=representation",
       },
-      body: JSON.stringify(preOrderPayload),
+      body: JSON.stringify(preorder),
     });
     if (!insertRes.ok) {
       const txt = await insertRes.text().catch(() => "");
@@ -231,7 +229,7 @@ export async function POST(req: NextRequest) {
       payment_intent_data: {
         setup_future_usage: "off_session",
         metadata: {
-          order_id: orderId, // ← PI 側 metadata（保険）
+          order_id: orderId, // ← PI 側 metadata（フォールバック）
           line_user_id: String(lineUserId ?? ""),
           store_id: String(storeId ?? ""),
         },
@@ -240,17 +238,18 @@ export async function POST(req: NextRequest) {
       line_items,
       // 決済完了後の戻り先
       return_url: `${returnUrl}?session_id={CHECKOUT_SESSION_ID}`,
-      // セッション側にも order_id を重複格納（Webhook が拾いやすい）
+      // セッション側にも order_id を重複格納（Webhook が第一参照）
       metadata: {
-        order_id: orderId, // ← セッション側 metadata（第一参照）
+        order_id: orderId, // ← セッション metadata（第一参照）
         store_id: String(storeId ?? ""),
         pickup_label: String(pickup ?? ""), // DB には送らず metadata のみ
-        items_json: JSON.stringify(items),
         email: String(userEmail ?? ""),
         line_user_id: String(lineUserId ?? ""),
+        // 冗長情報（任意）
         total_yen: String(total),
+        items_json: JSON.stringify(items),
       },
-      // 参照用の短い相関 ID（UI 側やダッシュボードで見やすく）
+      // ダッシュボードやUIでの突合を楽にする短い相関コード
       client_reference_id: orderShortCode,
     };
 

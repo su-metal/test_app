@@ -13,7 +13,6 @@ import { normalizeCode6 } from "@/lib/code6";
 
 
 
-
 // Stripe（ブラウザ用 SDK）
 import { loadStripe } from "@stripe/stripe-js";
 
@@ -646,6 +645,7 @@ const norm = (v: unknown): string => {
     return s.trim().replace(/[\s_-]/g, "").replace(/[^0-9A-Za-z]/g, "").toUpperCase();
 };
 
+// TODO(req v2): 6桁コードの正規化は共有関数で統一
 
 // ---- Toast（非同期通知） ----
 type ToastKind = "info" | "success" | "error";

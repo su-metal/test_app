@@ -23,10 +23,10 @@ function assertEnv() {
 }
 
 function genShortCode(len = 6) {
-  const digits = "0123456789";
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // 読みやすい集合
   let s = "";
   for (let i = 0; i < len; i++)
-    s += digits[Math.floor(Math.random() * digits.length)];
+    s += chars[Math.floor(Math.random() * chars.length)];
   return s;
 }
 

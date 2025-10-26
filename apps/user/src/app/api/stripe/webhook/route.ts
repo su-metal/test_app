@@ -22,11 +22,12 @@ function assertEnv() {
   }
 }
 
+// ← ここを“数字のみ・6桁”に変更
 function genShortCode(len = 6) {
-  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // 読みやすい集合
+  const digits = "0123456789";
   let s = "";
   for (let i = 0; i < len; i++)
-    s += chars[Math.floor(Math.random() * chars.length)];
+    s += digits[Math.floor(Math.random() * digits.length)];
   return s;
 }
 
@@ -183,7 +184,7 @@ export async function POST(req: NextRequest) {
 
     // ─────────────────────────────────────────────────────
     // 1) プレオーダーを orders に作成（status=PENDING, payment_status=UNPAID）
-    //    ※ スキーマ未定義の列は送らない。store_name は存在すると仮定しつつ "取得できた時だけ" 送信。
+    //    ※ 既存ロジックは維持。total 列を使用。store_name は「取得できたときだけ」送信。
     // ─────────────────────────────────────────────────────
     const orderCode = genShortCode(6);
 
@@ -192,7 +193,7 @@ export async function POST(req: NextRequest) {
       line_user_id: String(lineUserId ?? ""),
       status: "PENDING", // 引換前
       payment_status: "UNPAID",
-      code: orderCode,
+      code: orderCode, // ← 6桁の“数字のみ”
       total, // 列名は total
     };
     const preorder = storeName
@@ -236,6 +237,7 @@ export async function POST(req: NextRequest) {
 
     // ─────────────────────────────────────────────────────
     // 2) Stripe セッション作成（order_id を Session/PI の両方に付与）
+    //    ※ 店舗名は metadata にも冗長格納（デバッグ/将来拡張用）
     // ─────────────────────────────────────────────────────
     // 既存顧客の再利用（任意）
     let customerId: string | undefined;
@@ -260,7 +262,7 @@ export async function POST(req: NextRequest) {
       payment_intent_data: {
         setup_future_usage: "off_session",
         metadata: {
-          order_id: orderId, // ← PI 側 metadata（フォールバック）
+          order_id: orderId, // PI 側 metadata（フォールバック）
           line_user_id: String(lineUserId ?? ""),
           store_id: String(storeId ?? ""),
           ...(storeName ? { store_name: storeName } : {}),
@@ -272,7 +274,7 @@ export async function POST(req: NextRequest) {
       return_url: `${returnUrl}?session_id={CHECKOUT_SESSION_ID}`,
       // セッション側にも order_id を重複格納（Webhook が第一参照）
       metadata: {
-        order_id: orderId, // ← セッション metadata（第一参照）
+        order_id: orderId, // セッション metadata（第一参照）
         store_id: String(storeId ?? ""),
         pickup_label: String(pickup ?? ""), // DB には送らず metadata のみ
         email: String(userEmail ?? ""),

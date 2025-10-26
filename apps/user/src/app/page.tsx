@@ -525,6 +525,18 @@ function isPickupExpired(label: string): boolean {
     return now >= win.end;  // end を過ぎたら「期限切れ」
 }
 
+// ▼ チケット単位の期限切れ判定（日付を優先。なければラベル互換）
+function isTicketExpired(o: Order): boolean {
+    // 1) ISO（日付つき）を優先して厳密判定
+    const endTs = o?.pickupEnd ? Date.parse(String(o.pickupEnd)) : NaN;
+    if (Number.isFinite(endTs)) {
+        return Date.now() > endTs;
+    }
+    // 2) フォールバック：商品ラベル "HH:MM–HH:MM" で本日分として判定（従来互換）
+    const label = o?.lines?.[0]?.item?.pickup || "";
+    return isPickupExpired(label);
+}
+
 
 const overlaps = (a: { start: number, end: number }, b: { start: number, end: number }) =>
     a.start < b.end && b.start < a.end; // 端点だけ接する(= end==start)は非重複
@@ -807,7 +819,21 @@ interface Shop {
     place_id?: string | null;
 }
 interface CartLine { shopId: string; item: Item; qty: number }
-interface Order { id: string; userEmail: string; shopId: string; amount: number; status: "paid" | "redeemed" | "refunded"; code6: string; createdAt: number; lines: CartLine[] }
+interface Order {
+    id: string;
+    userEmail: string;
+    shopId: string;
+    amount: number;
+    status: "paid" | "redeemed" | "refunded";
+    code6: string;
+    createdAt: number;
+    lines: CartLine[];
+
+    // ▼ 追加：店舗受取可能時間（ISO, 例 "2025-10-26T18:00:00+09:00"）
+    pickupStart?: string | null;
+    pickupEnd?: string | null;
+}
+
 
 type ShopWithDistance = Shop & { distance: number };
 
@@ -1496,8 +1522,10 @@ function CompactTicketCard({
     // 店側の現在スロットではなく、購入商品の設定枠のみを表示
     const presetPickup = String(presetPickupLabel || "");
     const norm = (s: string) => (s || "").replace(/[—–~\-]/g, "〜");
-    const expired = selectedPickup ? isPickupExpired(selectedPickup) : false;
+    // ▼ 期限切れは「ISOあり優先 → ラベル互換」の順で判定
+    const expired = isTicketExpired(o);
     const panelId = `ticket-${o.id}`;
+
 
     return (
         <article
@@ -1613,7 +1641,7 @@ function CompactTicketCard({
                 >
                     <div className="text-center text-white">
 
-                        <div className="text-sm font-semibold">受取時間を過ぎたためこのチケットは使用できません</div>
+                        <div className="text-sm font-semibold">受取可能時間を過ぎたため、このチケットは利用できません</div>
                         {/* <div className="text-[11px] opacity-90 mt-1">店舗の案内にしたがって次回の受取枠をご利用ください</div> */}
                     </div>
                 </div>
@@ -3218,7 +3246,7 @@ export default function UserPilotApp() {
             try {
                 const { default: liff } = await import("@line/liff");
                 idToken = liff.getIDToken() || undefined;
-            } catch {}
+            } catch { }
             if (!idToken) { throw new Error("LIFF のログインが必要です。アプリ内ブラウザで開いてください。"); }
 
             const res = await fetch("/api/stripe/create-checkout-session", {

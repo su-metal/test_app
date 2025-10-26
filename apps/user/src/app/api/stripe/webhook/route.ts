@@ -1,54 +1,48 @@
-// apps/user/src/app/api/stripe/webhook/route.ts
 import Stripe from "stripe";
 import { NextRequest, NextResponse } from "next/server";
 
 export const runtime = "nodejs";
-export const dynamic = "force-dynamic"; // 署名検証に raw body が必要
+export const dynamic = "force-dynamic"; // 署名検証で raw body が必要
 
-// --- Stripe client (API version 固定) ---
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
-  apiVersion: "2025-09-30.clover",
-});
+// Stripe client
+// TODO(req v2): API バージョン固定は将来の型更新後に再検討
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string);
 
-// --- ENV (必須) ---
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-const LINE_CHANNEL_ACCESS_TOKEN = process.env.LINE_CHANNEL_ACCESS_TOKEN!;
-const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET!;
+// ENV
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL as string;
+const SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE_KEY as string;
+const LINE_CHANNEL_ACCESS_TOKEN = process.env.LINE_CHANNEL_ACCESS_TOKEN as string;
+const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET as string;
 
-// ─────────────────────────────────────────────────────────────
-// 冪等管理: processed_events
-// ─────────────────────────────────────────────────────────────
-async function recordProcessed(
-  eventId: string,
-  type: string,
-  orderId?: string
-) {
+// processed_events: 冪等性用に記録
+async function recordProcessed(eventId: string, type?: string, orderId?: string) {
   if (!SUPABASE_URL || !SERVICE_ROLE) return false;
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/processed_events`, {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/processed_events?on_conflict=event_id`, {
     method: "POST",
     headers: {
       apikey: SERVICE_ROLE,
       Authorization: `Bearer ${SERVICE_ROLE}`,
       "Content-Type": "application/json",
-      Prefer: "resolution=ignore-duplicates",
+      Prefer: "resolution=ignore-duplicates,return=minimal",
     },
     body: JSON.stringify({
       event_id: eventId,
-      type,
-      order_id: orderId ?? null,
+      ...(type ? { type } : {}),
+      ...(orderId ? { order_id: orderId } : {}),
     }),
     cache: "no-store",
   });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    console.error("[processed_events] insert failed:", res.status, body);
+  }
   return res.ok;
 }
 
 async function isProcessed(eventId: string) {
   if (!SUPABASE_URL || !SERVICE_ROLE) return false;
   const r = await fetch(
-    `${SUPABASE_URL}/rest/v1/processed_events?event_id=eq.${encodeURIComponent(
-      eventId
-    )}&select=event_id`,
+    `${SUPABASE_URL}/rest/v1/processed_events?event_id=eq.${encodeURIComponent(eventId)}&select=event_id&limit=1`,
     {
       headers: {
         apikey: SERVICE_ROLE,
@@ -57,14 +51,16 @@ async function isProcessed(eventId: string) {
       cache: "no-store",
     }
   );
-  if (!r.ok) return false;
+  if (!r.ok) {
+    const body = await r.text().catch(() => "");
+    console.error("[processed_events] check failed:", r.status, body);
+    return false;
+  }
   const rows = await r.json();
   return Array.isArray(rows) && rows.length > 0;
 }
 
-// ─────────────────────────────────────────────────────────────
-// 注文更新: 支払済みに更新し、必要なら push
-// ─────────────────────────────────────────────────────────────
+// orders 更新（Service Role で RLS 回避）
 async function patchOrderPaid(params: {
   orderId: string;
   paymentIntentId: string;
@@ -83,9 +79,7 @@ async function patchOrderPaid(params: {
         Prefer: "return=representation",
       },
       body: JSON.stringify({
-        // 既存
-        placed_at: new Date().toISOString(),
-        // 追加（status は PENDING のまま）
+        // TODO(req v2): placed_at の扱いは正式要件に合わせて調整
         payment_status: "PAID",
         paid_at: new Date().toISOString(),
         stripe_payment_intent_id: paymentIntentId,
@@ -96,7 +90,7 @@ async function patchOrderPaid(params: {
 
   if (!resp.ok) {
     const txt = await resp.text().catch(() => "");
-    console.error("Supabase PATCH failed:", resp.status, txt);
+    console.error("[orders] PATCH failed:", resp.status, txt);
     throw new Error(`Supabase PATCH failed: ${resp.status}`);
   }
 
@@ -111,9 +105,7 @@ async function patchOrderPaid(params: {
   return Array.isArray(rows) ? rows[0] : null;
 }
 
-// ─────────────────────────────────────────────────────────────
-// LINE push（取得できたときのみ）
-// ─────────────────────────────────────────────────────────────
+// LINE push（値がある行のみ表示）
 async function pushLine(
   userId: string,
   payload: {
@@ -132,21 +124,21 @@ async function pushLine(
   const pickup =
     payload.pickup_time_from && payload.pickup_time_to
       ? `${payload.pickup_time_from}〜${payload.pickup_time_to}`
-      : "受取時間は注文詳細でご確認ください";
+      : undefined;
 
-  const lines = [
-    "お支払いありがとうございます。ご注文を受け付けました 🎉",
-    payload.store_name ? `店舗：${payload.store_name}` : null,
-    payload.code ? `引換コード：${payload.code}` : null,
-    typeof payload.total_amount === "number"
-      ? `お支払い金額：¥${payload.total_amount.toLocaleString()}`
-      : null,
-    pickup,
-    "",
-    ticketUrl ? `チケットを表示：${ticketUrl}` : null,
-  ].filter(Boolean);
+  const lines: Array<string> = [];
+  lines.push("お支払いありがとうございます。ご注文を受け付けました 🎉");
+  if (payload.store_name) lines.push(`店舗：${payload.store_name}`);
+  if (payload.code) lines.push(`引換コード：${payload.code}`);
+  if (typeof payload.total_amount === "number")
+    lines.push(`お支払い金額：¥${payload.total_amount.toLocaleString()}`);
+  if (pickup) lines.push(pickup);
+  if (ticketUrl) {
+    lines.push("");
+    lines.push(`チケットを表示： ${ticketUrl}`);
+  }
 
-  await fetch("https://api.line.me/v2/bot/message/push", {
+  const res = await fetch("https://api.line.me/v2/bot/message/push", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${LINE_CHANNEL_ACCESS_TOKEN}`,
@@ -157,27 +149,32 @@ async function pushLine(
       messages: [{ type: "text", text: lines.join("\n") }],
     }),
   });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    console.error("[LINE push] failed:", res.status, body);
+  }
 }
 
-// ─────────────────────────────────────────────────────────────
 // Route
-// ─────────────────────────────────────────────────────────────
 export async function POST(req: NextRequest) {
   try {
     const sig = req.headers.get("stripe-signature");
     if (!sig || !STRIPE_WEBHOOK_SECRET) {
+      console.error("[webhook] missing Stripe signature or webhook secret");
       return new NextResponse("missing signature", { status: 400 });
     }
 
-    // Raw body で署名検証
+    // raw body で署名検証
     const raw = await req.text();
-    const event = stripe.webhooks.constructEvent(
-      raw,
-      sig,
-      STRIPE_WEBHOOK_SECRET
-    );
+    let event: Stripe.Event;
+    try {
+      event = stripe.webhooks.constructEvent(raw, sig, STRIPE_WEBHOOK_SECRET);
+    } catch (e: any) {
+      console.error("[webhook] signature verification failed:", e?.message || e);
+      return new NextResponse("signature verification failed", { status: 400 });
+    }
 
-    // 冪等性（重複配信の無視）
+    // 冪等性: 既に処理済みなら即 200
     if (await isProcessed(event.id)) {
       return new NextResponse("ok", { status: 200 });
     }
@@ -185,18 +182,17 @@ export async function POST(req: NextRequest) {
     if (event.type === "checkout.session.completed") {
       const session = event.data.object as Stripe.Checkout.Session;
 
-      // --- 支払い情報（PI/領収書URL） ---
+      // 支払い情報（PI と領収書 URL）
       let paymentIntentId: string | null =
         typeof session.payment_intent === "string"
           ? session.payment_intent
           : (session.payment_intent as any)?.id ?? null;
 
-      // まず session.metadata から
+      // まず session.metadata.order_id
       let orderId = String((session.metadata as any)?.order_id || "");
       let receiptUrl: string | null = null;
 
-      // 必要情報補完のため PI を取得
-      let pi: Stripe.PaymentIntent | null = null;
+      // フォールバック: PaymentIntent.metadata.order_id（latest_charge を expand）
       try {
         if (!paymentIntentId && session.payment_intent) {
           paymentIntentId =
@@ -205,7 +201,7 @@ export async function POST(req: NextRequest) {
               : (session.payment_intent as any)?.id ?? null;
         }
         if (paymentIntentId) {
-          pi = await stripe.paymentIntents.retrieve(paymentIntentId, {
+          const pi = await stripe.paymentIntents.retrieve(paymentIntentId, {
             expand: ["latest_charge"],
           });
           const latestCharge =
@@ -213,35 +209,30 @@ export async function POST(req: NextRequest) {
               ? null
               : (pi.latest_charge as Stripe.Charge | null);
           receiptUrl = latestCharge?.receipt_url ?? null;
-
-          // --- フォールバック: PI.metadata.order_id ---
           const piMeta = (pi.metadata || {}) as Record<string, string>;
           if (!orderId) orderId = String(piMeta.order_id || "");
         }
-      } catch (e) {
-        // PI 取得失敗は致命ではない（receiptUrl/orderId フォールバック不可になるだけ）
-        console.warn(
-          "[stripe/webhook] payment_intent retrieve failed:",
-          (e as any)?.message
-        );
+      } catch (e: any) {
+        console.warn("[webhook] payment_intent retrieve failed:", e?.message || e);
       }
 
       if (!orderId) {
         console.error(
-          "[stripe/webhook] order_id not found in session.metadata and payment_intent.metadata"
+          "[webhook] order_id missing in both session.metadata and payment_intent.metadata"
         );
-        await recordProcessed(event.id, event.type); // 記録だけしておく
+        // 受信済みにして重複を無害化
+        await recordProcessed(event.id, event.type);
         return new NextResponse("ok", { status: 200 });
       }
 
-      // --- 注文を PAID に更新 ---
+      // orders を PAID に更新
       const patched = await patchOrderPaid({
         orderId,
         paymentIntentId: paymentIntentId || "",
         receiptUrl,
       });
 
-      // --- push（line_user_id が取得できたら） ---
+      // LINE push（line_user_id が取れるときのみ）
       if (patched?.line_user_id) {
         await pushLine(patched.line_user_id, {
           store_name: patched.store_name,
@@ -252,15 +243,16 @@ export async function POST(req: NextRequest) {
         });
       }
 
+      // 処理済み記録
       await recordProcessed(event.id, event.type, orderId);
       return new NextResponse("ok", { status: 200 });
     }
 
-    // その他イベントは記録のみ
+    // 対象外イベントも処理済みに記録
     await recordProcessed(event.id, event.type);
     return new NextResponse("ok", { status: 200 });
   } catch (e: any) {
-    console.error("[stripe/webhook] error:", e?.message || e);
+    console.error("[webhook] error:", e?.message || e);
     return new NextResponse("bad request", { status: 400 });
   }
 }

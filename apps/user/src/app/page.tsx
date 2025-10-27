@@ -3835,6 +3835,7 @@ export default function UserPilotApp() {
         return (
             <button
                 type="button"
+                disabled={(qtyByShop[shopId] || 0) === 0}
                 onClick={() => {
                     setTab("cart");
                     setPendingScrollShopId(shopId); // カートで該当店舗の先頭へスクロール
@@ -3851,6 +3852,7 @@ export default function UserPilotApp() {
                 ].join(" ")}
                 title="カートを見る"
                 aria-label="カートを見る"
+                aria-disabled={(qtyByShop[shopId] || 0) === 0}
             >
                 カートを見る（{qtyByShop[shopId] || 0}）
             </button>
@@ -4286,15 +4288,23 @@ export default function UserPilotApp() {
                                                                 setTab("cart");
                                                                 setPendingScrollShopId(s.id);
                                                             }}
+                                                            disabled={(qtyByShop[s.id] || 0) === 0}
                                                             className={[
                                                                 "w-full h-12 rounded-full",
                                                                 "bg-[#5f95c5] hover:bg-emerald-600",
                                                                 "text-white font-semibold",
                                                                 "flex items-center justify-center gap-2",
-                                                                "transition-colors"
+                                                                "transition-colors",
+                                                                "w-full h-12 rounded-full",
+                                                                "bg-[#5f95c5] hover:bg-emerald-600",
+                                                                "text-white font-semibold",
+                                                                "flex items-center justify-center gap-2",
+                                                                "transition-colors",
+                                                                "disabled:opacity-40 disabled:cursor-not-allowed"
                                                             ].join(" ")}
                                                             aria-label="カートを見る"
                                                             title="カートを見る"
+                                                            aria-disabled={(qtyByShop[s.id] || 0) === 0}
                                                         >
                                                             <span className="text-base"> <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="mr-2" aria-hidden="true">
                                                                 <circle cx="9" cy="21" r="1"></circle>

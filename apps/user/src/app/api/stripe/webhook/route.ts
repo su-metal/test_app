@@ -201,30 +201,35 @@ export async function POST(req: NextRequest) {
                     }
                   }
                 } catch {}
-                const totalText =
-                  typeof patch.total === "number"
-                    ? `合計: ￥${patch.total.toLocaleString("ja-JP")}`
-                    : "";
-                const pickupText = patch.pickup_label
-                  ? `受取時間: ${patch.pickup_label}`
-                  : "";
+                // チケットURL: metadata.ticket_url > 環境変数 の順で決定
+                // ★ 置き換え：チケットURLを固定値に
+                const ticketUrl =
+                  "https://liff.line.me/2008314807-lxkoyj4r/?tab=order";
+
+                // 受取時間は DB に書いた値を最優先（なければ metadata の値）
+                const pickupLabelForText = String(
+                  (patch as any)?.pickup_label || pickupLabel || ""
+                );
+
+                // ご指定フォーマットの本文を組み立て
+                const text = [
+                  "お支払いありがとうございます。",
+                  "ご注文を受け付けました🎉",
+                  `店舗名：${storeName ?? ""}`,
+                  `受取時間：${pickupLabelForText}`,
+                  "",
+                  `チケットを表示：${ticketUrl}`,
+                  "",
+                  "たべディグ",
+                  "リンクを開くにはこちらをタップ",
+                ].join("\n");
+
+                // LINE Push メッセージ
                 const body = {
                   to,
-                  messages: [
-                    {
-                      type: "text",
-                      text:
-                        [
-                          storeName ? `【${storeName}】` : "",
-                          "ご注文ありがとうございました。",
-                          totalText,
-                          pickupText,
-                        ]
-                          .filter(Boolean)
-                          .join("\n") || "ご注文ありがとうございました。",
-                    },
-                  ],
+                  messages: [{ type: "text", text }],
                 };
+
                 await fetch("https://api.line.me/v2/bot/message/push", {
                   method: "POST",
                   headers: {

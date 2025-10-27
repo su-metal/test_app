@@ -15,7 +15,7 @@ export default function SupabaseBoot() {
         // 2) サーバーセッションから店舗IDを取得し __STORE_ID__ に反映（localStorage 依存を撤廃）
         (async () => {
             try {
-                const r = await fetch("/api/auth/session/inspect", { cache: "no-store" });
+                const r = await fetch("/api/auth/session/inspect", { cache: "no-store", credentials: "include" });
                 const j = await r.json().catch(() => ({} as any));
                 const sid = (r.ok && typeof j?.store_id === "string") ? (j.store_id as string).trim() : "";
                 window.__STORE_ID__ = sid || undefined;

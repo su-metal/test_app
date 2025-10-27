@@ -24,6 +24,9 @@ function StoreRow({ id, name }: { id: string; name: string }) {
       return;
     }
 
+    // 選択内容をクライアントにも即反映
+    try { localStorage.setItem('store:selected', id); } catch { /* noop */ }
+    try { (window as any).__STORE_ID__ = id; } catch { /* noop */ }
     // 選択完了後にホームへ
     router.replace("/");
   };

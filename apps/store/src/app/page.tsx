@@ -740,68 +740,6 @@ function useOrders() {
     }
 
 
-    // 受取枠の終了時刻超過チェック（JST基準）
-    // stores.current_pickup_slot_no と store_pickup_presets から当日の終了時刻を取得して判定
-    try {
-      // 現在の受取スロットを取得
-      const { data: storeRow } = await (supabase as any)
-        .from('stores')
-        .select('current_pickup_slot_no')
-        .eq('id', getStoreId())
-        .single();
-      const curSlot: number | null = (storeRow?.current_pickup_slot_no ?? null);
-
-      if (curSlot) {
-        const { data: presetRows } = await (supabase as any)
-          .from('store_pickup_presets')
-          .select('end_time,slot_minutes')
-          .eq('store_id', getStoreId())
-          .eq('slot_no', curSlot)
-          .limit(1);
-        const endTime: string | undefined = presetRows?.[0]?.end_time;
-
-        if (endTime) {
-          // HH:MM:SS → 分
-          const toMinutes = (t: string) => {
-            const [hh, mm] = String(t).slice(0, 5).split(':').map((n) => Number(n) || 0);
-            return hh * 60 + mm;
-          };
-          // 現在時刻（JST）を分に変換
-          const parts = new Intl.DateTimeFormat('ja-JP', { timeZone: 'Asia/Tokyo', hour12: false, hour: '2-digit', minute: '2-digit' }).formatToParts(new Date());
-          const curMin = (Number(parts.find(p => p.type === 'hour')?.value || '0') * 60) + Number(parts.find(p => p.type === 'minute')?.value || '0');
-          const endMin = toMinutes(endTime);
-
-          if (curMin >= endMin) {
-            // ▲時間外：オーバーライド指定がない場合はエラーで止める
-            if (!opts?.override) {
-              setErr('受取時間外です。店舗裁量で受け渡す場合は「時間外でも受け渡す」を押してください。');
-              return;
-            }
-            // ▼オーバーライド指定あり：続行（監査が必要なら RPC/UPDATE にフィールド追加を）
-          }
-        }
-      }
-    } catch {
-      // 取得に失敗しても処理は継続（ネットワーク揺らぎ対策）
-    }
-
-
-    // ▼ 注文ごとの受取時間での厳密判定（override 無しでは止める）
-    {
-      const startTs = target.pickupStart ? Date.parse(target.pickupStart) : NaN;
-      const endTs = target.pickupEnd ? Date.parse(target.pickupEnd) : NaN;
-      const now = Date.now();
-      const outside =
-        (Number.isFinite(startTs) && now < startTs) ||
-        (Number.isFinite(endTs) && now > endTs);
-
-      if (outside && !opts?.override) {
-        setErr('受取時間外です。店舗裁量で受け渡す場合は「時間外でも受け渡す」を押してください。');
-        return;
-      }
-    }
-
-
     // ★ RPC 呼び出し（DB側で作成済みの fulfill_order(uuid, text) を使う）
     const { data, error } = await supabase.rpc('fulfill_order', {
       p_store_id: getStoreId(),
@@ -967,7 +905,7 @@ const OrderCard = React.memo(function OrderCard({ order, onHandoff }: { order: O
         if (slots.size === 0) { if (alive) setPresetLabelCur(''); return; }
         const labels: string[] = [];
         for (const n of Array.from(slots).sort()) {
-          const p = (presets as any)[n as 1|2|3];
+          const p = (presets as any)[n as 1 | 2 | 3];
           if (p && p.start && p.end) labels.push(`${p.start}〜${p.end}`);
         }
         if (alive) setPresetLabelCur(labels.join(' / '));
@@ -999,12 +937,12 @@ const OrderCard = React.memo(function OrderCard({ order, onHandoff }: { order: O
       <div className="text-sm text-zinc-600">注文ID: {order.id}</div>
       <div className="text-sm text-zinc-700">受取時間: {jpPickupRange}</div>
       <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-        <div className="text-sm">
+        {/* <div className="text-sm">
           <div className="inline-block rounded-full border px-2 py-0.5 text-xs text-zinc-600 mb-1">注文時に選択した受取時間</div>
           <div className="text-zinc-800 font-medium">{jpPickupRange}</div>
-        </div>
+        </div> */}
         <div className="text-sm">
-          <div className="inline-block rounded-full border px-2 py-0.5 text-xs text-zinc-600 mb-1">店舗受取可能時間（プリセット）</div>
+          <div className="inline-block rounded-full border px-2 py-0.5 text-xs text-zinc-600 mb-1">店舗受取可能時間</div>
           <div className="text-zinc-800 font-medium">{presetLabelCur || '未設定'}</div>
         </div>
       </div>
@@ -3135,8 +3073,71 @@ function ProductForm() {
 }
 
 
+// JSTの現在時刻を「その日の分(0..1440)」で返す
+function nowMinutesJST(): number {
+  const parts = new Intl.DateTimeFormat('ja-JP', {
+    timeZone: 'Asia/Tokyo',
+    hour12: false, hour: '2-digit', minute: '2-digit'
+  }).formatToParts(new Date());
+  const hh = Number(parts.find(p => p.type === 'hour')?.value || '0');
+  const mm = Number(parts.find(p => p.type === 'minute')?.value || '0');
+  return hh * 60 + mm;
+}
+
+// "HH:MM" / "HH:MM:SS" を分に
+function toMinutes(hhmm: string): number {
+  const [h, m] = String(hhmm).slice(0, 5).split(':').map(n => Number(n) || 0);
+  return h * 60 + m;
+}
+
+// 日跨ぎ対応の区間内判定
+function inWindow(nowMin: number, startMin: number, endMin: number): boolean {
+  if (startMin === endMin) return false;        // 0長区間は許可しない
+  if (startMin < endMin) return startMin <= nowMin && nowMin <= endMin;
+  // 例: 22:00-02:00
+  return nowMin >= startMin || nowMin <= endMin;
+}
+
+// 各商品のプリセット時間で「全商品OKか」を判定（intersection）
+function canPickupNowByPresets(
+  items: OrderItem[],
+  presets: Record<1 | 2 | 3, { name: string; start: string; end: string }>
+): boolean {
+  // 商品が参照する有効なスロットだけ集める（1..3）
+  const slots = Array.from(
+    new Set(
+      (items || [])
+        .map(it => (it as any)?.pickup_slot_no) // itemsに入っていない場合は後段で再取得してもOK
+        .filter((n: any) => typeof n === 'number' && n >= 1 && n <= 3)
+    )
+  ) as Array<1 | 2 | 3>;
+
+  // items からスロットが取れない実装の場合：
+  // → すでに本ファイルでは OrderCard で products を読みにいっているため、
+  //   必要ならそこで items に {id, qty, pickup_slot_no} を持たせるよう拡張してもOK。
+
+  // スロットが一つも無ければ＝制約なし → 許可
+  if (slots.length === 0) return true;
+
+  // どれかのプリセットが欠けていたら安全側でNG
+  for (const s of slots) {
+    if (!presets[s] || !presets[s].start || !presets[s].end) return false;
+  }
+
+  const now = nowMinutesJST();
+  // 「全てのスロットの区間に“今”が入っている」→ 許可（＝積）
+  return slots.every((s) => {
+    const st = toMinutes(presets[s].start);
+    const en = toMinutes(presets[s].end);
+    return inWindow(now, st, en);
+  });
+}
+
+
 
 function OrdersPage() {
+  const { presets } = usePickupPresets(); // 既存
+  const supabase = useSupabase();         // ← 追加
   const { ready, err, pending, fulfilled, fulfill, clearPending, clearFulfilled, retry } = useOrders();
   const [current, setCurrent] = useState<Order | null>(null);
   const [codeInput, setCodeInput] = useState("");
@@ -3153,6 +3154,29 @@ function OrdersPage() {
   const storeOk = !!current && current.storeId === getStoreId();
   const canFulfill = storeOk && expectedCode.length === 6 && inputDigits.length === 6 && inputDigits === expectedCode;
   const [overrideAsk, setOverrideAsk] = useState(false);
+  // 各商品の pickup_slot_no から “店舗受取可能時間” で可否判定
+  const isWithinStorePresetForOrder = useCallback(async (o: Order) => {
+    if (!supabase) return true; // 取得できなければ落とさない
+    const ids = Array.from(new Set((o.items || []).map(it => String(it.id || '')).filter(Boolean)));
+    if (ids.length === 0) return true;  // 制約なし
+    const { data: prows } = await (supabase as any)
+      .from('products')
+      .select('id,pickup_slot_no')
+      .in('id', ids);
+    const slots = Array.from(new Set(
+      (prows || []).map((r: any) => r?.pickup_slot_no).filter((n: any) => typeof n === 'number' && n >= 1 && n <= 3)
+    )) as Array<1 | 2 | 3>;
+    if (slots.length === 0) return true; // 制約なし
+    // プリセットが欠けていれば安全側でNG
+    if (slots.some(s => !presets[s]?.start || !presets[s]?.end)) return false;
+    const now = nowMinutesJST();
+    return slots.every((s) => {
+      const st = toMinutes(presets[s].start);
+      const en = toMinutes(presets[s].end);
+      return inWindow(now, st, en);
+    });
+  }, [supabase, presets]);
+
 
   return (
     <main className="mx-auto max-w-[448px] md:max-w-4xl lg:max-w-6xl px-4 py-5 space-y-6">
@@ -3264,24 +3288,16 @@ function OrdersPage() {
               <div className="flex items-center gap-2">
                 {/* 通常の受け渡し */}
                 <button
-                  onClick={() => {
+                  onClick={async () => {
                     const raw = String(codeInput ?? '').replace(/\D/g, '');
                     if (!expectedCode || expectedCode.length !== 6) { setCodeErr('この注文にはコードが登録されていません'); return; }
                     if (!storeOk) { setCodeErr('店舗が一致しません'); return; }
                     if (raw.length !== 6) { setCodeErr('6桁のコードを入力してください'); return; }
                     if (raw !== expectedCode) { setCodeErr('コードが一致しません'); return; }
 
-                    // ▼ ここで注文の受取時間に対する「時間外」判定（ISOをUTCで比較）
-                    const startTs = current?.pickupStart ? Date.parse(current.pickupStart) : NaN;
-                    const endTs = current?.pickupEnd ? Date.parse(current.pickupEnd) : NaN;
-                    const now = Date.now();
-                    const outside =
-                      (Number.isFinite(startTs) && now < startTs) ||
-                      (Number.isFinite(endTs) && now > endTs);
-
-                    if (outside) {
-                      // 通常経路では通さず、必ず「時間外でも受け渡す」ダイアログを出す
-                      setOverrideAsk(true);
+                    const okByPreset = await isWithinStorePresetForOrder(current!);
+                    if (!okByPreset) {
+                      setOverrideAsk(true); // 時間外 → 確認ダイアログへ
                       return;
                     }
 

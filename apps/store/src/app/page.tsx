@@ -266,30 +266,108 @@ function useStores() {
 
 const StoreSwitcher = React.memo(function StoreSwitcher() {
   const { stores } = useStores();
-  const [sel, setSel] = useState<string>(() => {
-    if (typeof window === 'undefined') return getStoreId();
-    try { return localStorage.getItem('store:selected') || getStoreId(); } catch { return getStoreId(); }
-  });
-  useEffect(() => setSel(getStoreId()), []);
+
+  // 「プルダウンの現在値」をここで一元管理
+  const [sel, setSel] = useState<string>("");
+
+  // 初期化：サーバーの“現在選択中”を最優先で反映 → 次に localStorage → 最後に一覧の先頭
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        // 1) サーバー側の現在選択（優先）
+        const insp = await fetch("/api/auth/session/inspect", { cache: "no-store" })
+          .then(r => (r.ok ? r.json() : null))
+          .catch(() => null);
+        let sid: string =
+          (insp?.store_id && String(insp.store_id).trim()) || "";
+
+        // 2) ローカル復元（なければ last→selected の順）
+        if (!sid) {
+          try {
+            const last = localStorage.getItem("store:last_store_id");
+            const cur = localStorage.getItem("store:selected");
+            sid = String(last || cur || "");
+          } catch {
+            /* noop */
+          }
+        }
+
+        // 3) まだ空なら一覧の先頭（ロード済みのとき）
+        if (!sid && stores.length > 0) {
+          sid = String(stores[0].id);
+        }
+
+        if (!alive) return;
+        setSel(sid || "");
+
+        // ウィンドウ変数 / localStorage にも同期
+        try {
+          (window as any).__STORE_ID__ = sid || "";
+          if (sid) {
+            localStorage.setItem("store:selected", sid);
+            localStorage.setItem("store:last_store_id", sid);
+          }
+        } catch {
+          /* noop */
+        }
+      } catch {
+        /* noop */
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [stores.length]); // 一覧が来たら一度だけ評価
+
+  // 変更時：サーバーへ POST → ローカル同期 → 画面を確実に更新
   const onChange = useCallback(async (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const v = e.target.value; setSel(v);
-    try { localStorage.setItem('store:selected', v); } catch { }
+    const v = e.target.value;
+    setSel(v);
+
     try {
-      await fetch('/api/auth/session/select-store', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        credentials: 'include',
-        // TODO(req v2): プロパティ名は storeId に統一
-        body: JSON.stringify({ storeId: v, store_id: v }),
+      await fetch("/api/auth/session/select-store", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ storeId: v, store_id: v }), // 互換保持
       });
-    } catch { /* noop */ }
-    (window as any).__STORE_ID__ = v; location.reload();
+    } catch {
+      /* noop */
+    }
+
+    try {
+      (window as any).__STORE_ID__ = v;
+      localStorage.setItem("store:selected", v);
+      localStorage.setItem("store:last_store_id", v);
+    } catch {
+      /* noop */
+    }
+
+    // 関連一覧（注文/商品など）を選択店舗で再評価させる
+    location.reload();
   }, []);
+
   return (
     <label className="flex items-center gap-2 text-sm mr-2">
       <span className="text-zinc-600">店舗</span>
-      <select value={sel} onChange={onChange} className="rounded-lg border px-2 py-1 bg-white">
-        {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+      <select
+        value={sel}
+        onChange={onChange}
+        className="rounded-lg border px-2 py-1 bg-white"
+      >
+        {/* 一覧が未取得の間も“選択中の表示”は維持 */}
+        {sel && !stores.find(s => String(s.id) === sel) && (
+          <option value={sel}>{sel}</option>
+        )}
+        {stores.map(s => (
+          <option key={s.id} value={s.id}>
+            {s.name}
+          </option>
+        ))}
+        {!sel && stores.length === 0 && (
+          <option value="">店舗を読み込み中…</option>
+        )}
       </select>
     </label>
   );

@@ -967,7 +967,7 @@ const OrderCard = React.memo(function OrderCard({ order, onHandoff }: { order: O
         if (slots.size === 0) { if (alive) setPresetLabelCur(''); return; }
         const labels: string[] = [];
         for (const n of Array.from(slots).sort()) {
-          const p = (presets as any)[n as 1|2|3];
+          const p = (presets as any)[n as 1 | 2 | 3];
           if (p && p.start && p.end) labels.push(`${p.start}〜${p.end}`);
         }
         if (alive) setPresetLabelCur(labels.join(' / '));
@@ -999,12 +999,12 @@ const OrderCard = React.memo(function OrderCard({ order, onHandoff }: { order: O
       <div className="text-sm text-zinc-600">注文ID: {order.id}</div>
       <div className="text-sm text-zinc-700">受取時間: {jpPickupRange}</div>
       <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-        <div className="text-sm">
+        {/* <div className="text-sm">
           <div className="inline-block rounded-full border px-2 py-0.5 text-xs text-zinc-600 mb-1">注文時に選択した受取時間</div>
           <div className="text-zinc-800 font-medium">{jpPickupRange}</div>
-        </div>
+        </div> */}
         <div className="text-sm">
-          <div className="inline-block rounded-full border px-2 py-0.5 text-xs text-zinc-600 mb-1">店舗受取可能時間（プリセット）</div>
+          <div className="inline-block rounded-full border px-2 py-0.5 text-xs text-zinc-600 mb-1">店舗受取可能時間</div>
           <div className="text-zinc-800 font-medium">{presetLabelCur || '未設定'}</div>
         </div>
       </div>

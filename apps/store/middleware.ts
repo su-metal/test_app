@@ -2,16 +2,11 @@
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 
-/** store_session が無ければ未ログイン扱い（値が 'undefined' なども弾く） */
-function isUnauthed(req: NextRequest) {
-  const v = req.cookies.get("store_session")?.value ?? "";
-  return !v || v === "undefined" || v.length < 16;
-}
-
-/** 静的アセットや Next 内部パス、ヘルスチェックを除外 */
+/** 公開パス（認証不要） */
 function isPublicPath(pathname: string) {
   if (
     pathname.startsWith("/login") ||
+    pathname.startsWith("/api/auth/") || // 認証系APIは公開
     pathname.startsWith("/_next/") ||
     pathname.startsWith("/static/") ||
     pathname.startsWith("/favicon") ||
@@ -28,7 +23,32 @@ function isPublicPath(pathname: string) {
   return false;
 }
 
-export function middleware(req: NextRequest) {
+/** サーバ側でセッションを検査（未ログイン/ログイン済み/店舗未選択を厳密判定） */
+async function inspectSession(req: NextRequest): Promise<{
+  ok: boolean;
+  store_id: string | null;
+}> {
+  try {
+    const url = new URL("/api/auth/session/inspect", req.url);
+    const res = await fetch(url, {
+      headers: {
+        cookie: req.headers.get("cookie") ?? "",
+      },
+      cache: "no-store",
+    });
+    if (!res.ok) return { ok: false, store_id: null };
+    const data = (await res.json().catch(() => ({}))) as {
+      ok?: boolean;
+      store_id?: string | null;
+    };
+    return { ok: !!data?.ok, store_id: data?.store_id ?? null };
+  } catch {
+    // 検査APIに到達できない場合は安全側に倒して「未ログイン」とみなす
+    return { ok: false, store_id: null };
+  }
+}
+
+export async function middleware(req: NextRequest) {
   const { pathname, origin, search } = req.nextUrl;
 
   // 1) 公開パスは素通し
@@ -36,18 +56,15 @@ export function middleware(req: NextRequest) {
     return NextResponse.next();
   }
 
-  // 2) API ルート
+  // 2) API ルートの扱い
   if (pathname.startsWith("/api/")) {
-    // 2-1) CORS プリフライトは常に許可
+    // CORS プリフライトは常に許可
     if (req.method === "OPTIONS") {
       return NextResponse.next();
     }
-    // 2-2) 認証系 API は公開
-    if (pathname.startsWith("/api/auth/")) {
-      return NextResponse.next();
-    }
-    // 2-3) それ以外の API は未ログインなら 401 JSON
-    if (isUnauthed(req)) {
+    // 認証チェック（auth 系は上で素通し済み）
+    const session = await inspectSession(req);
+    if (!session.ok) {
       return NextResponse.json(
         { ok: false, error: "UNAUTHORIZED" },
         { status: 401 }
@@ -57,8 +74,10 @@ export function middleware(req: NextRequest) {
   }
 
   // 3) 通常ページ（トップ `/` を含む）
-  if (isUnauthed(req)) {
-    // GET/HEAD のみ 302 リダイレクト。それ以外は 401 を返す（副作用回避）
+  const session = await inspectSession(req);
+
+  // 未ログイン → 必ず /login へ
+  if (!session.ok) {
     if (req.method === "GET" || req.method === "HEAD") {
       const loginUrl = new URL("/login", origin);
       // 元の訪問先を保持したい場合は next を付与（任意）
@@ -71,13 +90,22 @@ export function middleware(req: NextRequest) {
     );
   }
 
+  // ログイン済みだが store 未選択 → /select-store へ（既にそこなら素通し）
+  if (!session.store_id && !pathname.startsWith("/select-store")) {
+    if (req.method === "GET" || req.method === "HEAD") {
+      return NextResponse.redirect(new URL("/select-store", origin));
+    }
+    return NextResponse.json(
+      { ok: false, error: "STORE_NOT_SELECTED" },
+      { status: 401 }
+    );
+  }
+
+  // ログイン済み & store 選択済み → 通過
   return NextResponse.next();
 }
 
-/**
- * 全パス対象にしつつ、公開パスは本文で除外。
- * これにより `/` を含む全ページで未ログイン時は /login へ 302（GET/HEAD）。
- */
+/** すべてのパスに適用し、公開パスは本文で除外 */
 export const config = {
   matcher: ["/:path*"],
 };

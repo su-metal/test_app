@@ -14,9 +14,10 @@ export async function POST(req: Request) {
   const sess = verifySessionCookie(c.get(COOKIE_NAME)?.value, secret);
   if (!sess) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
-  let body: { storeId?: string } = {};
+  let body: { storeId?: string; store_id?: string } = {};
   try { body = (await req.json()) as any; } catch {}
-  const storeId = String(body.storeId || "").trim();
+  // TODO(req v2): 入力は storeId に統一。互換のため store_id も受け付け。
+  const storeId = String(body.storeId || body.store_id || "").trim();
   if (!storeId) return NextResponse.json({ error: "invalid-store-id" }, { status: 400 });
   if (!isUuidLike(storeId)) return NextResponse.json({ error: "invalid-store-id" }, { status: 400 });
 
@@ -46,12 +47,25 @@ export async function POST(req: Request) {
 
   const value = issueSessionCookie(sess.sub, secret, storeId);
   const res = NextResponse.json({ ok: true, store_id: storeId });
+  const isProd = process.env.NODE_ENV === "production";
+  const sameSite: "lax" | "none" = isProd ? "none" : "lax";
+  // store_session（httpOnly）再発行
   res.cookies.set({
     name: COOKIE_NAME,
     value,
     httpOnly: true,
-    secure: true,
-    sameSite: "lax",
+    secure: isProd,
+    sameSite,
+    path: "/",
+    maxAge: 60 * 60 * 24 * 7,
+  });
+  // store_selected を明示的にも保持（middleware フォールバック用）
+  res.cookies.set({
+    name: "store_selected",
+    value: storeId,
+    httpOnly: true,
+    secure: isProd,
+    sameSite,
     path: "/",
     maxAge: 60 * 60 * 24 * 7,
   });

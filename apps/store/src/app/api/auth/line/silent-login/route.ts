@@ -54,12 +54,15 @@ export async function POST(req: NextRequest) {
     // Next 15+ では Route Handler での Cookie 変更は
     // Response 経由の API を使うのが安全
     const res = NextResponse.json({ ok: true, sub }, { status: 200 });
+    const isProd = process.env.NODE_ENV === "production";
+    const sameSite: "lax" | "none" = isProd ? "none" : "lax";
+    // TODO(req v2): SameSite=None; Secure は LIFF 埋め込み等のクロスサイト文脈対策（本番のみ）
     res.cookies.set({
       name: COOKIE_NAME,
       value,
       httpOnly: true,
-      secure: true,
-      sameSite: "lax",
+      secure: isProd,
+      sameSite,
       path: "/",
       maxAge,
     });

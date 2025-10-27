@@ -240,23 +240,8 @@ export async function POST(req: NextRequest) {
                 (e as any)?.message || e
               );
             }
-          }
-        } catch {}
-      }
-
-      await recordProcessed(event.id, event.type, orderId || undefined);
-      return new NextResponse("ok", { status: 200 });
-    }
-
-    // その他は記録のみ
-    await recordProcessed(event.id, event.type);
-    return new NextResponse("ok", { status: 200 });
-  } catch (e: any) {
-    console.error("[stripe/webhook] error:", e?.message || e);
-    return new NextResponse("bad request", { status: 400 });
-  }
-}
-
-export function GET() {
-  return new NextResponse("Method Not Allowed", { status: 405 });
+laced_at: new Date().toISOString() }),
+              }
+            );
+05 });
 }

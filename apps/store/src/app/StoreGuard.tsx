@@ -12,27 +12,55 @@ export default function StoreGuard() {
   const router = useRouter();
 
   useEffect(() => {
-    try {
-      const allow = ["/select-store", "/login", "/api", "/admin"].some((p) => pathname?.startsWith(p));
-      if (allow) return;
-      let sid = (typeof window !== "undefined" && (window as any).__STORE_ID__) || (process.env.NEXT_PUBLIC_STORE_ID as string | undefined) || "";
-      if (!isValidUuid(sid)) {
-        // localStorage フォールバック
+    (async () => {
+      try {
+        const allow = ["/select-store", "/login", "/api", "/admin"].some((p) => pathname?.startsWith(p));
+        if (allow) return;
+
+        // 1) 既に window/env に有効な値があれば許可
+        let sid = (typeof window !== "undefined" && (window as any).__STORE_ID__) || (process.env.NEXT_PUBLIC_STORE_ID as string | undefined) || "";
+        if (isValidUuid(sid)) return;
+
+        // 2) localStorage フォールバック
         try {
-          const v = localStorage.getItem('store:selected');
-          if (typeof v === 'string' && v.trim()) {
+          const v = localStorage.getItem("store:selected");
+          if (typeof v === "string" && v.trim()) {
             sid = v.trim();
-            (window as any).__STORE_ID__ = sid;
+            if (isValidUuid(sid)) {
+              (window as any).__STORE_ID__ = sid;
+              return;
+            }
           }
-        } catch { /* noop */ }
-      }
-      if (!isValidUuid(sid)) {
+        } catch {
+          /* noop */
+        }
+
+        // 3) サーバセッション照会（Cookie ベース）
+        try {
+          const r = await fetch("/api/auth/session/inspect", { credentials: "include", cache: "no-store" });
+          const j = (await r.json().catch(() => ({}))) as any;
+          const srv = r.ok && typeof j?.store_id === "string" ? String(j.store_id).trim() : "";
+          if (isValidUuid(srv)) {
+            (window as any).__STORE_ID__ = srv;
+            try {
+              localStorage.setItem("store:selected", srv);
+            } catch {
+              /* noop */
+            }
+            return;
+          }
+        } catch {
+          /* noop */
+        }
+
+        // 4) 確定できない場合のみ店舗選択へ
         router.replace("/select-store");
+      } catch {
+        // noop
       }
-    } catch {
-      // noop
-    }
+    })();
   }, [pathname, router]);
 
   return null;
 }
+

@@ -30,7 +30,6 @@ function genShortCode(len = 6) {
     s += digits[Math.floor(Math.random() * digits.length)];
   return s;
 }
-
 /**
  * 期待ボディ
  * {

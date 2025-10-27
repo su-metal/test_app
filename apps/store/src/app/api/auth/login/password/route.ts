@@ -61,12 +61,15 @@ export async function POST(req: NextRequest) {
     }
 
     const res = NextResponse.json(body);
+    const isProd = process.env.NODE_ENV === "production";
+    const sameSite: "lax" | "none" = isProd ? "none" : "lax";
+    // TODO(req v2): SameSite=None; Secure は LIFF 埋め込み等のクロスサイト文脈対策（本番のみ）
     res.cookies.set({
       name: COOKIE_NAME,
       value,
       httpOnly: true,
-      secure: true,
-      sameSite: "lax",
+      secure: isProd,
+      sameSite,
       path: "/",
       maxAge: 60 * 60 * 24 * 7,
     });

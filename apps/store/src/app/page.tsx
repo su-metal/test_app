@@ -278,7 +278,9 @@ const StoreSwitcher = React.memo(function StoreSwitcher() {
       await fetch('/api/auth/session/select-store', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ storeId: v }),
+        credentials: 'include',
+        // TODO(req v2): プロパティ名は storeId に統一
+        body: JSON.stringify({ storeId: v, store_id: v }),
       });
     } catch { /* noop */ }
     (window as any).__STORE_ID__ = v; location.reload();

@@ -632,6 +632,107 @@ function isTicketExpired(o: Order): boolean {
     return isPickupExpired(label);
 }
 
+// === 店舗プリセットベースの受取可否判定（ユーザー選択ではなく店舗定義で判定） ===
+
+// 同日(本日JST)の分として "HH:MM" → 分に変換
+function toMin(hhmm: string | null | undefined): number | null {
+    if (!hhmm) return null;
+    const m = String(hhmm).match(/^(\d{1,2}):(\d{2})$/);
+    if (!m) return null;
+    const h = Number(m[1]), mi = Number(m[2]);
+    if (!(h >= 0 && h < 24 && mi >= 0 && mi < 60)) return null;
+    return h * 60 + mi;
+}
+
+// プリセットスロット → 本日の {start,end} を分で返す
+function windowFromPresetSlot(slot?: { start: string; end: string } | null): { start: number; end: number } | null {
+    if (!slot) return null;
+    const s = toMin(slot.start);
+    const e = toMin(slot.end);
+    if (s == null || e == null || !(e > s)) return null;
+    return { start: s, end: e };
+}
+
+/**
+ * 店舗プリセット基準で「今すぐ引換OKか？」を返す
+ * - 優先1: Order.pickupStart/End(ISO) があればそれで判定（サーバ確定の絶対時間）
+ * - 優先2: なければ「商品ごとの pickup_slot_no → 対応する店舗プリセット」の“本日窓”を集め、
+ *          すべての商品の共通交差区間に「現在時刻(JST)」が入っているかで判定
+ * - どれも取れない場合は false（安全側）
+ */
+async function canRedeemByStorePresets(
+    o: Order,
+    supabase: SupabaseClient | null,
+    presetMap: Record<string, { current: number | null; slots: Record<number, { start: string; end: string; name: string; step: number }> }>
+): Promise<boolean> {
+    // 優先: ISO があればそれで厳密判定
+    const endTs = o?.pickupEnd ? Date.parse(String(o.pickupEnd)) : NaN;
+    const startTs = o?.pickupStart ? Date.parse(String(o.pickupStart)) : NaN;
+    if (Number.isFinite(endTs)) {
+        const now = Date.now();
+        if (Number.isFinite(startTs)) {
+            return now >= startTs && now <= endTs;
+        }
+        return now <= endTs;
+    }
+
+    // Supabase/Preset が無ければ判定不能（安全側で不可）
+    if (!supabase) return false;
+    const info = presetMap[o.shopId];
+    if (!info) return false;
+
+    // 対象商品の product.id を収集（Order.lines[].item.id は products.id に一致想定）
+    const productIds = Array.from(
+        new Set(
+            (o?.lines || [])
+                .map(l => String(l?.item?.id || ''))
+                .filter(Boolean)
+        )
+    );
+    if (productIds.length === 0) return false;
+
+    // products から pickup_slot_no を取得（snapshotに無い場合の救済）
+    const { data, error } = await supabase
+        .from('products')
+        .select('id,pickup_slot_no,store_id')
+        .in('id', productIds as any);
+
+    if (error) {
+        console.warn('[canRedeemByStorePresets] products load error', error);
+        return false;
+    }
+    if (!Array.isArray(data) || data.length === 0) return false;
+
+    // 商品ごとのスロット → プリセット時間帯を集める
+    const slotWindows: Array<{ start: number; end: number }> = [];
+    for (const row of data) {
+        const slotNo: number | null = (row as any)?.pickup_slot_no ?? null;
+        // 商品にスロットが無ければ、その店舗の current スロットをフォールバック
+        const useNo = slotNo ?? (info.current ?? null);
+        if (useNo == null) return false;
+        const slot = info.slots[useNo];
+        const w = windowFromPresetSlot(slot || null);
+        if (!w) return false;
+        slotWindows.push(w);
+    }
+
+    if (slotWindows.length === 0) return false;
+
+    // すべての商品の“共通交差区間”をとる（＝全商品まとめて受け取れる時間帯）
+    const common = slotWindows.reduce<{ start: number; end: number } | null>((acc, w) => {
+        if (!acc) return { ...w };
+        const ns = Math.max(acc.start, w.start);
+        const ne = Math.min(acc.end, w.end);
+        return ns < ne ? { start: ns, end: ne } : null;
+    }, null);
+
+    if (!common) return false;
+
+    const nowMin = nowMinutesJST();
+    return nowMin >= common.start && nowMin <= common.end;
+}
+
+
 
 const overlaps = (a: { start: number, end: number }, b: { start: number, end: number }) =>
     a.start < b.end && b.start < a.end; // 端点だけ接する(= end==start)は非重複
@@ -929,6 +1030,9 @@ type ShopWithDistance = Shop & { distance: number };
 // store_id ごとに { current, slots:{[slot_no]:{start,end,name,step}} } を保持
 type PresetSlot = { start: string; end: string; name: string; step: number };
 type StorePresetInfo = { current: number | null, slots: Record<number, PresetSlot> };
+// --- 店舗プリセットを下位へ配る薄い Context ---
+const PresetMapContext = React.createContext<{ presetMap: Record<string, StorePresetInfo> } | null>(null);
+
 
 
 function useStorePickupPresets(
@@ -1611,7 +1715,30 @@ function CompactTicketCard({
     const presetPickup = String(presetPickupLabel || "");
     const norm = (s: string) => (s || "").replace(/[—–~\-]/g, "〜");
     // ▼ 期限切れは「ISOあり優先 → ラベル互換」の順で判定
-    const expired = isTicketExpired(o);
+    // ▼ 受取可否は「店舗プリセット基準」（ISOがあればISO優先）で判定する
+    const supa = useSupabase();
+    const ctx = React.useContext(PresetMapContext); // null になり得る
+    const presetMap = (ctx?.presetMap ?? {}) as Record<string, StorePresetInfo>;
+
+
+    const [redeemable, setRedeemable] = React.useState<boolean | null>(null);
+
+    React.useEffect(() => {
+        let alive = true;
+        (async () => {
+            try {
+                const ok = await canRedeemByStorePresets(o, supa, presetMap || {});
+                if (alive) setRedeemable(ok);
+            } catch {
+                if (alive) setRedeemable(false);
+            }
+        })();
+        return () => { alive = false; };
+    }, [o, supa, JSON.stringify(presetMap)]);
+
+    // 旧互換フォールバック：まだ判定前(null)の場合だけ従来ロジックを表示に利用
+    const expired = redeemable == null ? isTicketExpired(o) : !redeemable;
+
     const panelId = `ticket-${o.id}`;
 
 
@@ -3734,602 +3861,603 @@ export default function UserPilotApp() {
 
     return (
         <MinimalErrorBoundary>
-            <div className="min-h-screen bg-[#faf8f4]">{/* 柔らかいベージュ背景 */}
-                <RootBackGuardOnHome />
-                {tab !== "home" && (
-                    <header
-                        className={[
-                            "sticky top-0 z-20 bg-white/85 backdrop-blur border-b",
-                            "transform-gpu transition-transform duration-200 will-change-transform",
-                            "translate-y-0",
-                        ].join(" ")}
-                    >
-                        <div className="max-w-[448px] mx-auto px-4 py-3 flex items-center justify-between" suppressHydrationWarning>
-                            {/* ← 左：戻るボタン（home以外で表示） */}
-                            <div className="min-w-[40px]">
-                                <button
-                                    type="button"
-                                    onClick={goBack}
-                                    aria-label="戻る"
-                                    className="inline-flex items-center justify-center w-9 h-9 rounded-full border bg-white hover:bg-zinc-50"
-                                    title="戻る"
-                                >
-                                    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2"
-                                        strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                                        <polyline points="15 18 9 12 15 6"></polyline>
-                                    </svg>
-                                    <span className="sr-only">戻る</span>
-                                </button>
-                            </div>
-
-
-                            {/* 中央のタイトルは削除（空にしてセンタリング維持したいなら空スパンでもOK） */}
-                            {/* 中央タイトル（カート時のみ表示） */}
-                            <div className="text-sm font-semibold">
-                                {tab === 'cart' ? 'カート（店舗別会計）' : ''}
-                            </div>
-                            {/* → 右：タブに応じて切り替え */}
-                            <div className="min-w-[40px] flex items-center justify-end">
-                                {tab === 'cart' ? (
+            <PresetMapContext.Provider value={{ presetMap }}>
+                <div className="min-h-screen bg-[#faf8f4]">{/* 柔らかいベージュ背景 */}
+                    <RootBackGuardOnHome />
+                    {tab !== "home" && (
+                        <header
+                            className={[
+                                "sticky top-0 z-20 bg-white/85 backdrop-blur border-b",
+                                "transform-gpu transition-transform duration-200 will-change-transform",
+                                "translate-y-0",
+                            ].join(" ")}
+                        >
+                            <div className="max-w-[448px] mx-auto px-4 py-3 flex items-center justify-between" suppressHydrationWarning>
+                                {/* ← 左：戻るボタン（home以外で表示） */}
+                                <div className="min-w-[40px]">
                                     <button
                                         type="button"
-                                        className="text-xs px-2 py-1 rounded border cursor-pointer disabled:opacity-40"
-                                        onClick={clearAllCarts}
-                                        disabled={cart.length === 0}
-                                        aria-disabled={cart.length === 0}
-                                        title="すべてのカートを空にする"
+                                        onClick={goBack}
+                                        aria-label="戻る"
+                                        className="inline-flex items-center justify-center w-9 h-9 rounded-full border bg-white hover:bg-zinc-50"
+                                        title="戻る"
                                     >
-                                        カートを全て空にする
+                                        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2"
+                                            strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                            <polyline points="15 18 9 12 15 6"></polyline>
+                                        </svg>
+                                        <span className="sr-only">戻る</span>
                                     </button>
-                                ) : (
-                                    <div className="flex items-center gap-3">
-                                        <div className="text-xs text-zinc-500">{clock || "—"}</div>
+                                </div>
+
+
+                                {/* 中央のタイトルは削除（空にしてセンタリング維持したいなら空スパンでもOK） */}
+                                {/* 中央タイトル（カート時のみ表示） */}
+                                <div className="text-sm font-semibold">
+                                    {tab === 'cart' ? 'カート（店舗別会計）' : ''}
+                                </div>
+                                {/* → 右：タブに応じて切り替え */}
+                                <div className="min-w-[40px] flex items-center justify-end">
+                                    {tab === 'cart' ? (
                                         <button
-                                            className="relative px-2 py-1 rounded-full border bg-white cursor-pointer"
-                                            onClick={() => setTab('cart')}
-                                            aria-label="カートへ"
+                                            type="button"
+                                            className="text-xs px-2 py-1 rounded border cursor-pointer disabled:opacity-40"
+                                            onClick={clearAllCarts}
+                                            disabled={cart.length === 0}
+                                            aria-disabled={cart.length === 0}
+                                            title="すべてのカートを空にする"
                                         >
-                                            <span>🛒</span>
-                                            <span className="absolute -top-1 -right-1 min-w-5 h-5 px-1 rounded-full bg-zinc-900 text-white text-[10px] flex items-center justify-center">
-                                                {cart.length}
-                                            </span>
+                                            カートを全て空にする
                                         </button>
-                                    </div>
-                                )}
+                                    ) : (
+                                        <div className="flex items-center gap-3">
+                                            <div className="text-xs text-zinc-500">{clock || "—"}</div>
+                                            <button
+                                                className="relative px-2 py-1 rounded-full border bg-white cursor-pointer"
+                                                onClick={() => setTab('cart')}
+                                                aria-label="カートへ"
+                                            >
+                                                <span>🛒</span>
+                                                <span className="absolute -top-1 -right-1 min-w-5 h-5 px-1 rounded-full bg-zinc-900 text-white text-[10px] flex items-center justify-center">
+                                                    {cart.length}
+                                                </span>
+                                            </button>
+                                        </div>
+                                    )}
+                                </div>
+
                             </div>
+                        </header>
+                    )}
 
-                        </div>
-                    </header>
-                )}
+                    <main className="max-w-[448px] mx-auto px-4 pb-28 pt-6">
+                        {tab === "home" && (
+                            <section className="mt-0 space-y-4">
+                                <section className="container section merits">
+                                    <div
+                                        className="section-head"
+                                        style={{
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            justifyContent: 'space-between',
+                                            marginBottom: 8,
+                                        }}
+                                    >
+                                        <div>
+                                            <div
+                                                className="section-en"
+                                                style={{ fontSize: 10, letterSpacing: '.24em', opacity: .5, marginBottom: 4 }}
+                                            >
+                                                WHY FOODIG
+                                            </div>
+                                            <h2 style={{ fontSize: 18, margin: 0 }}>おいしい未来を、みんなで</h2>
+                                        </div>
+                                    </div>
 
-                <main className="max-w-[448px] mx-auto px-4 pb-28 pt-6">
-                    {tab === "home" && (
-                        <section className="mt-0 space-y-4">
-                            <section className="container section merits">
-                                <div
-                                    className="section-head"
-                                    style={{
-                                        display: 'flex',
-                                        alignItems: 'center',
-                                        justifyContent: 'space-between',
-                                        marginBottom: 8,
-                                    }}
-                                >
-                                    <div>
+                                    {/* 横スクロール行 */}
+                                    <div
+                                        className="hscroll no-scrollbar"
+                                        style={{ display: 'flex', gap: 10, overflow: 'auto', padding: '2px 0', background: 'transparent' }}
+                                    >
+                                        {/* 1) 余ったフードをおトクにゲット */}
                                         <div
-                                            className="section-en"
-                                            style={{ fontSize: 10, letterSpacing: '.24em', opacity: .5, marginBottom: 4 }}
-                                        >
-                                            WHY FOODIG
-                                        </div>
-                                        <h2 style={{ fontSize: 18, margin: 0 }}>おいしい未来を、みんなで</h2>
-                                    </div>
-                                </div>
-
-                                {/* 横スクロール行 */}
-                                <div
-                                    className="hscroll no-scrollbar"
-                                    style={{ display: 'flex', gap: 10, overflow: 'auto', padding: '2px 0', background: 'transparent' }}
-                                >
-                                    {/* 1) 余ったフードをおトクにゲット */}
-                                    <div
-                                        className="merit-banner"
-                                        style={{
-                                            minWidth: '82%',
-                                            background: '#fff',
-                                            color: '#0B0D11',
-                                            borderRadius: 12,
-                                            padding: '14px 16px',
-                                            display: 'flex',
-                                            alignItems: 'center',
-                                            gap: 10,
-                                            boxShadow: '0 4px 14px rgba(0,0,0,.08)',
-                                            border: '1px solid rgba(0,0,0,.08)',
-                                            textAlign: 'left',
-                                        }}
-                                    >
-                                        {/* POP: Shopping bags (filled, sticker style) */}
-                                        <svg
-                                            className="illus"
-                                            viewBox="0 0 64 64"
-                                            aria-hidden="true"
-                                            role="img"
-                                            // ここでカラーバリエーションを定義（スクショ風ブルー）
+                                            className="merit-banner"
                                             style={{
-                                                width: 44,
-                                                height: 44,
-                                                flexShrink: 0,
-                                                objectFit: 'contain',
-                                                filter: 'drop-shadow(0 2px 4px rgba(0,0,0,.08))',
-                                                // CSS変数で一括制御
-                                                ['--accent']: '#7aaad2',
-                                                ['--accent2']: '#5f95c5',
-                                                ['--coral']: '#7aaad2',
-                                            } as React.CSSProperties}
-                                            xmlns="http://www.w3.org/2000/svg"
-                                        >
-                                            {/* 背景を淡いブルーに（スクショっぽく） */}
-                                            <circle cx="20" cy="20" r="16" fill="#EAF2F9" />
-                                            <rect x="6" y="18" width="32" height="34" rx="6" fill="var(--accent)" stroke="#fff" strokeWidth="2.2" />
-                                            <path d="M12 22c0-6 5-11 11-11s11 5 11 11" fill="none" stroke="#fff" strokeWidth="2.2" />
-                                            <rect x="28" y="26" width="26" height="26" rx="6" fill="var(--accent2)" stroke="#fff" strokeWidth="2.2" />
-                                            <path d="M34 30c0-5 4-9 9-9s9 4 9 9" fill="none" stroke="#fff" strokeWidth="2.2" />
-                                            {/* アクセントも同系色に統一（星=ブルー） */}
-                                            <path d="M48 12l1.6 3.4 3.6.4-2.7 2.5.7 3.5-3.2-1.7-3.2 1.7.7-3.5-2.7-2.5 3.6-.4z" fill="var(--coral)" />
-                                        </svg>
-
-                                        <div className="txt">
-                                            <div className="title" style={{ fontWeight: 800, fontSize: 14, marginBottom: 2 }}>
-                                                余ったフードをおトクにゲット
-                                            </div>
-                                            <div className="desc" style={{ fontSize: 12, lineHeight: 1.4, opacity: .75 }}>
-                                                閉店間際などのフードをお手頃価格で購入できます。
-                                            </div>
-                                        </div>
-                                    </div>
-
-                                    {/* 2) フードロス削減に参加 */}
-                                    <div
-                                        className="merit-banner"
-                                        style={{
-                                            minWidth: '82%',
-                                            background: '#fff',
-                                            color: '#0B0D11',
-                                            borderRadius: 12,
-                                            padding: '14px 16px',
-                                            display: 'flex',
-                                            alignItems: 'center',
-                                            gap: 10,
-                                            boxShadow: '0 4px 14px rgba(0,0,0,.08)',
-                                            border: '1px solid rgba(0,0,0,.08)',
-                                            textAlign: 'left',
-                                        }}
-                                    >
-                                        {/* POP: Leaf & hand (filled) */}
-                                        <svg
-                                            className="illus"
-                                            viewBox="0 0 64 64"
-                                            aria-hidden="true"
-                                            role="img"
-                                            style={{
-                                                width: 44,
-                                                height: 44,
-                                                flexShrink: 0,
-                                                objectFit: 'contain',
-                                                filter: 'drop-shadow(0 2px 4px rgba(0,0,0,.08))',
-                                                ['--accent']: '#7aaad2',
-                                                ['--accent2']: '#5f95c5',
-                                                ['--coral']: '#7aaad2',
-                                            } as React.CSSProperties}
-                                            xmlns="http://www.w3.org/2000/svg"
-                                        >
-                                            {/* 背景サークルを淡いブルーに */}
-                                            <circle cx="22" cy="20" r="16" fill="#EAF2F9" />
-                                            <path d="M10 40c8 2 16 2 24 0 8-2 10-6 10-8" fill="#FFF" stroke="#fff" strokeWidth="2.2" />
-                                            <rect x="30" y="12" width="4" height="16" rx="2" fill="var(--accent)" />
-                                            <path d="M30 20c-10 0-16-6-18-10 6 0 14 2 18 6" fill="var(--accent)" />
-                                            <path d="M34 22c10 0 16-6 18-10-6 0-14 2-18 6" fill="var(--accent2)" />
-                                            <path d="M46 22c1.6-1.6 4.2-1.6 5.8 0 1.6 1.6 1.6 4.2 0 5.8l-2.9 2.9-2.9-2.9c-1.6-1.6-1.6-4.2 0-5.8z" fill="var(--coral)" />
-                                        </svg>
-
-                                        <div className="txt">
-                                            <div className="title" style={{ fontWeight: 800, fontSize: 14, marginBottom: 2 }}>
-                                                フードロス削減に参加
-                                            </div>
-                                            <div className="desc" style={{ fontSize: 12, lineHeight: 1.4, opacity: .75 }}>
-                                                あなたのアクションが地球を守る一歩になります。
-                                            </div>
-                                        </div>
-                                    </div>
-
-
-                                    {/* 3) 地元のお店を応援 */}
-                                    <div
-                                        className="merit-banner"
-                                        style={{
-                                            minWidth: '82%',
-                                            background: '#fff',
-                                            color: '#0B0D11',
-                                            borderRadius: 12,
-                                            padding: '14px 16px',
-                                            display: 'flex',
-                                            alignItems: 'center',
-                                            gap: 10,
-                                            boxShadow: '0 4px 14px rgba(0,0,0,.08)',
-                                            border: '1px solid rgba(0,0,0,.08)',
-                                            textAlign: 'left',
-                                        }}
-                                    >
-                                        {/* POP: Storefront (filled) */}
-                                        <svg
-                                            className="illus"
-                                            viewBox="0 0 64 64"
-                                            aria-hidden="true"
-                                            role="img"
-                                            style={{
-                                                width: 44,
-                                                height: 44,
-                                                flexShrink: 0,
-                                                objectFit: 'contain',
-                                                filter: 'drop-shadow(0 2px 4px rgba(0,0,0,.08))',
-                                                ['--accent']: '#7aaad2',
-                                                ['--accent2']: '#5f95c5',
-                                                ['--coral']: '#7aaad2',
-                                            } as React.CSSProperties}
-                                            xmlns="http://www.w3.org/2000/svg"
-                                        >
-                                            {/* 背景サークルを淡いブルーに */}
-                                            <circle cx="22" cy="20" r="16" fill="#EAF2F9" />
-                                            <rect x="12" y="26" width="40" height="22" rx="6" fill="var(--accent)" stroke="#fff" strokeWidth="2.2" />
-                                            <path d="M16 26l5-9h22l5 9" stroke="#fff" strokeWidth="2.2" />
-                                            <rect x="20" y="32" width="9" height="12" rx="3" fill="#fff" />
-                                            <rect x="33" y="32" width="13" height="9" rx="3" fill="var(--accent2)" stroke="#fff" strokeWidth="2.2" />
-                                            {/* アイコンアクセントも同系色に統一 */}
-                                            <path d="M42 16c1.6-1.6 4.2-1.6 5.8 0 1.6 1.6 1.6 4.2 0 5.8l-2.9 2.9-2.9-2.9c-1.6-1.6-1.6-4.2 0-5.8z" fill="var(--coral)" />
-                                        </svg>
-
-                                        <div className="txt">
-                                            <div className="title" style={{ fontWeight: 800, fontSize: 14, marginBottom: 2 }}>
-                                                地元のお店を応援
-                                            </div>
-                                            <div className="desc" style={{ fontSize: 12, lineHeight: 1.4, opacity: .75 }}>
-                                                地域の飲食店とのつながりを深められます。
-                                            </div>
-                                        </div>
-                                    </div>
-
-                                </div>
-                            </section>
-                            <div className="flex items-center justify-between">
-                                {/* <h2 className="text-base font-semibold">近くのお店</h2> */}
-
-                                {/* 並び替えトグル */}
-                                <div role="group" aria-label="並び替え" className="inline-flex rounded-xl border overflow-hidden">
-                                    <button
-                                        type="button"
-                                        onClick={() => setSortMode('distance')}
-                                        aria-pressed={sortMode === 'distance'}
-                                        className={`px-3 py-1.5 text-sm ${sortMode === 'distance' ? 'bg-zinc-900 text-white' : 'bg-white text-zinc-700'}`}
-                                        title="距離の近い順"
-                                    >
-                                        距離順
-                                    </button>
-                                    <button
-                                        type="button"
-                                        onClick={() => setSortMode('price')}
-                                        aria-pressed={sortMode === 'price'}
-                                        className={`px-3 py-1.5 text-sm border-l ${sortMode === 'price' ? 'bg-zinc-900 text-white' : 'bg-white text-zinc-700'}`}
-                                        title="価格の安い順（最安値）"
-                                    >
-                                        価格順
-                                    </button>
-                                </div>
-                            </div>
-
-
-
-                            <div className="grid grid-cols-1 gap-3">
-                                {shopsSorted.map((s, idx) => {
-                                    // ★ デバッグ：埋め込み src → 座標 抽出値 と MAP リンク最終URLを確認
-                                    if (process.env.NEXT_PUBLIC_DEBUG === '1') {
-                                        console.log('[MAP debug]', s.name, extractLatLngFromGoogleEmbedSrc(s.gmap_embed_src ?? undefined), '→ link:', googleMapsUrlForShop(s));
-                                    }
-
-                                    // 表示用メタ情報を正規化（s.meta が無くても動く）
-                                    const m = (() => {
-                                        const anyS = s as any;
-                                        const open = anyS.open ?? anyS.open_time ?? anyS?.meta?.open;
-                                        const close = anyS.close ?? anyS.close_time ?? anyS?.meta?.close;
-
-                                        const hours =
-                                            anyS.hours ??
-                                            anyS?.meta?.hours ??
-                                            (open && close ? `${open}-${close}` : undefined);
-
-                                        const holiday = anyS.holiday ?? anyS.closed ?? anyS?.meta?.holiday;
-                                        const payments = Array.isArray(anyS.payments)
-                                            ? anyS.payments
-                                            : Array.isArray(anyS?.meta?.payments)
-                                                ? anyS.meta.payments
-                                                : undefined;
-                                        const payment = anyS.payment ?? anyS?.meta?.payment;
-                                        const category = anyS.category ?? anyS?.meta?.category;
-
-                                        return { hours, holiday, payments, payment, category };
-                                    })();
-
-                                    // Product 型に publish_at?: string | null を追加したうえで…
-
-                                    const visibleItems = s.items.filter(it => {
-                                        const r = getReserved(s.id, it.id);
-                                        const remain = Math.max(0, it.stock - r);
-                                        const expired = isPickupExpired(it.pickup);
-                                        // ★ 公開前（publish_at が未来）は一覧に出さない
-                                        const notYet = it.publish_at ? (Date.parse(it.publish_at) > Date.now()) : false;
-                                        return !expired && !notYet && it.stock >= 0;
-                                    });
-
-                                    const hasAny = visibleItems.length > 0;
-                                    const remainingTotal = visibleItems.reduce(
-                                        (a, it) => a + Math.max(0, it.stock - getReserved(s.id, it.id)),
-                                        0
-                                    );
-                                    const minPrice = hasAny ? Math.min(...visibleItems.map(it => it.price)) : 0;
-                                    const cartCount = qtyByShop[s.id] || 0;
-
-                                    const isOpen = !!metaOpen[s.id];
-
-                                    return (
-                                        <CardObserver
-                                            key={s.id}
-                                            observe={isOpen}
-                                            onLeave={() => {
-                                                // カード全体が完全に画面外へ出た瞬間に閉じる
-                                                setMetaOpen(prev => ({ ...prev, [s.id]: false }));
+                                                minWidth: '82%',
+                                                background: '#fff',
+                                                color: '#0B0D11',
+                                                borderRadius: 12,
+                                                padding: '14px 16px',
+                                                display: 'flex',
+                                                alignItems: 'center',
+                                                gap: 10,
+                                                boxShadow: '0 4px 14px rgba(0,0,0,.08)',
+                                                border: '1px solid rgba(0,0,0,.08)',
+                                                textAlign: 'left',
                                             }}
                                         >
-                                            <div
-                                                className={`relative rounded-2xl border border-gray-200 shadow-sm bg-white p-4 ${!hasAny ? "opacity-70" : ""
-                                                    } ${focusedShop === s.id ? "ring-2 ring-zinc-900" : ""}`}
+                                            {/* POP: Shopping bags (filled, sticker style) */}
+                                            <svg
+                                                className="illus"
+                                                viewBox="0 0 64 64"
+                                                aria-hidden="true"
+                                                role="img"
+                                                // ここでカラーバリエーションを定義（スクショ風ブルー）
+                                                style={{
+                                                    width: 44,
+                                                    height: 44,
+                                                    flexShrink: 0,
+                                                    objectFit: 'contain',
+                                                    filter: 'drop-shadow(0 2px 4px rgba(0,0,0,.08))',
+                                                    // CSS変数で一括制御
+                                                    ['--accent']: '#7aaad2',
+                                                    ['--accent2']: '#5f95c5',
+                                                    ['--coral']: '#7aaad2',
+                                                } as React.CSSProperties}
+                                                xmlns="http://www.w3.org/2000/svg"
                                             >
-                                                {/* ヒーロー画像 */}
-                                                <div className="relative">
-                                                    <img
-                                                        src={
-                                                            s.cover_image_path
-                                                                ? publicImageUrl(s.cover_image_path)!
-                                                                : idx % 3 === 0
-                                                                    ? "https://images.unsplash.com/photo-1495474472287-4d71bcdd2085?q=80&w=1200&auto=format&fit=crop"
-                                                                    : idx % 3 === 1
-                                                                        ? "https://images.unsplash.com/photo-1475855581690-80accde3ae2b?q=80&w=1200&auto=format&fit=crop"
-                                                                        : "https://images.unsplash.com/photo-1460306855393-0410f61241c7?q=80&w=1200&auto=format&fit=crop"
-                                                        }
-                                                        alt={s.name}
-                                                        className="w-full h-44 object-cover rounded-2xl"
-                                                        loading="lazy"
-                                                        decoding="async"
-                                                        width={1200}
-                                                        height={176}  /* h-44 ≒ 44 * 4 = 176px */
-                                                    />
-                                                    <div className="absolute left-3 top-3 px-2 py-1 font-semibold rounded bg-[#fff2d1] text-[#5f95c5] text-sm">
-                                                        {s.name}
-                                                    </div>
-                                                    {(() => {
-                                                        const tt = travelTimeLabelFor(s);
-                                                        return (
-                                                            <span
-                                                                className="absolute right-3 bottom-3 inline-flex items-center gap-0 rounded-full bg-zinc-100 px-2 py-1 text-[11px]"
-                                                                aria-label={`所要時間: ${tt.text}`}
-                                                            >
-                                                                {/* 絵文字アイコンを正方形ボックスで中央寄せ */}
-                                                                <span className="inline-flex items-center justify-center w-6 h-6 mr-1 leading-none align-middle">
-                                                                    {tt.icon}
-                                                                </span>
+                                                {/* 背景を淡いブルーに（スクショっぽく） */}
+                                                <circle cx="20" cy="20" r="16" fill="#EAF2F9" />
+                                                <rect x="6" y="18" width="32" height="34" rx="6" fill="var(--accent)" stroke="#fff" strokeWidth="2.2" />
+                                                <path d="M12 22c0-6 5-11 11-11s11 5 11 11" fill="none" stroke="#fff" strokeWidth="2.2" />
+                                                <rect x="28" y="26" width="26" height="26" rx="6" fill="var(--accent2)" stroke="#fff" strokeWidth="2.2" />
+                                                <path d="M34 30c0-5 4-9 9-9s9 4 9 9" fill="none" stroke="#fff" strokeWidth="2.2" />
+                                                {/* アクセントも同系色に統一（星=ブルー） */}
+                                                <path d="M48 12l1.6 3.4 3.6.4-2.7 2.5.7 3.5-3.2-1.7-3.2 1.7.7-3.5-2.7-2.5 3.6-.4z" fill="var(--coral)" />
+                                            </svg>
 
-                                                                {/* テキストも行高を1にして上下を詰める */}
-                                                                <span className="font-medium leading-[1]">{tt.text}</span>
-                                                            </span>
-                                                        );
-                                                    })()}
+                                            <div className="txt">
+                                                <div className="title" style={{ fontWeight: 800, fontSize: 14, marginBottom: 2 }}>
+                                                    余ったフードをおトクにゲット
                                                 </div>
+                                                <div className="desc" style={{ fontSize: 12, lineHeight: 1.4, opacity: .75 }}>
+                                                    閉店間際などのフードをお手頃価格で購入できます。
+                                                </div>
+                                            </div>
+                                        </div>
 
-                                                {hasAny ? (
-                                                    <div className="mt-3 space-y-2">
-                                                        {visibleItems.map(it => (
-                                                            <ProductLine key={it.id} sid={s.id} it={it} />
-                                                        ))}
+                                        {/* 2) フードロス削減に参加 */}
+                                        <div
+                                            className="merit-banner"
+                                            style={{
+                                                minWidth: '82%',
+                                                background: '#fff',
+                                                color: '#0B0D11',
+                                                borderRadius: 12,
+                                                padding: '14px 16px',
+                                                display: 'flex',
+                                                alignItems: 'center',
+                                                gap: 10,
+                                                boxShadow: '0 4px 14px rgba(0,0,0,.08)',
+                                                border: '1px solid rgba(0,0,0,.08)',
+                                                textAlign: 'left',
+                                            }}
+                                        >
+                                            {/* POP: Leaf & hand (filled) */}
+                                            <svg
+                                                className="illus"
+                                                viewBox="0 0 64 64"
+                                                aria-hidden="true"
+                                                role="img"
+                                                style={{
+                                                    width: 44,
+                                                    height: 44,
+                                                    flexShrink: 0,
+                                                    objectFit: 'contain',
+                                                    filter: 'drop-shadow(0 2px 4px rgba(0,0,0,.08))',
+                                                    ['--accent']: '#7aaad2',
+                                                    ['--accent2']: '#5f95c5',
+                                                    ['--coral']: '#7aaad2',
+                                                } as React.CSSProperties}
+                                                xmlns="http://www.w3.org/2000/svg"
+                                            >
+                                                {/* 背景サークルを淡いブルーに */}
+                                                <circle cx="22" cy="20" r="16" fill="#EAF2F9" />
+                                                <path d="M10 40c8 2 16 2 24 0 8-2 10-6 10-8" fill="#FFF" stroke="#fff" strokeWidth="2.2" />
+                                                <rect x="30" y="12" width="4" height="16" rx="2" fill="var(--accent)" />
+                                                <path d="M30 20c-10 0-16-6-18-10 6 0 14 2 18 6" fill="var(--accent)" />
+                                                <path d="M34 22c10 0 16-6 18-10-6 0-14 2-18 6" fill="var(--accent2)" />
+                                                <path d="M46 22c1.6-1.6 4.2-1.6 5.8 0 1.6 1.6 1.6 4.2 0 5.8l-2.9 2.9-2.9-2.9c-1.6-1.6-1.6-4.2 0-5.8z" fill="var(--coral)" />
+                                            </svg>
 
-                                                    </div>
-                                                ) : (
-                                                    <div className="mt-3">
-                                                        <div className="rounded-xl border border-dashed p-4 text-center text-sm text-zinc-500 bg-zinc-50">
-                                                            {s.items.length === 0
-                                                                ? "登録商品がありません。"
-                                                                : "現在、販売可能な商品はありません。"}
+                                            <div className="txt">
+                                                <div className="title" style={{ fontWeight: 800, fontSize: 14, marginBottom: 2 }}>
+                                                    フードロス削減に参加
+                                                </div>
+                                                <div className="desc" style={{ fontSize: 12, lineHeight: 1.4, opacity: .75 }}>
+                                                    あなたのアクションが地球を守る一歩になります。
+                                                </div>
+                                            </div>
+                                        </div>
+
+
+                                        {/* 3) 地元のお店を応援 */}
+                                        <div
+                                            className="merit-banner"
+                                            style={{
+                                                minWidth: '82%',
+                                                background: '#fff',
+                                                color: '#0B0D11',
+                                                borderRadius: 12,
+                                                padding: '14px 16px',
+                                                display: 'flex',
+                                                alignItems: 'center',
+                                                gap: 10,
+                                                boxShadow: '0 4px 14px rgba(0,0,0,.08)',
+                                                border: '1px solid rgba(0,0,0,.08)',
+                                                textAlign: 'left',
+                                            }}
+                                        >
+                                            {/* POP: Storefront (filled) */}
+                                            <svg
+                                                className="illus"
+                                                viewBox="0 0 64 64"
+                                                aria-hidden="true"
+                                                role="img"
+                                                style={{
+                                                    width: 44,
+                                                    height: 44,
+                                                    flexShrink: 0,
+                                                    objectFit: 'contain',
+                                                    filter: 'drop-shadow(0 2px 4px rgba(0,0,0,.08))',
+                                                    ['--accent']: '#7aaad2',
+                                                    ['--accent2']: '#5f95c5',
+                                                    ['--coral']: '#7aaad2',
+                                                } as React.CSSProperties}
+                                                xmlns="http://www.w3.org/2000/svg"
+                                            >
+                                                {/* 背景サークルを淡いブルーに */}
+                                                <circle cx="22" cy="20" r="16" fill="#EAF2F9" />
+                                                <rect x="12" y="26" width="40" height="22" rx="6" fill="var(--accent)" stroke="#fff" strokeWidth="2.2" />
+                                                <path d="M16 26l5-9h22l5 9" stroke="#fff" strokeWidth="2.2" />
+                                                <rect x="20" y="32" width="9" height="12" rx="3" fill="#fff" />
+                                                <rect x="33" y="32" width="13" height="9" rx="3" fill="var(--accent2)" stroke="#fff" strokeWidth="2.2" />
+                                                {/* アイコンアクセントも同系色に統一 */}
+                                                <path d="M42 16c1.6-1.6 4.2-1.6 5.8 0 1.6 1.6 1.6 4.2 0 5.8l-2.9 2.9-2.9-2.9c-1.6-1.6-1.6-4.2 0-5.8z" fill="var(--coral)" />
+                                            </svg>
+
+                                            <div className="txt">
+                                                <div className="title" style={{ fontWeight: 800, fontSize: 14, marginBottom: 2 }}>
+                                                    地元のお店を応援
+                                                </div>
+                                                <div className="desc" style={{ fontSize: 12, lineHeight: 1.4, opacity: .75 }}>
+                                                    地域の飲食店とのつながりを深められます。
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                    </div>
+                                </section>
+                                <div className="flex items-center justify-between">
+                                    {/* <h2 className="text-base font-semibold">近くのお店</h2> */}
+
+                                    {/* 並び替えトグル */}
+                                    <div role="group" aria-label="並び替え" className="inline-flex rounded-xl border overflow-hidden">
+                                        <button
+                                            type="button"
+                                            onClick={() => setSortMode('distance')}
+                                            aria-pressed={sortMode === 'distance'}
+                                            className={`px-3 py-1.5 text-sm ${sortMode === 'distance' ? 'bg-zinc-900 text-white' : 'bg-white text-zinc-700'}`}
+                                            title="距離の近い順"
+                                        >
+                                            距離順
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => setSortMode('price')}
+                                            aria-pressed={sortMode === 'price'}
+                                            className={`px-3 py-1.5 text-sm border-l ${sortMode === 'price' ? 'bg-zinc-900 text-white' : 'bg-white text-zinc-700'}`}
+                                            title="価格の安い順（最安値）"
+                                        >
+                                            価格順
+                                        </button>
+                                    </div>
+                                </div>
+
+
+
+                                <div className="grid grid-cols-1 gap-3">
+                                    {shopsSorted.map((s, idx) => {
+                                        // ★ デバッグ：埋め込み src → 座標 抽出値 と MAP リンク最終URLを確認
+                                        if (process.env.NEXT_PUBLIC_DEBUG === '1') {
+                                            console.log('[MAP debug]', s.name, extractLatLngFromGoogleEmbedSrc(s.gmap_embed_src ?? undefined), '→ link:', googleMapsUrlForShop(s));
+                                        }
+
+                                        // 表示用メタ情報を正規化（s.meta が無くても動く）
+                                        const m = (() => {
+                                            const anyS = s as any;
+                                            const open = anyS.open ?? anyS.open_time ?? anyS?.meta?.open;
+                                            const close = anyS.close ?? anyS.close_time ?? anyS?.meta?.close;
+
+                                            const hours =
+                                                anyS.hours ??
+                                                anyS?.meta?.hours ??
+                                                (open && close ? `${open}-${close}` : undefined);
+
+                                            const holiday = anyS.holiday ?? anyS.closed ?? anyS?.meta?.holiday;
+                                            const payments = Array.isArray(anyS.payments)
+                                                ? anyS.payments
+                                                : Array.isArray(anyS?.meta?.payments)
+                                                    ? anyS.meta.payments
+                                                    : undefined;
+                                            const payment = anyS.payment ?? anyS?.meta?.payment;
+                                            const category = anyS.category ?? anyS?.meta?.category;
+
+                                            return { hours, holiday, payments, payment, category };
+                                        })();
+
+                                        // Product 型に publish_at?: string | null を追加したうえで…
+
+                                        const visibleItems = s.items.filter(it => {
+                                            const r = getReserved(s.id, it.id);
+                                            const remain = Math.max(0, it.stock - r);
+                                            const expired = isPickupExpired(it.pickup);
+                                            // ★ 公開前（publish_at が未来）は一覧に出さない
+                                            const notYet = it.publish_at ? (Date.parse(it.publish_at) > Date.now()) : false;
+                                            return !expired && !notYet && it.stock >= 0;
+                                        });
+
+                                        const hasAny = visibleItems.length > 0;
+                                        const remainingTotal = visibleItems.reduce(
+                                            (a, it) => a + Math.max(0, it.stock - getReserved(s.id, it.id)),
+                                            0
+                                        );
+                                        const minPrice = hasAny ? Math.min(...visibleItems.map(it => it.price)) : 0;
+                                        const cartCount = qtyByShop[s.id] || 0;
+
+                                        const isOpen = !!metaOpen[s.id];
+
+                                        return (
+                                            <CardObserver
+                                                key={s.id}
+                                                observe={isOpen}
+                                                onLeave={() => {
+                                                    // カード全体が完全に画面外へ出た瞬間に閉じる
+                                                    setMetaOpen(prev => ({ ...prev, [s.id]: false }));
+                                                }}
+                                            >
+                                                <div
+                                                    className={`relative rounded-2xl border border-gray-200 shadow-sm bg-white p-4 ${!hasAny ? "opacity-70" : ""
+                                                        } ${focusedShop === s.id ? "ring-2 ring-zinc-900" : ""}`}
+                                                >
+                                                    {/* ヒーロー画像 */}
+                                                    <div className="relative">
+                                                        <img
+                                                            src={
+                                                                s.cover_image_path
+                                                                    ? publicImageUrl(s.cover_image_path)!
+                                                                    : idx % 3 === 0
+                                                                        ? "https://images.unsplash.com/photo-1495474472287-4d71bcdd2085?q=80&w=1200&auto=format&fit=crop"
+                                                                        : idx % 3 === 1
+                                                                            ? "https://images.unsplash.com/photo-1475855581690-80accde3ae2b?q=80&w=1200&auto=format&fit=crop"
+                                                                            : "https://images.unsplash.com/photo-1460306855393-0410f61241c7?q=80&w=1200&auto=format&fit=crop"
+                                                            }
+                                                            alt={s.name}
+                                                            className="w-full h-44 object-cover rounded-2xl"
+                                                            loading="lazy"
+                                                            decoding="async"
+                                                            width={1200}
+                                                            height={176}  /* h-44 ≒ 44 * 4 = 176px */
+                                                        />
+                                                        <div className="absolute left-3 top-3 px-2 py-1 font-semibold rounded bg-[#fff2d1] text-[#5f95c5] text-sm">
+                                                            {s.name}
                                                         </div>
+                                                        {(() => {
+                                                            const tt = travelTimeLabelFor(s);
+                                                            return (
+                                                                <span
+                                                                    className="absolute right-3 bottom-3 inline-flex items-center gap-0 rounded-full bg-zinc-100 px-2 py-1 text-[11px]"
+                                                                    aria-label={`所要時間: ${tt.text}`}
+                                                                >
+                                                                    {/* 絵文字アイコンを正方形ボックスで中央寄せ */}
+                                                                    <span className="inline-flex items-center justify-center w-6 h-6 mr-1 leading-none align-middle">
+                                                                        {tt.icon}
+                                                                    </span>
+
+                                                                    {/* テキストも行高を1にして上下を詰める */}
+                                                                    <span className="font-medium leading-[1]">{tt.text}</span>
+                                                                </span>
+                                                            );
+                                                        })()}
                                                     </div>
-                                                )}
-                                                {/* スクショ準拠：フル幅の3段レイアウト */}
-                                                <div className="mt-3 space-y-2">
-                                                    {/* 1) 緑の大ボタン：カートを見る（数） */}
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => {
-                                                            setTab("cart");
-                                                            setPendingScrollShopId(s.id);
-                                                        }}
-                                                        className={[
-                                                            "w-full h-12 rounded-full",
-                                                            "bg-[#5f95c5] hover:bg-emerald-600",
-                                                            "text-white font-semibold",
-                                                            "flex items-center justify-center gap-2",
-                                                            "transition-colors"
-                                                        ].join(" ")}
-                                                        aria-label="カートを見る"
-                                                        title="カートを見る"
-                                                    >
-                                                        <span className="text-base"> <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="mr-2" aria-hidden="true">
-                                                            <circle cx="9" cy="21" r="1"></circle>
-                                                            <circle cx="20" cy="21" r="1"></circle>
-                                                            <path d="M1 1h4l2.68 13.39A2 2 0 0 0 9.62 16h7.76a2 2 0 0 0 2-1.61L21 8H6"></path>
-                                                        </svg></span>
-                                                        <span>カートを見る（{qtyByShop[s.id] || 0}）</span>
-                                                    </button>
 
-                                                    {/* 2) 白ボタン：カートを空にする */}
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => clearShopCart(s.id)}
-                                                        disabled={(qtyByShop[s.id] || 0) === 0}
-                                                        className={[
-                                                            "w-full h-12 rounded-full",
-                                                            "bg-white border",
-                                                            "text-zinc-800 font-semibold",
-                                                            "flex items-center justify-center gap-2",
-                                                            "disabled:opacity-40 disabled:cursor-not-allowed",
-                                                            "hover:bg-zinc-50 transition-colors"
-                                                        ].join(" ")}
-                                                        aria-disabled={(qtyByShop[s.id] || 0) === 0}
-                                                        title="カートを空にする"
-                                                    >
-                                                        <span><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="mr-2" aria-hidden="true">
-                                                            <polyline points="3 6 5 6 21 6"></polyline>
-                                                            <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
-                                                            <line x1="10" y1="11" x2="10" y2="17"></line>
-                                                            <line x1="14" y1="11" x2="14" y2="17"></line>
-                                                        </svg></span>
-                                                        <span>カートを空にする</span>
-                                                    </button>
+                                                    {hasAny ? (
+                                                        <div className="mt-3 space-y-2">
+                                                            {visibleItems.map(it => (
+                                                                <ProductLine key={it.id} sid={s.id} it={it} />
+                                                            ))}
 
-                                                    {/* 3) テキストリンク：店舗詳細を見る（トグル） */}
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => setMetaOpen(prev => ({ ...prev, [s.id]: !prev[s.id] }))}
-                                                        aria-expanded={isOpen}
-                                                        aria-controls={`shop-meta-${s.id}`}
-                                                        className="w-full my-3 text-center"
-                                                    >
-                                                        {/* テキスト＋アイコンを“ひとかたまり”で中央配置 */}
-                                                        <span
-                                                            className="
+                                                        </div>
+                                                    ) : (
+                                                        <div className="mt-3">
+                                                            <div className="rounded-xl border border-dashed p-4 text-center text-sm text-zinc-500 bg-zinc-50">
+                                                                {s.items.length === 0
+                                                                    ? "登録商品がありません。"
+                                                                    : "現在、販売可能な商品はありません。"}
+                                                            </div>
+                                                        </div>
+                                                    )}
+                                                    {/* スクショ準拠：フル幅の3段レイアウト */}
+                                                    <div className="mt-3 space-y-2">
+                                                        {/* 1) 緑の大ボタン：カートを見る（数） */}
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => {
+                                                                setTab("cart");
+                                                                setPendingScrollShopId(s.id);
+                                                            }}
+                                                            className={[
+                                                                "w-full h-12 rounded-full",
+                                                                "bg-[#5f95c5] hover:bg-emerald-600",
+                                                                "text-white font-semibold",
+                                                                "flex items-center justify-center gap-2",
+                                                                "transition-colors"
+                                                            ].join(" ")}
+                                                            aria-label="カートを見る"
+                                                            title="カートを見る"
+                                                        >
+                                                            <span className="text-base"> <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="mr-2" aria-hidden="true">
+                                                                <circle cx="9" cy="21" r="1"></circle>
+                                                                <circle cx="20" cy="21" r="1"></circle>
+                                                                <path d="M1 1h4l2.68 13.39A2 2 0 0 0 9.62 16h7.76a2 2 0 0 0 2-1.61L21 8H6"></path>
+                                                            </svg></span>
+                                                            <span>カートを見る（{qtyByShop[s.id] || 0}）</span>
+                                                        </button>
+
+                                                        {/* 2) 白ボタン：カートを空にする */}
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => clearShopCart(s.id)}
+                                                            disabled={(qtyByShop[s.id] || 0) === 0}
+                                                            className={[
+                                                                "w-full h-12 rounded-full",
+                                                                "bg-white border",
+                                                                "text-zinc-800 font-semibold",
+                                                                "flex items-center justify-center gap-2",
+                                                                "disabled:opacity-40 disabled:cursor-not-allowed",
+                                                                "hover:bg-zinc-50 transition-colors"
+                                                            ].join(" ")}
+                                                            aria-disabled={(qtyByShop[s.id] || 0) === 0}
+                                                            title="カートを空にする"
+                                                        >
+                                                            <span><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="mr-2" aria-hidden="true">
+                                                                <polyline points="3 6 5 6 21 6"></polyline>
+                                                                <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                                                                <line x1="10" y1="11" x2="10" y2="17"></line>
+                                                                <line x1="14" y1="11" x2="14" y2="17"></line>
+                                                            </svg></span>
+                                                            <span>カートを空にする</span>
+                                                        </button>
+
+                                                        {/* 3) テキストリンク：店舗詳細を見る（トグル） */}
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => setMetaOpen(prev => ({ ...prev, [s.id]: !prev[s.id] }))}
+                                                            aria-expanded={isOpen}
+                                                            aria-controls={`shop-meta-${s.id}`}
+                                                            className="w-full my-3 text-center"
+                                                        >
+                                                            {/* テキスト＋アイコンを“ひとかたまり”で中央配置 */}
+                                                            <span
+                                                                className="
       inline-flex items-center justify-center gap-1.5
       px-3 py-2
       text-sm text-zinc-700
       bg-transparent
       hover:opacity-80 focus:outline-none focus:ring-2 focus:ring-zinc-400/40
       transition"
-                                                        >
-                                                            <span className="leading-none">
-                                                                {isOpen ? "店舗詳細を閉じる" : "店舗詳細を見る"}
-                                                            </span>
-                                                            {/* テキストの“すぐ右”にディスクロージャーアイコン */}
-                                                            <svg
-                                                                className={`h-[14px] w-[14px] transition-transform ${isOpen ? "rotate-180" : ""}`}
-                                                                viewBox="0 0 24 24" aria-hidden="true"
                                                             >
-                                                                <path d="M6 9l6 6 6-6" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round" />
-                                                            </svg>
-                                                        </span>
-                                                    </button>
-
-                                                </div>
-
-
-                                                {/* 店舗メタ情報（折りたたみ本体） */}
-                                                {isOpen && (
-                                                    <div
-                                                        id={`shop-meta-${s.id}`}
-                                                        className="mt-3 pt-3"
-                                                    >
-                                                        <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-700">
-                                                            {/* 営業時間 */}
-                                                            <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1">
-                                                                <span>🕒</span>
-                                                                <span>営業時間</span>
-                                                                <span className="font-medium">{m.hours ?? "—"}</span>
-                                                            </span>
-
-                                                            {/* 定休日 */}
-                                                            <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1">
-                                                                <span>📅</span>
-                                                                <span>定休日</span>
-                                                                <span className="font-medium">{m.holiday ?? "—"}</span>
-                                                            </span>
-
-                                                            {/* ★ 追加：TEL */}
-                                                            <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1">
-                                                                <span>📞</span>
-                                                                {s.tel ? (
-                                                                    <a href={`tel:${s.tel.replace(/\s+/g, '')}`} className="font-medium underline decoration-1 underline-offset-2">
-                                                                        {s.tel}
-                                                                    </a>
-                                                                ) : (
-                                                                    <span className="font-medium">—</span>
-                                                                )}
-                                                            </span>
-
-                                                            {/* ★ 追加：URL */}
-                                                            <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1">
-                                                                <span>🔗</span>
-                                                                {s.url ? (
-                                                                    <a
-                                                                        href={s.url}
-                                                                        target="_blank"
-                                                                        rel="noopener noreferrer"
-                                                                        className="font-medium underline decoration-1 underline-offset-2"
-                                                                        title={s.url}
-                                                                    >
-                                                                        {(() => {
-                                                                            try {
-                                                                                const u = new URL(s.url);
-                                                                                return u.host.replace(/^www\./, '');
-                                                                            } catch {
-                                                                                return s.url.replace(/^https?:\/\//, '').replace(/\/$/, '');
-                                                                            }
-                                                                        })()}
-                                                                    </a>
-                                                                ) : (
-                                                                    <span className="font-medium">—</span>
-                                                                )}
-                                                            </span>
-
-                                                            {/* 距離 */}
-                                                            <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1">
-                                                                <span>📍</span>
-                                                                <span className="font-medium">{distanceLabelFor(s)}</span>
-                                                            </span>
-
-                                                            {/* カテゴリ */}
-                                                            <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1">
-                                                                <span>🏷️</span>
-                                                                <span className="font-medium">{m.category ?? "—"}</span>
-                                                            </span>
-                                                        </div>
-
-                                                        {/* 住所/ミニマップ（スクショ風） */}
-                                                        <div className="mt-3">
-                                                            <div className="flex items-center gap-2 text-sm text-zinc-700">
-                                                                <span>🏢</span>
-                                                                <span className="truncate flex-1">{s.address ?? "住所未登録"}</span>
-                                                                <a
-                                                                    href={googleMapsUrlForShop(s)}
-                                                                    target="_blank"
-                                                                    rel="noopener noreferrer"
-                                                                    className="ml-2 inline-flex items-center gap-2 px-3 py-1.5 rounded-full border text-[13px] font-semibold text-[#5f95c5] border-[#5f95c5] bg-[#fff2d1] hover:bg-[#6b0f0f]/5"
-                                                                    aria-label="Googleマップで開く"
+                                                                <span className="leading-none">
+                                                                    {isOpen ? "店舗詳細を閉じる" : "店舗詳細を見る"}
+                                                                </span>
+                                                                {/* テキストの“すぐ右”にディスクロージャーアイコン */}
+                                                                <svg
+                                                                    className={`h-[14px] w-[14px] transition-transform ${isOpen ? "rotate-180" : ""}`}
+                                                                    viewBox="0 0 24 24" aria-hidden="true"
                                                                 >
-                                                                    <IconMapPin className="w-4 h-4" />
-                                                                    <span>MAP</span>
-                                                                    <IconExternal className="w-4 h-4 text-zinc-400" />
-                                                                </a>
+                                                                    <path d="M6 9l6 6 6-6" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+                                                                </svg>
+                                                            </span>
+                                                        </button>
 
+                                                    </div>
+
+
+                                                    {/* 店舗メタ情報（折りたたみ本体） */}
+                                                    {isOpen && (
+                                                        <div
+                                                            id={`shop-meta-${s.id}`}
+                                                            className="mt-3 pt-3"
+                                                        >
+                                                            <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-700">
+                                                                {/* 営業時間 */}
+                                                                <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1">
+                                                                    <span>🕒</span>
+                                                                    <span>営業時間</span>
+                                                                    <span className="font-medium">{m.hours ?? "—"}</span>
+                                                                </span>
+
+                                                                {/* 定休日 */}
+                                                                <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1">
+                                                                    <span>📅</span>
+                                                                    <span>定休日</span>
+                                                                    <span className="font-medium">{m.holiday ?? "—"}</span>
+                                                                </span>
+
+                                                                {/* ★ 追加：TEL */}
+                                                                <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1">
+                                                                    <span>📞</span>
+                                                                    {s.tel ? (
+                                                                        <a href={`tel:${s.tel.replace(/\s+/g, '')}`} className="font-medium underline decoration-1 underline-offset-2">
+                                                                            {s.tel}
+                                                                        </a>
+                                                                    ) : (
+                                                                        <span className="font-medium">—</span>
+                                                                    )}
+                                                                </span>
+
+                                                                {/* ★ 追加：URL */}
+                                                                <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1">
+                                                                    <span>🔗</span>
+                                                                    {s.url ? (
+                                                                        <a
+                                                                            href={s.url}
+                                                                            target="_blank"
+                                                                            rel="noopener noreferrer"
+                                                                            className="font-medium underline decoration-1 underline-offset-2"
+                                                                            title={s.url}
+                                                                        >
+                                                                            {(() => {
+                                                                                try {
+                                                                                    const u = new URL(s.url);
+                                                                                    return u.host.replace(/^www\./, '');
+                                                                                } catch {
+                                                                                    return s.url.replace(/^https?:\/\//, '').replace(/\/$/, '');
+                                                                                }
+                                                                            })()}
+                                                                        </a>
+                                                                    ) : (
+                                                                        <span className="font-medium">—</span>
+                                                                    )}
+                                                                </span>
+
+                                                                {/* 距離 */}
+                                                                <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1">
+                                                                    <span>📍</span>
+                                                                    <span className="font-medium">{distanceLabelFor(s)}</span>
+                                                                </span>
+
+                                                                {/* カテゴリ */}
+                                                                <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1">
+                                                                    <span>🏷️</span>
+                                                                    <span className="font-medium">{m.category ?? "—"}</span>
+                                                                </span>
                                                             </div>
 
-                                                            <div className="relative mt-2">
+                                                            {/* 住所/ミニマップ（スクショ風） */}
+                                                            <div className="mt-3">
+                                                                <div className="flex items-center gap-2 text-sm text-zinc-700">
+                                                                    <span>🏢</span>
+                                                                    <span className="truncate flex-1">{s.address ?? "住所未登録"}</span>
+                                                                    <a
+                                                                        href={googleMapsUrlForShop(s)}
+                                                                        target="_blank"
+                                                                        rel="noopener noreferrer"
+                                                                        className="ml-2 inline-flex items-center gap-2 px-3 py-1.5 rounded-full border text-[13px] font-semibold text-[#5f95c5] border-[#5f95c5] bg-[#fff2d1] hover:bg-[#6b0f0f]/5"
+                                                                        aria-label="Googleマップで開く"
+                                                                    >
+                                                                        <IconMapPin className="w-4 h-4" />
+                                                                        <span>MAP</span>
+                                                                        <IconExternal className="w-4 h-4 text-zinc-400" />
+                                                                    </a>
+
+                                                                </div>
+
                                                                 <div className="relative mt-2">
-                                                                    {/* 住所/ミニマップ（埋め込み） */}
-                                                                    {/* 外側の二重枠を除去（MapEmbedWithFallback 内で枠を描画） */}
-                                                                    {/* <iframe
+                                                                    <div className="relative mt-2">
+                                                                        {/* 住所/ミニマップ（埋め込み） */}
+                                                                        {/* 外側の二重枠を除去（MapEmbedWithFallback 内で枠を描画） */}
+                                                                        {/* <iframe
                                                                             key={s.id}
                                                                             className="w-full h-60 md:h-80" // ← 高さを少し増やすと +- UI が確実に見えます
                                                                             src={buildMapEmbedSrc({
@@ -4349,56 +4477,56 @@ export default function UserPilotApp() {
                                                                             // 念のため（親のどこかで pointer-events: none が掛かっていた場合の保険）
                                                                             style={{ pointerEvents: 'auto' }}
                                                                         /> */}
-                                                                    <MapEmbedWithFallback
-                                                                        key={s.id}
-                                                                        className="w-full"
-                                                                        heightClass="h-60 md:h-80"
-                                                                        src={buildMapEmbedSrc({
-                                                                            name: s.name,
-                                                                            address: s.address,
-                                                                            place_id: s.place_id ?? null,
-                                                                            gmap_embed_src: s.gmap_embed_src ?? null,
-                                                                            gmap_url: s.gmap_url ?? null,
-                                                                            lat: s.lat,
-                                                                            lng: s.lng,
-                                                                            zoomOnPin: s.zoomOnPin,
-                                                                        })}
-                                                                        title={`${s.name} の地図`}
-                                                                        lat={typeof s.lat === 'number' ? s.lat : undefined}
-                                                                        lng={typeof s.lng === 'number' ? s.lng : undefined}
-                                                                        label={s.name}
-                                                                    />
+                                                                        <MapEmbedWithFallback
+                                                                            key={s.id}
+                                                                            className="w-full"
+                                                                            heightClass="h-60 md:h-80"
+                                                                            src={buildMapEmbedSrc({
+                                                                                name: s.name,
+                                                                                address: s.address,
+                                                                                place_id: s.place_id ?? null,
+                                                                                gmap_embed_src: s.gmap_embed_src ?? null,
+                                                                                gmap_url: s.gmap_url ?? null,
+                                                                                lat: s.lat,
+                                                                                lng: s.lng,
+                                                                                zoomOnPin: s.zoomOnPin,
+                                                                            })}
+                                                                            title={`${s.name} の地図`}
+                                                                            lat={typeof s.lat === 'number' ? s.lat : undefined}
+                                                                            lng={typeof s.lng === 'number' ? s.lng : undefined}
+                                                                            label={s.name}
+                                                                        />
 
-                                                                </div>
+                                                                    </div>
 
-                                                                {/* <div className="absolute right-2 top-2 px-2 py-1 rounded bg-white/90 border text-[11px]">
+                                                                    {/* <div className="absolute right-2 top-2 px-2 py-1 rounded bg-white/90 border text-[11px]">
                                                                 35.171, 136.881
                                                             </div>
                                                             <div className="absolute inset-0 flex items-center justify-center text-sm text-zinc-600 pointer-events-none">
                                                                 <span>📍 ここにあります</span>
                                                             </div> */}
+                                                                </div>
                                                             </div>
                                                         </div>
-                                                    </div>
-                                                )}
+                                                    )}
 
-                                                {!hasAny && (
-                                                    <div
-                                                        className="pointer-events-none absolute inset-0 rounded-2xl bg-black/5"
-                                                        aria-hidden="true"
-                                                    />
-                                                )}
-                                            </div>
+                                                    {!hasAny && (
+                                                        <div
+                                                            className="pointer-events-none absolute inset-0 rounded-2xl bg-black/5"
+                                                            aria-hidden="true"
+                                                        />
+                                                    )}
+                                                </div>
 
-                                        </CardObserver>
-                                    );
-                                })}
-                            </div>
-                        </section>
-                    )}
+                                            </CardObserver>
+                                        );
+                                    })}
+                                </div>
+                            </section>
+                        )}
 
-                    {/* 🛒 ホーム画面にいる時だけ、数量>0なら右下にポップアップ表示（※商品詳細モーダル中は非表示） */}
-                    {/* {tab === "home" && totalCartQty > 0 && !detail && (
+                        {/* 🛒 ホーム画面にいる時だけ、数量>0なら右下にポップアップ表示（※商品詳細モーダル中は非表示） */}
+                        {/* {tab === "home" && totalCartQty > 0 && !detail && (
                         <MiniCartPopup
                             totalQty={totalCartQty}
                             onOpenCart={() => {
@@ -4409,361 +4537,361 @@ export default function UserPilotApp() {
                         />
                     )} */}
 
-                    {tab === "cart" && (
-                        <section className="mt-4 space-y-4">
+                        {tab === "cart" && (
+                            <section className="mt-4 space-y-4">
 
-                            {Object.keys(cartGroups).length === 0 && <p className="text-sm text-zinc-500">カートは空です</p>}
-                            {(() => {
-                                const seen = new Set<string>(); // 店舗ごとの「最初の一個」を判定
-                                return Object.keys(cartGroups).map(gkey => {
-                                    const g = cartGroups[gkey];
+                                {Object.keys(cartGroups).length === 0 && <p className="text-sm text-zinc-500">カートは空です</p>}
+                                {(() => {
+                                    const seen = new Set<string>(); // 店舗ごとの「最初の一個」を判定
+                                    return Object.keys(cartGroups).map(gkey => {
+                                        const g = cartGroups[gkey];
+                                        const sid = g.storeId;
+                                        const storeName = shopsById.get(sid)?.name || sid;
+                                        const groupQty = qtyByGroup[gkey] || 0;
+                                        const isFirstOfStore = !seen.has(sid);
+                                        if (isFirstOfStore) seen.add(sid);
+
+                                        return (
+                                            <div
+                                                key={gkey}
+                                                ref={el => { if (isFirstOfStore) cartStoreAnchorRefs.current[sid] = el; }}
+                                                className="rounded-2xl border bg-white"
+                                            >
+
+                                                <div className="p-4 border-b flex items-center justify-between">
+                                                    <div className="text-sm font-semibold">
+                                                        {storeName}
+                                                        {/* 同一店舗で複数セクションが並ぶ可能性があるが、UIは既存のまま */}
+                                                    </div>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => {
+                                                            if (g.lines.length === 0) {
+                                                                emitToast("info", "このカートは空です");
+                                                                return;
+                                                            }
+                                                            if (confirm("このグループのカートを空にしますか？")) {
+                                                                // このグループに含まれる行だけを削除
+                                                                const ids = new Set(g.lines.map(l => `${l.shopId}:${l.item.id}`));
+                                                                setCart(cs => cs.filter(l => !ids.has(`${l.shopId}:${l.item.id}`)));
+                                                                emitToast("success", "カートを空にしました");
+                                                            }
+                                                        }}
+                                                        disabled={g.lines.length === 0}
+                                                        className="text-[11px] px-2 py-1 rounded border cursor-pointer disabled:opacity-40"
+                                                        aria-disabled={g.lines.length === 0}
+                                                        title="このグループのカートを空にする"
+                                                    >
+                                                        カートを空にする
+                                                    </button>
+                                                </div>
+
+                                                <div className="p-4 divide-y divide-zinc-200">
+                                                    {(g.lines ?? [])
+                                                        .filter(l => l && l.item && typeof l.qty === "number")
+                                                        .map((l, i) => {
+                                                            const rmKey = `${sid}:${l.item.id}`;
+                                                            return (
+                                                                <ProductLine
+                                                                    key={`${l.item?.id ?? "unknown"}-${i}`}
+                                                                    sid={sid}
+                                                                    it={l.item}
+                                                                    noChrome
+                                                                    onRemove={() => {
+                                                                        setCart(cs => cs.filter(x => `${x.shopId}:${x.item.id}` !== rmKey));
+                                                                        emitToast("success", "商品をカートから削除しました");
+                                                                    }}
+                                                                />
+                                                            );
+                                                        })}
+                                                </div>
+
+
+                                                {/* 受け取り予定時間（必須）: グループキーで保持 */}
+                                                <div className="px-4">
+                                                    <div className="border-t mt-2 pt-3">
+                                                        {(() => {
+                                                            // 既存ウィンドウを取得（グループ内商品の共通交差）
+                                                            const baseWin = cartGroups[gkey]?.window ?? null;
+
+                                                            // 「今 + LEAD_CUTOFF_MIN（20分）」を計算
+                                                            const nowMin = nowMinutesJST();
+                                                            const minStart = nowMin + LEAD_CUTOFF_MIN;
+
+                                                            // ★ 追加：10分単位に切り上げる関数（分→分）
+                                                            const ceilTo10 = (m: number) => Math.ceil(m / 10) * 10;
+
+                                                            // baseWin があるときだけ start を切り上げる
+                                                            let adjustedWin: { start: number; end: number } | null = null;
+                                                            if (baseWin) {
+                                                                // 元の開始とリードタイムを比較し、さらに「10分単位」に切り上げ
+                                                                const rawStart = Math.max(baseWin.start, minStart);
+                                                                const start = ceilTo10(rawStart);       // ← ここで 00/10/20… 始まりを保証
+                                                                const end = baseWin.end;
+                                                                adjustedWin = (start < end) ? { start, end } : null;
+                                                            }
+                                                            // 枠が全滅したかどうか（baseWin があるケースのみ判定する）
+                                                            const noSlot = (baseWin != null) && (adjustedWin == null);
+
+                                                            return (
+                                                                <>
+                                                                    <PickupTimeSelector
+                                                                        storeId={sid}
+                                                                        value={pickupByGroup[gkey] ?? null}
+                                                                        onSelect={(slot) => {
+                                                                            // 保険：外部入力や直打ち対策で 20分前チェックは継続
+                                                                            const startMinSel = Number(slot.start.slice(0, 2)) * 60 + Number(slot.start.slice(3, 5));
+                                                                            const nowMinSel = nowMinutesJST();
+                                                                            if (startMinSel < nowMinSel + LEAD_CUTOFF_MIN) {
+                                                                                emitToast("error", `直近枠は選べません（受け取り${LEAD_CUTOFF_MIN}分前まで）`);
+                                                                                return;
+                                                                            }
+                                                                            setPickupByGroup(prev => ({ ...prev, [gkey]: slot }));
+                                                                        }}
+                                                                        // ★ ポイント：10分切り上げ済みの開始時刻を渡す
+                                                                        limitWindow={adjustedWin ?? undefined}
+                                                                        stepOverride={(() => {
+                                                                            const info = (presetMap as Record<string, StorePresetInfo | undefined>)[sid];
+                                                                            const cur = (info?.current ?? 1) as number;
+                                                                            return info?.slots?.[cur]?.step ?? 10;
+                                                                        })()}
+                                                                    />
+                                                                    {noSlot && (
+                                                                        <p className="mt-2 text-xs text-zinc-500">
+                                                                            直近枠は選択不可のため、現在は選べる時間帯がありません。時間をおいてお試しください。
+                                                                        </p>
+                                                                    )}
+                                                                </>
+                                                            );
+                                                        })()}
+
+                                                        {!pickupByGroup[gkey] && (
+                                                            <p className="mt-2 text-xs text-red-500">受け取り予定時間を選択してください。</p>
+                                                        )}
+                                                    </div>
+                                                </div>
+
+
+                                                <div className="px-4 pt-3">
+                                                    <div className="flex items-center justify-between text-sm">
+                                                        <span className="font-medium">合計金額</span>
+                                                        <span className="tabular-nums font-bold text-lg">{currency(groupTotal(gkey))}</span>
+                                                    </div>
+                                                </div>
+
+                                                <div className="p-4 border-t mt-2">
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => {
+                                                            const sel = pickupByGroup[gkey];
+                                                            if (!sel) return;
+                                                            const startMin = Number(sel.start.slice(0, 2)) * 60 + Number(sel.start.slice(3, 5));
+                                                            const nowMin = nowMinutesJST();
+                                                            if (startMin < nowMin + LEAD_CUTOFF_MIN) {
+                                                                alert(`受け取り開始まで${Math.max(0, startMin - nowMin)}分です。直近枠は選べません（${LEAD_CUTOFF_MIN}分前まで）。`);
+                                                                return;
+                                                            }
+                                                            // ★ 注文ターゲットは "グループキー"
+                                                            startStripeCheckout(gkey);
+                                                        }}
+                                                        disabled={!pickupByGroup[gkey]}
+                                                        className={`w-full px-3 py-3 rounded-2xl text-white cursor-pointer
+            ${!pickupByGroup[gkey] ? "bg-zinc-300 cursor-not-allowed" : "bg-[#101828] hover:bg-zinc-800"}`}
+                                                        aria-disabled={!pickupByGroup[gkey]}
+                                                    >
+                                                        注文画面へ
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        );
+                                    });
+                                })()}
+
+                            </section>
+                        )}
+
+                        {tab === "order" && !orderTarget && (
+                            <section className="mt-4 space-y-3">
+                                <h2 className="text-base font-semibold">未引換のチケット</h2>
+                                {pendingForOrderTab.length === 0 ? (
+                                    <div className="text-sm text-zinc-500">未引換のチケットはありません。</div>
+                                ) : (
+                                    <div className="space-y-3">
+                                        <div className="flex items-center justify-between">
+                                            <div className="text-sm text-zinc-600">引換待ちのチケット</div>
+                                            <div className="text-[11px] text-zinc-500">{pendingForOrderTab.length}件</div>
+                                        </div>
+
+                                        {pendingForOrderTab.map((o) => {
+                                            const isOpen = openTicketIdOrder === o.id;
+                                            return (
+                                                <CompactTicketCard
+                                                    key={o.id}
+                                                    o={o}
+                                                    shopName={shopsById.get(o.shopId)?.name || "店舗"}
+                                                    pickupLabelFor={pickupLabelFor}
+                                                    presetPickupLabel={(() => { const firstLine = (o?.lines?.[0] ?? null) as any; const pid = String(firstLine?.item?.id ?? ""); const dp = (dbProducts || []).find((p: any) => String(p?.id) === pid); const slotNo = (dp as any)?.pickup_slot_no; return (typeof slotNo === 'number') ? (pickupLabelFor(o.shopId, slotNo) || '') : ''; })()}
+                                                    isOpen={isOpen}
+                                                    onToggle={() => setOpenTicketIdOrder(isOpen ? null : o.id)}
+                                                    onDelete={() => {
+                                                        // 既存の削除ロジックに合わせてください
+                                                        setOrders((prev) => prev.filter((x) => x.id !== o.id));
+                                                    }}
+                                                />
+                                            );
+                                        })}
+                                    </div>
+                                )}
+
+                            </section>
+                        )}
+
+                        {tab === "order" && orderTarget && (
+                            <section className="mt-4 space-y-4">
+                                <h2 className="text-base font-semibold">注文の最終確認</h2>
+                                {(() => {
+                                    const g = cartGroups[orderTarget];           // ★ グループを取得
+                                    if (!g) return <div className="text-sm text-red-600">対象カートが見つかりません</div>;
                                     const sid = g.storeId;
                                     const storeName = shopsById.get(sid)?.name || sid;
-                                    const groupQty = qtyByGroup[gkey] || 0;
-                                    const isFirstOfStore = !seen.has(sid);
-                                    if (isFirstOfStore) seen.add(sid);
+                                    const total = groupTotal(orderTarget);
 
                                     return (
-                                        <div
-                                            key={gkey}
-                                            ref={el => { if (isFirstOfStore) cartStoreAnchorRefs.current[sid] = el; }}
-                                            className="rounded-2xl border bg-white"
-                                        >
-
+                                        <div className="rounded-2xl border bg-white">
                                             <div className="p-4 border-b flex items-center justify-between">
-                                                <div className="text-sm font-semibold">
-                                                    {storeName}
-                                                    {/* 同一店舗で複数セクションが並ぶ可能性があるが、UIは既存のまま */}
+                                                <div className="text-sm font-semibold">{storeName}</div>
+                                                <div className="text-sm font-semibold">{currency(total)}</div>
+                                            </div>
+
+                                            {/* カートで選んだ受取時間の表示（グループ基準） */}
+                                            {(() => {
+                                                const sel = pickupByGroup[orderTarget] ?? null;
+                                                return (
+                                                    <div className="p-4 bg-zinc-50 border-t">
+                                                        <div className="text-xs text-zinc-500">受取予定時間</div>
+                                                        <div className="mt-1 text-sm font-medium">
+                                                            {sel ? `${sel.start}〜${sel.end}` : "未選択"}
+                                                        </div>
+                                                    </div>
+                                                );
+                                            })()}
+
+                                            <div className="p-4 border-t space-y-3">
+                                                {/* 行：支払い方法（スクショ風） */}
+                                                <div className="grid grid-cols-[auto_1fr_auto] items-center gap-3">
+                                                    <div className="text-sm font-medium">クレジット</div>
+                                                    <div className="text-sm text-zinc-500 truncate">
+                                                        {selectedPayLabel ? selectedPayLabel : "選択されていません"}
+                                                    </div>
+                                                    <button
+                                                        type="button"
+                                                        className="text-[#6b0f0f] text-sm underline decoration-1 underline-offset-2"
+                                                        onClick={() => setIsPayMethodOpen(true)}
+                                                    >
+                                                        {selectedPayLabel ? "変更する" : "選択する"}
+                                                    </button>
                                                 </div>
+
+                                                <p className="text-xs text-zinc-500">
+                                                    テスト: 4242 4242 4242 4242 は成功 / 4000 0000 0000 0002 は失敗として扱います。
+                                                </p>
+
+                                                {/* 支払ボタン：カード選択が済むまで無効 */}
                                                 <button
                                                     type="button"
-                                                    onClick={() => {
-                                                        if (g.lines.length === 0) {
-                                                            emitToast("info", "このカートは空です");
-                                                            return;
-                                                        }
-                                                        if (confirm("このグループのカートを空にしますか？")) {
-                                                            // このグループに含まれる行だけを削除
-                                                            const ids = new Set(g.lines.map(l => `${l.shopId}:${l.item.id}`));
-                                                            setCart(cs => cs.filter(l => !ids.has(`${l.shopId}:${l.item.id}`)));
-                                                            emitToast("success", "カートを空にしました");
-                                                        }
-                                                    }}
-                                                    disabled={g.lines.length === 0}
-                                                    className="text-[11px] px-2 py-1 rounded border cursor-pointer disabled:opacity-40"
-                                                    aria-disabled={g.lines.length === 0}
-                                                    title="このグループのカートを空にする"
+                                                    onClick={() => startStripeCheckout()}
+                                                    disabled={
+                                                        isPaying ||
+                                                        !selectedPayLabel ||
+                                                        ((cartGroups[orderTarget]?.lines.length ?? 0) === 0)
+                                                    }
+                                                    className={`w-full px-3 py-2 rounded border text-white
+      ${(!selectedPayLabel || isPaying) ? "bg-zinc-300 cursor-not-allowed" : "bg-zinc-900 hover:bg-zinc-800"}`}
                                                 >
-                                                    カートを空にする
+                                                    Stripe で支払う（デモ）
                                                 </button>
                                             </div>
 
-                                            <div className="p-4 divide-y divide-zinc-200">
-                                                {(g.lines ?? [])
-                                                    .filter(l => l && l.item && typeof l.qty === "number")
-                                                    .map((l, i) => {
-                                                        const rmKey = `${sid}:${l.item.id}`;
-                                                        return (
-                                                            <ProductLine
-                                                                key={`${l.item?.id ?? "unknown"}-${i}`}
-                                                                sid={sid}
-                                                                it={l.item}
-                                                                noChrome
-                                                                onRemove={() => {
-                                                                    setCart(cs => cs.filter(x => `${x.shopId}:${x.item.id}` !== rmKey));
-                                                                    emitToast("success", "商品をカートから削除しました");
-                                                                }}
-                                                            />
-                                                        );
-                                                    })}
-                                            </div>
-
-
-                                            {/* 受け取り予定時間（必須）: グループキーで保持 */}
-                                            <div className="px-4">
-                                                <div className="border-t mt-2 pt-3">
+                                            <div className="p-4 border-t space-y-2">
+                                                {/* 支払い方法 */}
+                                                <div className="grid grid-cols-2 gap-2" role="group" aria-label="支払い方法">
                                                     {(() => {
-                                                        // 既存ウィンドウを取得（グループ内商品の共通交差）
-                                                        const baseWin = cartGroups[gkey]?.window ?? null;
-
-                                                        // 「今 + LEAD_CUTOFF_MIN（20分）」を計算
-                                                        const nowMin = nowMinutesJST();
-                                                        const minStart = nowMin + LEAD_CUTOFF_MIN;
-
-                                                        // ★ 追加：10分単位に切り上げる関数（分→分）
-                                                        const ceilTo10 = (m: number) => Math.ceil(m / 10) * 10;
-
-                                                        // baseWin があるときだけ start を切り上げる
-                                                        let adjustedWin: { start: number; end: number } | null = null;
-                                                        if (baseWin) {
-                                                            // 元の開始とリードタイムを比較し、さらに「10分単位」に切り上げ
-                                                            const rawStart = Math.max(baseWin.start, minStart);
-                                                            const start = ceilTo10(rawStart);       // ← ここで 00/10/20… 始まりを保証
-                                                            const end = baseWin.end;
-                                                            adjustedWin = (start < end) ? { start, end } : null;
-                                                        }
-                                                        // 枠が全滅したかどうか（baseWin があるケースのみ判定する）
-                                                        const noSlot = (baseWin != null) && (adjustedWin == null);
-
+                                                        const base = "w-full px-3 py-2 rounded border cursor-pointer text-sm";
+                                                        const active = "bg-zinc-900 text-white border-zinc-900";
+                                                        const inactive = "bg-white text-zinc-700";
                                                         return (
                                                             <>
-                                                                <PickupTimeSelector
-                                                                    storeId={sid}
-                                                                    value={pickupByGroup[gkey] ?? null}
-                                                                    onSelect={(slot) => {
-                                                                        // 保険：外部入力や直打ち対策で 20分前チェックは継続
-                                                                        const startMinSel = Number(slot.start.slice(0, 2)) * 60 + Number(slot.start.slice(3, 5));
-                                                                        const nowMinSel = nowMinutesJST();
-                                                                        if (startMinSel < nowMinSel + LEAD_CUTOFF_MIN) {
-                                                                            emitToast("error", `直近枠は選べません（受け取り${LEAD_CUTOFF_MIN}分前まで）`);
-                                                                            return;
-                                                                        }
-                                                                        setPickupByGroup(prev => ({ ...prev, [gkey]: slot }));
-                                                                    }}
-                                                                    // ★ ポイント：10分切り上げ済みの開始時刻を渡す
-                                                                    limitWindow={adjustedWin ?? undefined}
-                                                                    stepOverride={(() => {
-                                                                        const info = (presetMap as Record<string, StorePresetInfo | undefined>)[sid];
-                                                                        const cur = (info?.current ?? 1) as number;
-                                                                        return info?.slots?.[cur]?.step ?? 10;
-                                                                    })()}
-                                                                />
-                                                                {noSlot && (
-                                                                    <p className="mt-2 text-xs text-zinc-500">
-                                                                        直近枠は選択不可のため、現在は選べる時間帯がありません。時間をおいてお試しください。
-                                                                    </p>
-                                                                )}
+                                                                <button
+                                                                    type="button"
+                                                                    className={`${base} ${paymentMethod === 'card' ? active : inactive}`}
+                                                                    aria-pressed={paymentMethod === 'card'}
+                                                                    onClick={() => setPaymentMethod('card')}
+                                                                >
+                                                                    クレカ
+                                                                </button>
+                                                                <button
+                                                                    type="button"
+                                                                    className={`${base} ${paymentMethod === 'paypay' ? active : inactive}`}
+                                                                    aria-pressed={paymentMethod === 'paypay'}
+                                                                    onClick={() => setPaymentMethod('paypay')}
+                                                                >
+                                                                    PayPay
+                                                                </button>
                                                             </>
                                                         );
                                                     })()}
-
-                                                    {!pickupByGroup[gkey] && (
-                                                        <p className="mt-2 text-xs text-red-500">受け取り予定時間を選択してください。</p>
-                                                    )}
                                                 </div>
-                                            </div>
-
-
-                                            <div className="px-4 pt-3">
-                                                <div className="flex items-center justify-between text-sm">
-                                                    <span className="font-medium">合計金額</span>
-                                                    <span className="tabular-nums font-bold text-lg">{currency(groupTotal(gkey))}</span>
-                                                </div>
-                                            </div>
-
-                                            <div className="p-4 border-t mt-2">
+                                                <div className="text-xs text-zinc-500">テストカード例: 4242… は成功。400000… は失敗（例: 4000 0000 0000 0002）。入力は数字のみ。</div>
+                                                {(() => {
+                                                    const d = cardDigits.replace(/\D/g, "").slice(0, 16);
+                                                    const formatted = (d.match(/.{1,4}/g)?.join(" ") ?? d);
+                                                    const len = d.length;
+                                                    return (
+                                                        <>
+                                                            <input
+                                                                className="w-full px-3 py-2 rounded border font-mono tracking-widest"
+                                                                placeholder="4242 4242 4242 4242"
+                                                                value={formatted}
+                                                                onChange={e => { const nd = e.target.value.replace(/\D/g, "").slice(0, 16); setCardDigits(nd); }}
+                                                                inputMode="numeric"
+                                                                maxLength={19}
+                                                                autoComplete="cc-number"
+                                                                aria-label="カード番号（テスト）"
+                                                                aria-describedby="card-help"
+                                                            />
+                                                            <div id="card-help" className="flex items-center justify-between text-[11px] text-zinc-500">
+                                                                <span>{len}/16 桁</span>
+                                                                <span>4桁ごとにスペース</span>
+                                                            </div>
+                                                            <div className="h-1 bg-zinc-200 rounded">
+                                                                <div className="h-1 bg-zinc-900 rounded" style={{ width: `${(len / 16) * 100}%` }} />
+                                                            </div>
+                                                        </>
+                                                    );
+                                                })()}
                                                 <button
                                                     type="button"
-                                                    onClick={() => {
-                                                        const sel = pickupByGroup[gkey];
-                                                        if (!sel) return;
-                                                        const startMin = Number(sel.start.slice(0, 2)) * 60 + Number(sel.start.slice(3, 5));
-                                                        const nowMin = nowMinutesJST();
-                                                        if (startMin < nowMin + LEAD_CUTOFF_MIN) {
-                                                            alert(`受け取り開始まで${Math.max(0, startMin - nowMin)}分です。直近枠は選べません（${LEAD_CUTOFF_MIN}分前まで）。`);
-                                                            return;
-                                                        }
-                                                        // ★ 注文ターゲットは "グループキー"
-                                                        startStripeCheckout(gkey);
-                                                    }}
-                                                    disabled={!pickupByGroup[gkey]}
-                                                    className={`w-full px-3 py-3 rounded-2xl text-white cursor-pointer
-            ${!pickupByGroup[gkey] ? "bg-zinc-300 cursor-not-allowed" : "bg-[#101828] hover:bg-zinc-800"}`}
-                                                    aria-disabled={!pickupByGroup[gkey]}
+                                                    onClick={() => startStripeCheckout()}
+                                                    disabled={isPaying || ((cartGroups[orderTarget]?.lines.length ?? 0) === 0)}
+                                                    className="w-full px-3 py-2 rounded border cursor-pointer disabled:opacity-40 bg-zinc-900 text-white"
                                                 >
-                                                    注文画面へ
+                                                    Stripe で支払う（デモ）
                                                 </button>
                                             </div>
                                         </div>
                                     );
-                                });
-                            })()}
+                                })()}
+                            </section>
+                        )}
+                        {tab === "account" && (
+                            <AccountView orders={orders} shopsById={shopsById} onDevReset={devResetOrdersStrict} onDevResetHistory={devResetOrderHistory} />
+                        )}
 
-                        </section>
-                    )}
-
-                    {tab === "order" && !orderTarget && (
-                        <section className="mt-4 space-y-3">
-                            <h2 className="text-base font-semibold">未引換のチケット</h2>
-                            {pendingForOrderTab.length === 0 ? (
-                                <div className="text-sm text-zinc-500">未引換のチケットはありません。</div>
-                            ) : (
-                                <div className="space-y-3">
-                                    <div className="flex items-center justify-between">
-                                        <div className="text-sm text-zinc-600">引換待ちのチケット</div>
-                                        <div className="text-[11px] text-zinc-500">{pendingForOrderTab.length}件</div>
-                                    </div>
-
-                                    {pendingForOrderTab.map((o) => {
-                                        const isOpen = openTicketIdOrder === o.id;
-                                        return (
-                                            <CompactTicketCard
-                                                key={o.id}
-                                                o={o}
-                                                shopName={shopsById.get(o.shopId)?.name || "店舗"}
-                                                pickupLabelFor={pickupLabelFor}
-                                                presetPickupLabel={(() => { const firstLine = (o?.lines?.[0] ?? null) as any; const pid = String(firstLine?.item?.id ?? ""); const dp = (dbProducts || []).find((p: any) => String(p?.id) === pid); const slotNo = (dp as any)?.pickup_slot_no; return (typeof slotNo === 'number') ? (pickupLabelFor(o.shopId, slotNo) || '') : ''; })()}
-                                                isOpen={isOpen}
-                                                onToggle={() => setOpenTicketIdOrder(isOpen ? null : o.id)}
-                                                onDelete={() => {
-                                                    // 既存の削除ロジックに合わせてください
-                                                    setOrders((prev) => prev.filter((x) => x.id !== o.id));
-                                                }}
-                                            />
-                                        );
-                                    })}
-                                </div>
-                            )}
-
-                        </section>
-                    )}
-
-                    {tab === "order" && orderTarget && (
-                        <section className="mt-4 space-y-4">
-                            <h2 className="text-base font-semibold">注文の最終確認</h2>
-                            {(() => {
-                                const g = cartGroups[orderTarget];           // ★ グループを取得
-                                if (!g) return <div className="text-sm text-red-600">対象カートが見つかりません</div>;
-                                const sid = g.storeId;
-                                const storeName = shopsById.get(sid)?.name || sid;
-                                const total = groupTotal(orderTarget);
-
-                                return (
-                                    <div className="rounded-2xl border bg-white">
-                                        <div className="p-4 border-b flex items-center justify-between">
-                                            <div className="text-sm font-semibold">{storeName}</div>
-                                            <div className="text-sm font-semibold">{currency(total)}</div>
-                                        </div>
-
-                                        {/* カートで選んだ受取時間の表示（グループ基準） */}
-                                        {(() => {
-                                            const sel = pickupByGroup[orderTarget] ?? null;
-                                            return (
-                                                <div className="p-4 bg-zinc-50 border-t">
-                                                    <div className="text-xs text-zinc-500">受取予定時間</div>
-                                                    <div className="mt-1 text-sm font-medium">
-                                                        {sel ? `${sel.start}〜${sel.end}` : "未選択"}
-                                                    </div>
-                                                </div>
-                                            );
-                                        })()}
-
-                                        <div className="p-4 border-t space-y-3">
-                                            {/* 行：支払い方法（スクショ風） */}
-                                            <div className="grid grid-cols-[auto_1fr_auto] items-center gap-3">
-                                                <div className="text-sm font-medium">クレジット</div>
-                                                <div className="text-sm text-zinc-500 truncate">
-                                                    {selectedPayLabel ? selectedPayLabel : "選択されていません"}
-                                                </div>
-                                                <button
-                                                    type="button"
-                                                    className="text-[#6b0f0f] text-sm underline decoration-1 underline-offset-2"
-                                                    onClick={() => setIsPayMethodOpen(true)}
-                                                >
-                                                    {selectedPayLabel ? "変更する" : "選択する"}
-                                                </button>
-                                            </div>
-
-                                            <p className="text-xs text-zinc-500">
-                                                テスト: 4242 4242 4242 4242 は成功 / 4000 0000 0000 0002 は失敗として扱います。
-                                            </p>
-
-                                            {/* 支払ボタン：カード選択が済むまで無効 */}
-                                            <button
-                                                type="button"
-                                                onClick={() => startStripeCheckout()}
-                                                disabled={
-                                                    isPaying ||
-                                                    !selectedPayLabel ||
-                                                    ((cartGroups[orderTarget]?.lines.length ?? 0) === 0)
-                                                }
-                                                className={`w-full px-3 py-2 rounded border text-white
-      ${(!selectedPayLabel || isPaying) ? "bg-zinc-300 cursor-not-allowed" : "bg-zinc-900 hover:bg-zinc-800"}`}
-                                            >
-                                                Stripe で支払う（デモ）
-                                            </button>
-                                        </div>
-
-                                        <div className="p-4 border-t space-y-2">
-                                            {/* 支払い方法 */}
-                                            <div className="grid grid-cols-2 gap-2" role="group" aria-label="支払い方法">
-                                                {(() => {
-                                                    const base = "w-full px-3 py-2 rounded border cursor-pointer text-sm";
-                                                    const active = "bg-zinc-900 text-white border-zinc-900";
-                                                    const inactive = "bg-white text-zinc-700";
-                                                    return (
-                                                        <>
-                                                            <button
-                                                                type="button"
-                                                                className={`${base} ${paymentMethod === 'card' ? active : inactive}`}
-                                                                aria-pressed={paymentMethod === 'card'}
-                                                                onClick={() => setPaymentMethod('card')}
-                                                            >
-                                                                クレカ
-                                                            </button>
-                                                            <button
-                                                                type="button"
-                                                                className={`${base} ${paymentMethod === 'paypay' ? active : inactive}`}
-                                                                aria-pressed={paymentMethod === 'paypay'}
-                                                                onClick={() => setPaymentMethod('paypay')}
-                                                            >
-                                                                PayPay
-                                                            </button>
-                                                        </>
-                                                    );
-                                                })()}
-                                            </div>
-                                            <div className="text-xs text-zinc-500">テストカード例: 4242… は成功。400000… は失敗（例: 4000 0000 0000 0002）。入力は数字のみ。</div>
-                                            {(() => {
-                                                const d = cardDigits.replace(/\D/g, "").slice(0, 16);
-                                                const formatted = (d.match(/.{1,4}/g)?.join(" ") ?? d);
-                                                const len = d.length;
-                                                return (
-                                                    <>
-                                                        <input
-                                                            className="w-full px-3 py-2 rounded border font-mono tracking-widest"
-                                                            placeholder="4242 4242 4242 4242"
-                                                            value={formatted}
-                                                            onChange={e => { const nd = e.target.value.replace(/\D/g, "").slice(0, 16); setCardDigits(nd); }}
-                                                            inputMode="numeric"
-                                                            maxLength={19}
-                                                            autoComplete="cc-number"
-                                                            aria-label="カード番号（テスト）"
-                                                            aria-describedby="card-help"
-                                                        />
-                                                        <div id="card-help" className="flex items-center justify-between text-[11px] text-zinc-500">
-                                                            <span>{len}/16 桁</span>
-                                                            <span>4桁ごとにスペース</span>
-                                                        </div>
-                                                        <div className="h-1 bg-zinc-200 rounded">
-                                                            <div className="h-1 bg-zinc-900 rounded" style={{ width: `${(len / 16) * 100}%` }} />
-                                                        </div>
-                                                    </>
-                                                );
-                                            })()}
-                                            <button
-                                                type="button"
-                                                onClick={() => startStripeCheckout()}
-                                                disabled={isPaying || ((cartGroups[orderTarget]?.lines.length ?? 0) === 0)}
-                                                className="w-full px-3 py-2 rounded border cursor-pointer disabled:opacity-40 bg-zinc-900 text-white"
-                                            >
-                                                Stripe で支払う（デモ）
-                                            </button>
-                                        </div>
-                                    </div>
-                                );
-                            })()}
-                        </section>
-                    )}
-                    {tab === "account" && (
-                        <AccountView orders={orders} shopsById={shopsById} onDevReset={devResetOrdersStrict} onDevResetHistory={devResetOrderHistory} />
-                    )}
-
-                </main>
+                    </main>
 
 
 
-                {/* <footer className="fixed bottom-0 left-0 right-0 border-t bg-white/90">
+                    {/* <footer className="fixed bottom-0 left-0 right-0 border-t bg-white/90">
                     <div className="max-w-[448px] mx-auto grid grid-cols-4 text-center">
                         <Tab id="home" label="ホーム" icon="🏠" />
                         <Tab id="cart" label="カート" icon="🛒" />
@@ -4772,9 +4900,9 @@ export default function UserPilotApp() {
                     </div>
                 </footer> */}
 
-                {/* === Bottom Tabs (スクショ風ピル) === */}
-                <nav
-                    className="
+                    {/* === Bottom Tabs (スクショ風ピル) === */}
+                    <nav
+                        className="
     fixed left-1/2 -translate-x-1/2 bottom-7
     w-[92%] max-w-[448px]
     bg-white/95 backdrop-blur
@@ -4782,440 +4910,440 @@ export default function UserPilotApp() {
     shadow-[0_8px_24px_rgba(0,0,0,0.12)]
     px-3 py-3 z-50
   "
-                    aria-label="メインタブ"
-                >
-                    <ul className="grid grid-cols-4 items-center">
-                        {/* ホーム */}
-                        <li>
-                            <button
-                                type="button"
-                                onClick={() => setTab('home')}
-                                aria-current={tab === 'home' ? 'page' : undefined}
-                                className={`w-full flex flex-col items-center justify-center gap-1 py-1 ${tab === 'home' ? 'text-black' : 'text-zinc-500'}`}
-                            >
-                                {/* icon: home */}
-                                <svg width="22" height="22" viewBox="0 0 24 24" fill="none"
-                                    stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                                    <path d="M3 11.5 12 4l9 7.5" />
-                                    <path d="M5 10.5V20h14v-9.5" />
-                                </svg>
-                                <span className="text-[11px] leading-none">ホーム</span>
-                            </button>
-                        </li>
+                        aria-label="メインタブ"
+                    >
+                        <ul className="grid grid-cols-4 items-center">
+                            {/* ホーム */}
+                            <li>
+                                <button
+                                    type="button"
+                                    onClick={() => setTab('home')}
+                                    aria-current={tab === 'home' ? 'page' : undefined}
+                                    className={`w-full flex flex-col items-center justify-center gap-1 py-1 ${tab === 'home' ? 'text-black' : 'text-zinc-500'}`}
+                                >
+                                    {/* icon: home */}
+                                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none"
+                                        stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                        <path d="M3 11.5 12 4l9 7.5" />
+                                        <path d="M5 10.5V20h14v-9.5" />
+                                    </svg>
+                                    <span className="text-[11px] leading-none">ホーム</span>
+                                </button>
+                            </li>
 
-                        {/* カート */}
-                        <li className="relative">
-                            <button
-                                type="button"
-                                onClick={() => setTab('cart')}
-                                aria-current={tab === 'cart' ? 'page' : undefined}
-                                className={`w-full flex flex-col items-center justify-center gap-1 py-1 ${tab === 'cart' ? 'text-black' : 'text-zinc-500'}`}
-                            >
-                                {/* icon: cart */}
-                                <svg width="22" height="22" viewBox="0 0 24 24" fill="none"
-                                    stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                                    <circle cx="9" cy="20" r="1.6" />
-                                    <circle cx="17" cy="20" r="1.6" />
-                                    <path d="M5 4h2l1.2 8.4a2 2 0 0 0 2 1.6h6.4a2 2 0 0 0 2-1.6L20 8H8" />
-                                </svg>
-                                <span className="text-[11px] leading-none">カート</span>
-                            </button>
+                            {/* カート */}
+                            <li className="relative">
+                                <button
+                                    type="button"
+                                    onClick={() => setTab('cart')}
+                                    aria-current={tab === 'cart' ? 'page' : undefined}
+                                    className={`w-full flex flex-col items-center justify-center gap-1 py-1 ${tab === 'cart' ? 'text-black' : 'text-zinc-500'}`}
+                                >
+                                    {/* icon: cart */}
+                                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none"
+                                        stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                        <circle cx="9" cy="20" r="1.6" />
+                                        <circle cx="17" cy="20" r="1.6" />
+                                        <path d="M5 4h2l1.2 8.4a2 2 0 0 0 2 1.6h6.4a2 2 0 0 0 2-1.6L20 8H8" />
+                                    </svg>
+                                    <span className="text-[11px] leading-none">カート</span>
+                                </button>
 
-                            {/* 数量バッジ（黒丸＋白縁） */}
-                            {totalCartQty > 0 && (
-                                <span
-                                    className="
+                                {/* 数量バッジ（黒丸＋白縁） */}
+                                {totalCartQty > 0 && (
+                                    <span
+                                        className="
             absolute -top-1.5 left-1/2 translate-x-2
             inline-flex items-center justify-center
             min-w-[18px] h-[18px] px-1
             rounded-full text-[10px] font-bold
             bg-black text-white ring-2 ring-white
           "
-                                    aria-label={`カートに${totalCartQty}点`}
-                                >
-                                    {totalCartQty > 99 ? '99+' : totalCartQty}
-                                </span>
-                            )}
-                        </li>
+                                        aria-label={`カートに${totalCartQty}点`}
+                                    >
+                                        {totalCartQty > 99 ? '99+' : totalCartQty}
+                                    </span>
+                                )}
+                            </li>
 
-                        {/* 引換え */}
-                        <li>
-                            <button
-                                type="button"
-                                onClick={() => { setOrderTarget(undefined); setTab('order'); }}
-                                aria-current={tab === 'order' ? 'page' : undefined}
-                                className={`w-full flex flex-col items-center justify-center gap-1 py-1 ${tab === 'order' ? 'text-black' : 'text-zinc-500'}`}
-                            >
-                                {/* icon: ticket */}
-                                <svg width="22" height="22" viewBox="0 0 24 24" fill="none"
-                                    stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                                    <path d="M3 9a3 3 0 0 0 0 6h18a3 3 0 0 1 0-6H3Z" />
-                                    <path d="M12 8v8" />
-                                    <path d="M8 8v8" opacity=".3" />
-                                    <path d="M16 8v8" opacity=".3" />
-                                </svg>
-                                <span className="text-[11px] leading-none">引換え</span>
-                            </button>
-                        </li>
-
-                        {/* アカウント */}
-                        <li>
-                            <button
-                                type="button"
-                                onClick={() => setTab('account')}
-                                aria-current={tab === 'account' ? 'page' : undefined}
-                                className={`w-full flex flex-col items-center justify-center gap-1 py-1 ${tab === 'account' ? 'text-black' : 'text-zinc-500'}`}
-                            >
-                                {/* icon: user */}
-                                <svg width="22" height="22" viewBox="0 0 24 24" fill="none"
-                                    stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                                    <path d="M20 21a8 8 0 1 0-16 0" />
-                                    <circle cx="12" cy="8" r="4" />
-                                </svg>
-                                <span className="text-[11px] leading-none">アカウント</span>
-                            </button>
-                        </li>
-                    </ul>
-                </nav>
-
-                {/* 規約リンク */}
-                <div className="max-w-[448px] mx-auto px-4 py-2 text-center text-[10px] text-zinc-500">
-                    <a className="underline cursor-pointer" href="#">利用規約</a> ・ <a className="underline cursor-pointer" href="#">プライバシー</a>
-                </div>
-
-                <ToastBar toast={toast} onClose={() => setToast(null)} />
-
-                {/* ▼▼ Stripe 決済用ボトムシート：client_secret が取れたら表示 ▼▼ */}
-                <BottomSheet
-                    open={isCheckoutOpen && !!checkoutClientSecret}
-                    title="お支払い（Stripe）"
-                    onClose={() => { setIsCheckoutOpen(false); setCheckoutClientSecret(null); }}
-                >
-                    {checkoutClientSecret && (
-                        <EmbeddedCheckoutProvider
-                            stripe={stripePromise}
-                            options={{ clientSecret: checkoutClientSecret }}
-                        >
-                            {/* EmbeddedCheckout 自体が注文詳細＋決済UIをすべて描画します */}
-                            <div className="px-0">
-                                <EmbeddedCheckout />
-                            </div>
-                        </EmbeddedCheckoutProvider>
-                    )}
-                </BottomSheet>
-
-                {/* ▲▲ ここまで ▲▲ */}
-
-
-                {/* 商品詳細モーダル */}
-                {detail && (
-                    <div role="dialog" aria-modal="true" className="fixed inset-0 z-[2000]">
-                        <div
-                            className="absolute inset-0 bg-black/40 z-[2000]"
-                            onClick={() => setDetail(null)}
-                        />
-                        <div className="absolute inset-0 flex items-center justify-center p-4 z-[2001] pointer-events-none">
-                            <div className="max-w-[520px] w-full bg-white rounded-2xl shadow-xl max-h-[85vh] flex flex-col overflow-hidden pointer-events-auto">
-                                <div
-                                    className="relative" ref={carouselWrapRef}
-                                >
-                                    {/* メイン画像（3枚ギャラリー） */}
-                                    {detailImages.length > 0 ? (
-                                        <div className="relative overflow-hidden rounded-t-2xl bg-black aspect-[16/9]">
-                                            <div
-                                                className="absolute inset-0 h-full"
-                                                style={{
-                                                    display: 'flex',
-                                                    width: `${(imgCount + 2) * 100}%`, // クローン込みの幅
-                                                    height: '100%',
-                                                    transform: `translateX(-${pos * (100 / (imgCount + 2))}%)`,
-                                                    transition: anim ? 'transform 320ms ease' : 'none',
-                                                    willChange: 'transform',
-                                                    backfaceVisibility: 'hidden',
-                                                }}
-                                                onTransitionEnd={() => {
-                                                    // 1) どのケースでもアニメ終了後は必ず解除
-                                                    setAnim(false);
-
-                                                    // 2) クローン端にいたら本物へ瞬間ジャンプ（transition なし）
-                                                    setPos((p) => {
-                                                        if (p === 0) return imgCount;        // 左端クローン → 末尾の実画像へ
-                                                        if (p === imgCount + 1) return 1;    // 右端クローン → 先頭の実画像へ
-                                                        return p;                            // 中間ならそのまま
-                                                    });
-
-                                                    // 3) 表示中インデックスを確定
-                                                    setGIndex(targetIndexRef.current);
-                                                }}
-                                            >
-                                                {loopImages.map((path, i) => (
-                                                    <div key={`slide-${i}-${path}`} style={{ width: `${100 / (imgCount + 2)}%`, height: '100%', flex: `0 0 ${100 / (imgCount + 2)}%` }}>
-                                                        <img
-                                                            src={publicImageUrl(path)!}
-                                                            srcSet={buildVariantsFromPath(path).map(v => `${v.url} ${v.width}w`).join(', ')}
-                                                            sizes="(min-width: 768px) 800px, 100vw"
-                                                            alt={i === pos ? `${detail.item.name} 画像 ${gIndex + 1}/${imgCount}` : ''}
-                                                            className="w-full h-full object-cover select-none"
-                                                            draggable={false}
-                                                            loading={i === pos ? 'eager' : 'lazy'}
-                                                            decoding="async"
-                                                            width={1280}
-                                                            height={720}  /* aspect-[16/9] の枠に合わせた目安 */
-                                                        />
-                                                    </div>
-                                                ))}
-                                            </div>
-
-                                            {/* 枚数バッジ n/n */}
-                                            <div className="absolute right-2 bottom-2 px-2 py-0.5 rounded-full bg-black/60 text-white text-xs">
-                                                {imgCount > 0 ? (gIndex + 1) : 0}/{imgCount}
-                                            </div>
-                                        </div>
-                                    ) : (
-                                        <div className="w-full h-56 bg-zinc-100 flex items-center justify-center text-6xl rounded-t-2xl">
-                                            <span>{detail.item.photo}</span>
-                                        </div>
-                                    )}
-
-
-                                    {/* 左右ナビ（2枚以上） */}
-                                    {imgCount > 1 && (
-                                        <>
-                                            <GalleryNavBtn side="left" onClick={goPrev} label="前の画像" />
-                                            <GalleryNavBtn side="right" onClick={goNext} label="次の画像" />
-                                        </>
-                                    )}
-
-
-                                    {/* 閉じる */}
-                                    <button
-                                        type="button"
-                                        aria-label="閉じる"
-                                        className="absolute top-2 right-2 w-8 h-8 rounded-full bg-white/90 border flex items-center justify-center"
-                                        onClick={() => setDetail(null)}
-                                    >✕</button>
-                                </div>
-
-                                <div className="p-4 space-y-3 overflow-auto">
-
-
-                                    <div className="text-lg font-semibold leading-tight break-words">{detail.item.name}</div>
-                                    <div className="text-sm text-zinc-600 flex items-center gap-3">
-                                        <span className="inline-flex items-center gap-1">
-                                            <span>⏰</span><span>受取 {detail.item.pickup}</span>
-                                        </span>
-                                        <span className="ml-auto text-xl font-extrabold tabular-nums text-zinc-900">
-                                            {currency(detail.item.price)}
-                                        </span>
-                                    </div>
-                                    <div className="text-sm text-zinc-700 bg-zinc-50 rounded-xl p-3">
-                                        {detail?.item?.note && detail.item.note.trim().length > 0
-                                            ? detail.item.note
-                                            : 'お店のおすすめ商品です。数量限定のため、お早めにお求めください。'}
-                                    </div>
-
-                                    <div className="pt-1">
-                                        <button
-                                            type="button"
-                                            onClick={() => setAllergyOpen(true)}
-                                            className="inline-flex items-center gap-1 text-[13px] text-[#6b0f0f] underline decoration-1 underline-offset-2"
-                                        >
-                                            <span
-                                                aria-hidden
-                                                className="inline-grid place-items-center w-4 h-4 rounded-full bg-[#6b0f0f] text-white text-[10px]"
-                                            >i</span>
-                                            <span>アレルギー・原材料について</span>
-                                        </button>
-                                    </div>
-
-                                    {/* ▼ 追加：その直下に残数 */}
-                                    <div className="mt-6 flex justify-center">
-                                        <RemainChip remain={Math.max(0, detail.item.stock - getReserved(detail.shopId, detail.item.id))} />
-                                    </div>
-
-                                    {/* ▼ 追加：中央揃えの増減チップ */}
-                                    <div className=" flex justify-center">
-                                        <QtyChip sid={detail.shopId} it={detail.item} />
-                                    </div>
-
-                                    {/* ▼ 追加：モーダル内の「カートを見る」（ホームと同じコンポーネント） */}
-                                    <div className="pt-3 px-2 mb-6 flex justify-center">
-                                        <ViewCartButton
-                                            className="w-full max-w-[480px] h-12 text-[15px] text-white"
-                                            shopId={detail.shopId}
-                                            onAfterOpenCart={() => setDetail(null)}  // ← 押下後にモーダルを閉じる
-                                        />
-                                    </div>
-                                </div>
-
-                            </div>
-                        </div>
-                        {allergyOpen && (
-                            <div className="absolute inset-0 z-[2002] pointer-events-none">
-                                <div className="absolute inset-0 bg-black/30 pointer-events-auto" onClick={() => setAllergyOpen(false)} />
-                                <div className="absolute left-1/2 -translate-x-1/2 bottom-4 w-full max-w-[520px] px-4 pointer-events-auto">
-                                    <div className="mx-auto rounded-2xl bg-white border shadow-2xl overflow-hidden">
-                                        <div className="py-2 grid place-items-center"><div aria-hidden className="h-1.5 w-12 rounded-full bg-zinc-300" /></div>
-                                        <div className="px-4 pb-4">
-                                            <div className="flex items-center justify-center mb-2">
-                                                <span className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-red-700 text-white text-sm" aria-hidden>i</span>
-                                            </div>
-                                            <h3 className="text-lg font-semibold text-center mb-2">アレルギー・原材料について</h3>
-                                            <div className="text-sm text-zinc-700 space-y-2">
-                                                <p>当アプリの商品は食品ロス削減を目的とした性質上、多くの場合、受け取りまで中身がわからない「福袋形式」での販売となります。そのため、個別商品のアレルゲンに関する詳細なご案内が難しいケースがあります。</p>
-                                                <p>ご不安がある場合は、恐れ入りますが<strong>お店へ直接お問い合わせ</strong>ください。可能な範囲でご案内いたします。</p>
-                                                <p className="text-zinc-500">なお、アレルギー等を理由とした商品の指定や入れ替えはお受けできない場合があります。</p>
-                                            </div>
-                                            <div className="mt-3 text-right">
-                                                <button type="button" className="px-3 py-2 rounded-xl border bg-white hover:bg-zinc-50 text-sm" onClick={() => setAllergyOpen(false)}>閉じる</button>
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-                        )}
-                    </div>
-                )}
-            </div >
-
-            {/* シート①：支払い方法の選択 */}
-            {
-                isPayMethodOpen && (
-                    <BottomSheet
-                        open
-                        title="支払い方法を選択"
-                        onClose={() => setIsPayMethodOpen(false)}
-                    >
-                        <div className="px-4 pb-4 space-y-2">
-                            <button
-                                type="button"
-                                className="w-full text-left px-3 py-3 rounded-xl border hover:bg-zinc-50"
-                                onClick={() => {
-                                    setPaymentMethod('card');
-                                    setIsPayMethodOpen(false);
-                                    setIsCardEntryOpen(true); // 次：カード入力へ
-                                }}
-                            >
-                                <div className="font-medium">クレジットカード</div>
-                                <div className="text-xs text-zinc-500">Visa / Mastercard（テスト番号可）</div>
-                            </button>
-                        </div>
-                    </BottomSheet>
-                )
-            }
-
-            {/* シート②：カード番号入力（テスト） */}
-            {
-                isCardEntryOpen && (
-                    <BottomSheet
-                        open
-                        title="カード情報の入力（テスト）"
-                        onClose={() => setIsCardEntryOpen(false)}
-                    >
-                        <div className="px-4 pb-4 space-y-3">
-                            {/* ① まずは使用するカードを選択（スクショの黄色枠イメージ） */}
-                            <div className="space-y-2">
-                                <div className="text-xs text-zinc-500">お支払いに使うカードを選択してください。</div>
-                                {savedCards.map((c) => (
-                                    <div key={c.id} className="flex items-center justify-between rounded-xl border p-3 bg-white">
-                                        <div className="min-w-0">
-                                            <div className="text-sm font-medium truncate">{c.brand} •••• {c.last4}</div>
-                                            <div className="text-[11px] text-zinc-500">保存済みカード</div>
-                                        </div>
-                                        <button
-                                            type="button"
-                                            className="px-3 py-1.5 rounded-lg border bg-zinc-900 text-white hover:bg-zinc-800"
-                                            onClick={() => {
-                                                setSelectedPayLabel(`${c.brand}(${c.last4})`);
-                                                setPaymentMethod('card');
-                                                setIsCardEntryOpen(false);       // このシートを閉じる
-                                                setIsPayMethodOpen(false);       // 前段の選択シートも閉じる
-                                                emitToast("success", "カードを選択しました");
-                                            }}
-                                        >
-                                            選択する
-                                        </button>
-                                    </div>
-                                ))}
-
+                            {/* 引換え */}
+                            <li>
                                 <button
                                     type="button"
-                                    className="w-full text-center text-sm underline decoration-1 underline-offset-2 text-[#6b0f0f]"
-                                    onClick={() => setShowCardFullForm(v => !v)}
+                                    onClick={() => { setOrderTarget(undefined); setTab('order'); }}
+                                    aria-current={tab === 'order' ? 'page' : undefined}
+                                    className={`w-full flex flex-col items-center justify-center gap-1 py-1 ${tab === 'order' ? 'text-black' : 'text-zinc-500'}`}
                                 >
-                                    {showCardFullForm ? "保存済みカードの一覧に戻る" : "別のカードを使う"}
+                                    {/* icon: ticket */}
+                                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none"
+                                        stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                        <path d="M3 9a3 3 0 0 0 0 6h18a3 3 0 0 1 0-6H3Z" />
+                                        <path d="M12 8v8" />
+                                        <path d="M8 8v8" opacity=".3" />
+                                        <path d="M16 8v8" opacity=".3" />
+                                    </svg>
+                                    <span className="text-[11px] leading-none">引換え</span>
                                 </button>
-                            </div>
+                            </li>
 
-                            {/* ② 「別のカードを使う」を押したときだけ、従来の（テスト用）入力フォームを表示 */}
-                            {showCardFullForm && (
-                                <div className="space-y-2">
-                                    <div className="text-xs text-zinc-500">テスト番号：4242 4242 4242 4242 は成功 / 4000 0000 0000 0002 は失敗</div>
+                            {/* アカウント */}
+                            <li>
+                                <button
+                                    type="button"
+                                    onClick={() => setTab('account')}
+                                    aria-current={tab === 'account' ? 'page' : undefined}
+                                    className={`w-full flex flex-col items-center justify-center gap-1 py-1 ${tab === 'account' ? 'text-black' : 'text-zinc-500'}`}
+                                >
+                                    {/* icon: user */}
+                                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none"
+                                        stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                        <path d="M20 21a8 8 0 1 0-16 0" />
+                                        <circle cx="12" cy="8" r="4" />
+                                    </svg>
+                                    <span className="text-[11px] leading-none">アカウント</span>
+                                </button>
+                            </li>
+                        </ul>
+                    </nav>
 
-                                    {(() => {
-                                        const d = cardDigits.replace(/\D/g, "").slice(0, 16);
-                                        const formatted = (d.match(/.{1,4}/g)?.join(" ") ?? d);
-                                        const len = d.length;
-                                        return (
-                                            <>
-                                                <input
-                                                    className="w-full px-3 py-2 rounded border font-mono tracking-widest"
-                                                    placeholder="4242 4242 4242 4242"
-                                                    value={formatted}
-                                                    onChange={(e) => {
-                                                        const nd = e.target.value.replace(/\D/g, "").slice(0, 16);
-                                                        setCardDigits(nd);
-                                                        updateCardLabel(nd); // ← 既存のブランド表示更新（Visa(4242) など）
+                    {/* 規約リンク */}
+                    <div className="max-w-[448px] mx-auto px-4 py-2 text-center text-[10px] text-zinc-500">
+                        <a className="underline cursor-pointer" href="#">利用規約</a> ・ <a className="underline cursor-pointer" href="#">プライバシー</a>
+                    </div>
+
+                    <ToastBar toast={toast} onClose={() => setToast(null)} />
+
+                    {/* ▼▼ Stripe 決済用ボトムシート：client_secret が取れたら表示 ▼▼ */}
+                    <BottomSheet
+                        open={isCheckoutOpen && !!checkoutClientSecret}
+                        title="お支払い（Stripe）"
+                        onClose={() => { setIsCheckoutOpen(false); setCheckoutClientSecret(null); }}
+                    >
+                        {checkoutClientSecret && (
+                            <EmbeddedCheckoutProvider
+                                stripe={stripePromise}
+                                options={{ clientSecret: checkoutClientSecret }}
+                            >
+                                {/* EmbeddedCheckout 自体が注文詳細＋決済UIをすべて描画します */}
+                                <div className="px-0">
+                                    <EmbeddedCheckout />
+                                </div>
+                            </EmbeddedCheckoutProvider>
+                        )}
+                    </BottomSheet>
+
+                    {/* ▲▲ ここまで ▲▲ */}
+
+
+                    {/* 商品詳細モーダル */}
+                    {detail && (
+                        <div role="dialog" aria-modal="true" className="fixed inset-0 z-[2000]">
+                            <div
+                                className="absolute inset-0 bg-black/40 z-[2000]"
+                                onClick={() => setDetail(null)}
+                            />
+                            <div className="absolute inset-0 flex items-center justify-center p-4 z-[2001] pointer-events-none">
+                                <div className="max-w-[520px] w-full bg-white rounded-2xl shadow-xl max-h-[85vh] flex flex-col overflow-hidden pointer-events-auto">
+                                    <div
+                                        className="relative" ref={carouselWrapRef}
+                                    >
+                                        {/* メイン画像（3枚ギャラリー） */}
+                                        {detailImages.length > 0 ? (
+                                            <div className="relative overflow-hidden rounded-t-2xl bg-black aspect-[16/9]">
+                                                <div
+                                                    className="absolute inset-0 h-full"
+                                                    style={{
+                                                        display: 'flex',
+                                                        width: `${(imgCount + 2) * 100}%`, // クローン込みの幅
+                                                        height: '100%',
+                                                        transform: `translateX(-${pos * (100 / (imgCount + 2))}%)`,
+                                                        transition: anim ? 'transform 320ms ease' : 'none',
+                                                        willChange: 'transform',
+                                                        backfaceVisibility: 'hidden',
                                                     }}
-                                                    inputMode="numeric"
-                                                    maxLength={19}
-                                                    autoComplete="cc-number"
-                                                    aria-label="カード番号（テスト）"
-                                                />
-                                                <div className="flex items-center justify-between text-[11px] text-zinc-500">
-                                                    <span>{len}/16 桁</span>
-                                                    <span>4桁ごとにスペース</span>
-                                                </div>
-                                                <div className="h-1 bg-zinc-200 rounded">
-                                                    <div className="h-1 bg-zinc-900 rounded" style={{ width: `${(len / 16) * 100}%` }} />
+                                                    onTransitionEnd={() => {
+                                                        // 1) どのケースでもアニメ終了後は必ず解除
+                                                        setAnim(false);
+
+                                                        // 2) クローン端にいたら本物へ瞬間ジャンプ（transition なし）
+                                                        setPos((p) => {
+                                                            if (p === 0) return imgCount;        // 左端クローン → 末尾の実画像へ
+                                                            if (p === imgCount + 1) return 1;    // 右端クローン → 先頭の実画像へ
+                                                            return p;                            // 中間ならそのまま
+                                                        });
+
+                                                        // 3) 表示中インデックスを確定
+                                                        setGIndex(targetIndexRef.current);
+                                                    }}
+                                                >
+                                                    {loopImages.map((path, i) => (
+                                                        <div key={`slide-${i}-${path}`} style={{ width: `${100 / (imgCount + 2)}%`, height: '100%', flex: `0 0 ${100 / (imgCount + 2)}%` }}>
+                                                            <img
+                                                                src={publicImageUrl(path)!}
+                                                                srcSet={buildVariantsFromPath(path).map(v => `${v.url} ${v.width}w`).join(', ')}
+                                                                sizes="(min-width: 768px) 800px, 100vw"
+                                                                alt={i === pos ? `${detail.item.name} 画像 ${gIndex + 1}/${imgCount}` : ''}
+                                                                className="w-full h-full object-cover select-none"
+                                                                draggable={false}
+                                                                loading={i === pos ? 'eager' : 'lazy'}
+                                                                decoding="async"
+                                                                width={1280}
+                                                                height={720}  /* aspect-[16/9] の枠に合わせた目安 */
+                                                            />
+                                                        </div>
+                                                    ))}
                                                 </div>
 
-                                                <div className="grid grid-cols-2 gap-2 pt-1">
-                                                    <button
-                                                        type="button"
-                                                        className="px-3 py-2 rounded-xl border"
-                                                        onClick={() => setIsCardEntryOpen(false)}
-                                                    >
-                                                        閉じる
-                                                    </button>
-                                                    <button
-                                                        type="button"
-                                                        className="px-3 py-2 rounded-xl border bg-zinc-900 text-white hover:bg-zinc-800"
-                                                        onClick={() => {
-                                                            // 入力値からラベルを更新して採用（4242なら Visa(4242) など）
-                                                            const d4 = (cardDigits.match(/\d{4}$/)?.[0]) ?? "";
-                                                            if (d4) setSelectedPayLabel(`${payBrand.replace(/TEST/, 'クレジットカード')}(${d4})`);
-                                                            setPaymentMethod('card');
-                                                            setIsCardEntryOpen(false);
-                                                            setIsPayMethodOpen(false);
-                                                            emitToast("success", "カードを選択しました");
-                                                        }}
-                                                        disabled={cardDigits.replace(/\D/g, "").length < 12}
-                                                    >
-                                                        このカードを使う
-                                                    </button>
+                                                {/* 枚数バッジ n/n */}
+                                                <div className="absolute right-2 bottom-2 px-2 py-0.5 rounded-full bg-black/60 text-white text-xs">
+                                                    {imgCount > 0 ? (gIndex + 1) : 0}/{imgCount}
                                                 </div>
+                                            </div>
+                                        ) : (
+                                            <div className="w-full h-56 bg-zinc-100 flex items-center justify-center text-6xl rounded-t-2xl">
+                                                <span>{detail.item.photo}</span>
+                                            </div>
+                                        )}
+
+
+                                        {/* 左右ナビ（2枚以上） */}
+                                        {imgCount > 1 && (
+                                            <>
+                                                <GalleryNavBtn side="left" onClick={goPrev} label="前の画像" />
+                                                <GalleryNavBtn side="right" onClick={goNext} label="次の画像" />
                                             </>
-                                        );
-                                    })()}
+                                        )}
+
+
+                                        {/* 閉じる */}
+                                        <button
+                                            type="button"
+                                            aria-label="閉じる"
+                                            className="absolute top-2 right-2 w-8 h-8 rounded-full bg-white/90 border flex items-center justify-center"
+                                            onClick={() => setDetail(null)}
+                                        >✕</button>
+                                    </div>
+
+                                    <div className="p-4 space-y-3 overflow-auto">
+
+
+                                        <div className="text-lg font-semibold leading-tight break-words">{detail.item.name}</div>
+                                        <div className="text-sm text-zinc-600 flex items-center gap-3">
+                                            <span className="inline-flex items-center gap-1">
+                                                <span>⏰</span><span>受取 {detail.item.pickup}</span>
+                                            </span>
+                                            <span className="ml-auto text-xl font-extrabold tabular-nums text-zinc-900">
+                                                {currency(detail.item.price)}
+                                            </span>
+                                        </div>
+                                        <div className="text-sm text-zinc-700 bg-zinc-50 rounded-xl p-3">
+                                            {detail?.item?.note && detail.item.note.trim().length > 0
+                                                ? detail.item.note
+                                                : 'お店のおすすめ商品です。数量限定のため、お早めにお求めください。'}
+                                        </div>
+
+                                        <div className="pt-1">
+                                            <button
+                                                type="button"
+                                                onClick={() => setAllergyOpen(true)}
+                                                className="inline-flex items-center gap-1 text-[13px] text-[#6b0f0f] underline decoration-1 underline-offset-2"
+                                            >
+                                                <span
+                                                    aria-hidden
+                                                    className="inline-grid place-items-center w-4 h-4 rounded-full bg-[#6b0f0f] text-white text-[10px]"
+                                                >i</span>
+                                                <span>アレルギー・原材料について</span>
+                                            </button>
+                                        </div>
+
+                                        {/* ▼ 追加：その直下に残数 */}
+                                        <div className="mt-6 flex justify-center">
+                                            <RemainChip remain={Math.max(0, detail.item.stock - getReserved(detail.shopId, detail.item.id))} />
+                                        </div>
+
+                                        {/* ▼ 追加：中央揃えの増減チップ */}
+                                        <div className=" flex justify-center">
+                                            <QtyChip sid={detail.shopId} it={detail.item} />
+                                        </div>
+
+                                        {/* ▼ 追加：モーダル内の「カートを見る」（ホームと同じコンポーネント） */}
+                                        <div className="pt-3 px-2 mb-6 flex justify-center">
+                                            <ViewCartButton
+                                                className="w-full max-w-[480px] h-12 text-[15px] text-white"
+                                                shopId={detail.shopId}
+                                                onAfterOpenCart={() => setDetail(null)}  // ← 押下後にモーダルを閉じる
+                                            />
+                                        </div>
+                                    </div>
+
+                                </div>
+                            </div>
+                            {allergyOpen && (
+                                <div className="absolute inset-0 z-[2002] pointer-events-none">
+                                    <div className="absolute inset-0 bg-black/30 pointer-events-auto" onClick={() => setAllergyOpen(false)} />
+                                    <div className="absolute left-1/2 -translate-x-1/2 bottom-4 w-full max-w-[520px] px-4 pointer-events-auto">
+                                        <div className="mx-auto rounded-2xl bg-white border shadow-2xl overflow-hidden">
+                                            <div className="py-2 grid place-items-center"><div aria-hidden className="h-1.5 w-12 rounded-full bg-zinc-300" /></div>
+                                            <div className="px-4 pb-4">
+                                                <div className="flex items-center justify-center mb-2">
+                                                    <span className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-red-700 text-white text-sm" aria-hidden>i</span>
+                                                </div>
+                                                <h3 className="text-lg font-semibold text-center mb-2">アレルギー・原材料について</h3>
+                                                <div className="text-sm text-zinc-700 space-y-2">
+                                                    <p>当アプリの商品は食品ロス削減を目的とした性質上、多くの場合、受け取りまで中身がわからない「福袋形式」での販売となります。そのため、個別商品のアレルゲンに関する詳細なご案内が難しいケースがあります。</p>
+                                                    <p>ご不安がある場合は、恐れ入りますが<strong>お店へ直接お問い合わせ</strong>ください。可能な範囲でご案内いたします。</p>
+                                                    <p className="text-zinc-500">なお、アレルギー等を理由とした商品の指定や入れ替えはお受けできない場合があります。</p>
+                                                </div>
+                                                <div className="mt-3 text-right">
+                                                    <button type="button" className="px-3 py-2 rounded-xl border bg-white hover:bg-zinc-50 text-sm" onClick={() => setAllergyOpen(false)}>閉じる</button>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
                                 </div>
                             )}
                         </div>
-                    </BottomSheet>
-                )
-            }
+                    )}
+                </div >
 
+                {/* シート①：支払い方法の選択 */}
+                {
+                    isPayMethodOpen && (
+                        <BottomSheet
+                            open
+                            title="支払い方法を選択"
+                            onClose={() => setIsPayMethodOpen(false)}
+                        >
+                            <div className="px-4 pb-4 space-y-2">
+                                <button
+                                    type="button"
+                                    className="w-full text-left px-3 py-3 rounded-xl border hover:bg-zinc-50"
+                                    onClick={() => {
+                                        setPaymentMethod('card');
+                                        setIsPayMethodOpen(false);
+                                        setIsCardEntryOpen(true); // 次：カード入力へ
+                                    }}
+                                >
+                                    <div className="font-medium">クレジットカード</div>
+                                    <div className="text-xs text-zinc-500">Visa / Mastercard（テスト番号可）</div>
+                                </button>
+                            </div>
+                        </BottomSheet>
+                    )
+                }
 
+                {/* シート②：カード番号入力（テスト） */}
+                {
+                    isCardEntryOpen && (
+                        <BottomSheet
+                            open
+                            title="カード情報の入力（テスト）"
+                            onClose={() => setIsCardEntryOpen(false)}
+                        >
+                            <div className="px-4 pb-4 space-y-3">
+                                {/* ① まずは使用するカードを選択（スクショの黄色枠イメージ） */}
+                                <div className="space-y-2">
+                                    <div className="text-xs text-zinc-500">お支払いに使うカードを選択してください。</div>
+                                    {savedCards.map((c) => (
+                                        <div key={c.id} className="flex items-center justify-between rounded-xl border p-3 bg-white">
+                                            <div className="min-w-0">
+                                                <div className="text-sm font-medium truncate">{c.brand} •••• {c.last4}</div>
+                                                <div className="text-[11px] text-zinc-500">保存済みカード</div>
+                                            </div>
+                                            <button
+                                                type="button"
+                                                className="px-3 py-1.5 rounded-lg border bg-zinc-900 text-white hover:bg-zinc-800"
+                                                onClick={() => {
+                                                    setSelectedPayLabel(`${c.brand}(${c.last4})`);
+                                                    setPaymentMethod('card');
+                                                    setIsCardEntryOpen(false);       // このシートを閉じる
+                                                    setIsPayMethodOpen(false);       // 前段の選択シートも閉じる
+                                                    emitToast("success", "カードを選択しました");
+                                                }}
+                                            >
+                                                選択する
+                                            </button>
+                                        </div>
+                                    ))}
+
+                                    <button
+                                        type="button"
+                                        className="w-full text-center text-sm underline decoration-1 underline-offset-2 text-[#6b0f0f]"
+                                        onClick={() => setShowCardFullForm(v => !v)}
+                                    >
+                                        {showCardFullForm ? "保存済みカードの一覧に戻る" : "別のカードを使う"}
+                                    </button>
+                                </div>
+
+                                {/* ② 「別のカードを使う」を押したときだけ、従来の（テスト用）入力フォームを表示 */}
+                                {showCardFullForm && (
+                                    <div className="space-y-2">
+                                        <div className="text-xs text-zinc-500">テスト番号：4242 4242 4242 4242 は成功 / 4000 0000 0000 0002 は失敗</div>
+
+                                        {(() => {
+                                            const d = cardDigits.replace(/\D/g, "").slice(0, 16);
+                                            const formatted = (d.match(/.{1,4}/g)?.join(" ") ?? d);
+                                            const len = d.length;
+                                            return (
+                                                <>
+                                                    <input
+                                                        className="w-full px-3 py-2 rounded border font-mono tracking-widest"
+                                                        placeholder="4242 4242 4242 4242"
+                                                        value={formatted}
+                                                        onChange={(e) => {
+                                                            const nd = e.target.value.replace(/\D/g, "").slice(0, 16);
+                                                            setCardDigits(nd);
+                                                            updateCardLabel(nd); // ← 既存のブランド表示更新（Visa(4242) など）
+                                                        }}
+                                                        inputMode="numeric"
+                                                        maxLength={19}
+                                                        autoComplete="cc-number"
+                                                        aria-label="カード番号（テスト）"
+                                                    />
+                                                    <div className="flex items-center justify-between text-[11px] text-zinc-500">
+                                                        <span>{len}/16 桁</span>
+                                                        <span>4桁ごとにスペース</span>
+                                                    </div>
+                                                    <div className="h-1 bg-zinc-200 rounded">
+                                                        <div className="h-1 bg-zinc-900 rounded" style={{ width: `${(len / 16) * 100}%` }} />
+                                                    </div>
+
+                                                    <div className="grid grid-cols-2 gap-2 pt-1">
+                                                        <button
+                                                            type="button"
+                                                            className="px-3 py-2 rounded-xl border"
+                                                            onClick={() => setIsCardEntryOpen(false)}
+                                                        >
+                                                            閉じる
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            className="px-3 py-2 rounded-xl border bg-zinc-900 text-white hover:bg-zinc-800"
+                                                            onClick={() => {
+                                                                // 入力値からラベルを更新して採用（4242なら Visa(4242) など）
+                                                                const d4 = (cardDigits.match(/\d{4}$/)?.[0]) ?? "";
+                                                                if (d4) setSelectedPayLabel(`${payBrand.replace(/TEST/, 'クレジットカード')}(${d4})`);
+                                                                setPaymentMethod('card');
+                                                                setIsCardEntryOpen(false);
+                                                                setIsPayMethodOpen(false);
+                                                                emitToast("success", "カードを選択しました");
+                                                            }}
+                                                            disabled={cardDigits.replace(/\D/g, "").length < 12}
+                                                        >
+                                                            このカードを使う
+                                                        </button>
+                                                    </div>
+                                                </>
+                                            );
+                                        })()}
+                                    </div>
+                                )}
+                            </div>
+                        </BottomSheet>
+                    )
+                }
+
+            </PresetMapContext.Provider>
         </MinimalErrorBoundary >
     );
 }

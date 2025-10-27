@@ -9,12 +9,40 @@ import { EmbeddedCheckoutProvider, EmbeddedCheckout, useStripe, useElements, Pay
 import type { QRCodeRenderersOptions } from "qrcode";
 import type { ReactNode } from 'react';
 import { normalizeCode6 } from "@/lib/code6";
-
-
-
-
 // Stripe（ブラウザ用 SDK）
 import { loadStripe } from "@stripe/stripe-js";
+
+// --- ホームで「戻る」= LIFFを閉じる（常時ルート化ガード） ---
+function RootBackGuardOnHome() {
+    React.useEffect(() => {
+        if (typeof window === "undefined") return;
+
+        // ホームに入ったら、履歴の一番上にダミーを積む
+        // これにより最初の「戻る」で popstate が必ず発火する
+        history.pushState({ __homeGuard: true }, "", location.href);
+
+        const onPop = () => {
+            // いまホームなら WebView を閉じて LINE に戻す
+            try {
+                const w = window as any;
+                if (w.liff?.closeWindow) {
+                    w.liff.closeWindow();
+                    return;
+                }
+            } catch { }
+            // フォールバック（ブラウザで開かれた場合など）
+            window.close(); // 多くの環境で無視されるが一応
+            location.href = "about:blank";
+        };
+
+        window.addEventListener("popstate", onPop);
+        return () => window.removeEventListener("popstate", onPop);
+    }, []);
+
+    return null;
+}
+
+
 
 // 新: ロード失敗時は null を返す
 const stripePromise = (async () => {
@@ -3635,6 +3663,7 @@ export default function UserPilotApp() {
     return (
         <MinimalErrorBoundary>
             <div className="min-h-screen bg-[#faf8f4]">{/* 柔らかいベージュ背景 */}
+                <RootBackGuardOnHome />
                 {tab !== "home" && (
                     <header
                         className={[

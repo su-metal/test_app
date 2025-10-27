@@ -72,11 +72,13 @@ export async function POST(req: NextRequest) {
 
     // HH:MM(〜|?|-)HH:MM を当日JSTのISOへ変換
     function parsePickupLabelToJstIsoRange(label?: string): { start?: string; end?: string } {
+      // どんな区切り(〜,～,-,–,—, to, 空白など)でも「時刻2つ」を検出して当日JSTのISOへ
       const text = String(label || "").trim();
       if (!text) return {};
-      const m = text.match(/(\d{1,2}:\d{2})\s*[?\-??~]\s*(\d{1,2}:\d{2})/);
+      const m = text.match(/\b(\d{1,2}:\d{2})\b.*?\b(\d{1,2}:\d{2})\b/);
       if (!m) return {};
-      const [_, a, b] = m;
+      const a = m[1];
+      const b = m[2];
       const pad = (s: string) => (s.length === 1 ? `0${s}` : s);
       const toIso = (hhmm: string) => {
         const [hh, mm] = hhmm.split(":");

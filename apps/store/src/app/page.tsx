@@ -40,6 +40,8 @@ type OrdersRow = {
   // TODO(req v2): DB スキーマ生成型に統一（supabase gen types）
   pickup_start?: string | null;
   pickup_end?: string | null;
+  pickup_label?: string | null;
+  pickup_presets_snapshot?: any | null;
 };
 
 type Order = {
@@ -53,6 +55,8 @@ type Order = {
   status: OrderStatus;
   pickupStart: string | null;
   pickupEnd: string | null;
+  pickupLabel?: string | null;
+  presetLabel?: string | null;
 };
 
 type ProductsRow = {
@@ -133,6 +137,8 @@ function mapOrder(r: OrdersRow): Order {
     status,
     pickupStart: (r as any).pickup_start ?? null,
     pickupEnd: (r as any).pickup_end ?? null,
+    pickupLabel: (r as any).pickup_label ?? null,
+    presetLabel: (() => { try { const s: any = (r as any).pickup_presets_snapshot ?? null; const st: any = s?.start_time ?? s?.start; const en: any = s?.end_time ?? s?.end; return (st && en) ? `${String(st).slice(0, 5)}〜${String(en).slice(0, 5)}` : null; } catch { return null; } })(),
   };
 }
 function mapProduct(r: ProductsRow): Product {
@@ -906,6 +912,71 @@ const StatusBadge = React.memo(function StatusBadge({ status }: { status: OrderS
 const OrderCard = React.memo(function OrderCard({ order, onHandoff }: { order: Order; onHandoff: (o: Order) => void; }) {
   const onClick = useCallback(() => onHandoff(order), [onHandoff, order]);
   const mounted = useMounted();
+  const supabase = useSupabase();
+  const [presetLabelCur, setPresetLabelCur] = React.useState("");
+  React.useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        if (!supabase) return;
+        const sid = String(order.storeId || "").trim();
+        if (!sid) return;
+        const { data: storeRow } = await (supabase as any)
+          .from('stores')
+          .select('current_pickup_slot_no')
+          .eq('id', sid)
+          .single();
+        const slotNo: number | null = (storeRow?.current_pickup_slot_no ?? null);
+        if (slotNo == null) { if (alive) setPresetLabelCur(''); return; }
+        const { data: presetRows } = await (supabase as any)
+          .from('store_pickup_presets')
+          .select('start_time,end_time')
+          .eq('store_id', sid)
+          .eq('slot_no', slotNo)
+          .limit(1);
+        const row = Array.isArray(presetRows) ? presetRows[0] : null;
+        if (row) {
+          const st = String(row.start_time || '').slice(0, 5);
+          const en = String(row.end_time || '').slice(0, 5);
+          if (alive) setPresetLabelCur(`${st}〜${en}`);
+        } else {
+          if (alive) setPresetLabelCur('');
+        }
+      } catch { /* noop */ }
+    })();
+    return () => { alive = false; };
+  }, [supabase, order.storeId]);
+  // 商品の pickup_slot_no から「店舗受取可能時間（プリセット）」を導出
+  const { presets } = usePickupPresets();
+  React.useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        if (!supabase) return;
+        const ids = Array.from(new Set((order.items || []).map(it => String(it.id || '').trim()).filter(Boolean)));
+        if (ids.length === 0) { if (alive) setPresetLabelCur(''); return; }
+        const { data: prows } = await (supabase as any)
+          .from('products')
+          .select('id,pickup_slot_no')
+          .in('id', ids);
+        const slots = new Set<number>();
+        for (const r of prows || []) {
+          const n = (r as any)?.pickup_slot_no;
+          if (typeof n === 'number' && n >= 1 && n <= 3) slots.add(n);
+        }
+        if (slots.size === 0) { if (alive) setPresetLabelCur(''); return; }
+        const labels: string[] = [];
+        for (const n of Array.from(slots).sort()) {
+          const p = (presets as any)[n as 1|2|3];
+          if (p && p.start && p.end) labels.push(`${p.start}〜${p.end}`);
+        }
+        if (alive) setPresetLabelCur(labels.join(' / '));
+      } catch {
+        if (alive) setPresetLabelCur('');
+      }
+    })();
+    return () => { alive = false; };
+  }, [supabase, order.items, presets]);
   const jpPickupRange = React.useMemo(() => {
     const fmt = (iso: string) => {
       try {
@@ -927,6 +998,16 @@ const OrderCard = React.memo(function OrderCard({ order, onHandoff }: { order: O
       </div>
       <div className="text-sm text-zinc-600">注文ID: {order.id}</div>
       <div className="text-sm text-zinc-700">受取時間: {jpPickupRange}</div>
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+        <div className="text-sm">
+          <div className="inline-block rounded-full border px-2 py-0.5 text-xs text-zinc-600 mb-1">注文時に選択した受取時間</div>
+          <div className="text-zinc-800 font-medium">{jpPickupRange}</div>
+        </div>
+        <div className="text-sm">
+          <div className="inline-block rounded-full border px-2 py-0.5 text-xs text-zinc-600 mb-1">店舗受取可能時間（プリセット）</div>
+          <div className="text-zinc-800 font-medium">{presetLabelCur || '未設定'}</div>
+        </div>
+      </div>
       <ul className="text-sm text-zinc-800 space-y-1">
         {order.items.map((it) => (
           <li key={it.id} className="flex items-center justify-between">

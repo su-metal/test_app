@@ -155,15 +155,14 @@ export async function POST(req: NextRequest) {
         .toString()
         .padStart(6, "0");
     }
-    function parsePickupLabelToJstIsoRange(label?: string): {
-      start?: string;
-      end?: string;
-    } {
+    function parsePickupLabelToJstIsoRange(label?: string): { start?: string; end?: string } {
+      // どんな区切り(〜,～,-,–,—, to, 空白など)でも「時刻2つ」を検出して当日JSTのISOへ
       const text = String(label || "").trim();
       if (!text) return {};
-      const m = text.match(/(\d{1,2}:\d{2})\s*[?\-??~]\s*(\d{1,2}:\d{2})/);
-      if (!m) return {};
-      const [_, a, b] = m;
+      const times = text.match(/\b(\d{1,2}:\d{2})\b.*?\b(\d{1,2}:\d{2})\b/);
+      if (!times) return {};
+      const a = times[1];
+      const b = times[2];
       const pad = (s: string) => (s.length === 1 ? `0${s}` : s);
       const toIso = (hhmm: string) => {
         const [hh, mm] = hhmm.split(":");

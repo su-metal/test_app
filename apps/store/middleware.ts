@@ -16,13 +16,14 @@ function isPublicPath(pathname: string) {
   ) {
     return true;
   }
+  // 拡張子で静的ファイルを除外
   if (/\.(ico|png|jpg|jpeg|gif|svg|webp|avif|css|js|map)$/i.test(pathname)) {
     return true;
   }
   return false;
 }
 
-/** サーバ側でセッション検査（未ログイン/ログイン済み/店舗未選択を厳密判定） */
+/** セッション検査（未ログイン/ログイン済み/店舗未選択を厳密判定） */
 async function inspectSession(
   req: NextRequest
 ): Promise<{ ok: boolean; store_id: string | null }> {
@@ -32,7 +33,7 @@ async function inspectSession(
       headers: { cookie: req.headers.get("cookie") ?? "" },
       cache: "no-store",
     });
-    if (!res.ok) return { ok: false, store_id: null }; // 401 などは未ログイン扱い
+    if (!res.ok) return { ok: false, store_id: null }; // 401等は未ログイン扱い
     const data = (await res.json().catch(() => ({}))) as {
       ok?: boolean;
       store_id?: string | null;
@@ -46,12 +47,18 @@ async function inspectSession(
 export async function middleware(req: NextRequest) {
   const { pathname, origin, search } = req.nextUrl;
 
-  // 公開パスは素通し
+  // 1) 公開パスは素通し
   if (isPublicPath(pathname)) return NextResponse.next();
 
-  // API
+  // 2) API の扱い
   if (pathname.startsWith("/api/")) {
-    if (req.method === "OPTIONS") return NextResponse.next(); // CORSプリフライト
+    // CORSプリフライトは常に許可
+    if (req.method === "OPTIONS") return NextResponse.next();
+
+    // 認証系APIは公開（/api/auth/* は通す）
+    if (pathname.startsWith("/api/auth/")) return NextResponse.next();
+
+    // それ以外のAPIは未ログインなら401
     const session = await inspectSession(req);
     if (!session.ok) {
       return NextResponse.json(
@@ -62,8 +69,12 @@ export async function middleware(req: NextRequest) {
     return NextResponse.next();
   }
 
-  // ページ（/ を含む）
+  // 3) 通常ページ（/ を含む）
   const session = await inspectSession(req);
+
+  // ★ フォールバック: store_selected クッキーを採用
+  const cookieSelected = req.cookies.get("store_selected")?.value || null;
+  const effectiveStoreId = session.store_id ?? cookieSelected;
 
   // 未ログイン → 必ず /login
   if (!session.ok) {
@@ -78,8 +89,16 @@ export async function middleware(req: NextRequest) {
     );
   }
 
-  // ログイン済み・店舗未選択 → /select-store（※ 既にそこなら通過）
-  if (!session.store_id && !pathname.startsWith("/select-store")) {
+  // ★ 保険: 既に store が選ばれているのに /select-store に居る → ホームへ戻す
+  if (pathname.startsWith("/select-store") && effectiveStoreId) {
+    if (req.method === "GET" || req.method === "HEAD") {
+      return NextResponse.redirect(new URL("/", origin));
+    }
+    return NextResponse.json({ ok: true }, { status: 204 });
+  }
+
+  // ログイン済み・店舗未選択 → /select-store（※ 既にそこなら素通し）
+  if (!effectiveStoreId && !pathname.startsWith("/select-store")) {
     if (req.method === "GET" || req.method === "HEAD") {
       return NextResponse.redirect(new URL("/select-store", origin));
     }
@@ -89,7 +108,9 @@ export async function middleware(req: NextRequest) {
     );
   }
 
+  // 通過
   return NextResponse.next();
 }
 
+/** すべてのパスに適用（公開パスは本文で除外） */
 export const config = { matcher: ["/:path*"] };

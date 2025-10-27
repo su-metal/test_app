@@ -12,35 +12,101 @@ import { normalizeCode6 } from "@/lib/code6";
 // Stripe（ブラウザ用 SDK）
 import { loadStripe } from "@stripe/stripe-js";
 
-// --- ホームで「戻る」= LIFFを閉じる（常時ルート化ガード） ---
+
+// --- LIFF 初期化（closeWindow を確実に動かすため） ---
+function useInitLiffOnce() {
+    React.useEffect(() => {
+        const liffId = process.env.NEXT_PUBLIC_LIFF_ID;
+        if (!liffId) return; // 未設定なら何もしない（closeWindow は端末依存で動くこともある）
+
+        let disposed = false;
+        (async () => {
+            try {
+                const mod = await import("@line/liff"); // 動的 import で SSR 回避
+                if (disposed) return;
+
+                const liff = mod.default;
+                if (!liff.isInClient()) return; // LIFF外なら無理に init しない
+
+                // すでに初期化中/済みでも安全に使えるように、window に Promise をキャッシュ
+                const g = window as any;
+                if (!g.__liffInitPromise) {
+                    g.__liffInitPromise = liff.init({ liffId }).catch(() => {
+                        // 既に初期化済み／二重初期化エラーなどは握りつぶす
+                    });
+                }
+                // 初期化が終わるのを待つ（失敗時も先へ進めるフォールバック）
+                await Promise.resolve(g.__liffInitPromise).catch(() => { });
+                // SDK の ready（初期化完了）も待つ
+                await Promise.resolve((liff as any).ready).catch(() => { });
+
+            } catch {
+                // noop: 未初期化でも後続フォールバックで閉じる試行は行う
+            }
+        })();
+        return () => { disposed = true; };
+    }, []);
+}
+
+
+// --- ホームで「戻る」= LIFFを閉じる（毎回ルート固定 & 競合耐性あり） ---
 function RootBackGuardOnHome() {
+    useInitLiffOnce();
+
     React.useEffect(() => {
         if (typeof window === "undefined") return;
 
-        // ホームに入ったら、履歴の一番上にダミーを積む
-        // これにより最初の「戻る」で popstate が必ず発火する
-        history.pushState({ __homeGuard: true }, "", location.href);
+        // ① ダミー履歴を「二段」積む（pop を1回吸収しても、もう1回分残す）
+        //   - A(元) → B(ダミー1) → C(ダミー2=現行)
+        //   - 戻る1回目: C→B (popstate発火) … ここで forward/push で吸収しつつ closeWindow
+        //   - 戻る2回目: 端末が二度目の戻るを要求しても、同様に吸収
+        const href = location.href;
+        history.pushState({ __homeGuard: 1 }, "", href);
+        history.pushState({ __homeGuard: 2 }, "", href);
 
-        const onPop = () => {
-            // いまホームなら WebView を閉じて LINE に戻す
+        // ② タブ同期（?tab=… の replaceState）による直後の上書きを防ぐため、数 ms 遅延で印を付け直す
+        //    ※ この関数自体が一度だけ走ればよい（ホーム初回マウント時）
+        setTimeout(() => {
+            try { history.replaceState({ __homeGuard: 3 }, "", location.href); } catch { }
+        }, 16);
+
+        const tryClose = async () => {
+            // LIFF優先で閉じる
             try {
                 const w = window as any;
                 if (w.liff?.closeWindow) {
-                    w.liff.closeWindow();
+                    await w.liff.closeWindow();
                     return;
                 }
-            } catch { }
-            // フォールバック（ブラウザで開かれた場合など）
-            window.close(); // 多くの環境で無視されるが一応
-            location.href = "about:blank";
+            } catch { /* fallthrough */ }
+
+            // フォールバック1: window.close()
+            try { window.close(); } catch { }
+
+            // フォールバック2: about:blank に置換（戻れない）
+            try { location.replace("about:blank"); } catch { }
+        };
+
+        const onPop = (ev: PopStateEvent) => {
+            // 直前の戻るで別画面へ遷移しきる前に「前へ戻す」か「再push」して吸収
+            try {
+                // 履歴を再び一段進め、常にこのページに留まる
+                history.forward();         // forward できない場合もあるが harmless
+                history.pushState({ __homeGuard: Date.now() }, "", href);
+            } catch { /* noop */ }
+
+            // 少し遅らせて閉じる（forward/push の適用を優先）
+            setTimeout(tryClose, 0);
         };
 
         window.addEventListener("popstate", onPop);
+
         return () => window.removeEventListener("popstate", onPop);
     }, []);
 
     return null;
 }
+
 
 
 
@@ -1791,6 +1857,12 @@ export default function UserPilotApp() {
     // --- URL ↔ タブ連携: タブ変更時に ?tab= をURLへ反映（履歴は汚さない）---
     useEffect(() => {
         if (typeof window === "undefined") return;
+        // ★ ホームをルート固定している最中は、ガードの印を消さない
+        if (tab === "home") {
+            // 置換ではなく「同じURLに対する replace のみ」に留める（ダミー履歴を壊さない）
+            const u0 = new URL(window.location.href);
+            if (u0.searchParams.get("tab") === "home") return; // 既に home なら何もしない
+        }
         const url = new URL(window.location.href);
         url.searchParams.set("tab", tab);
         // ハッシュ方式も許容したい場合は以下を使う（どちらか片方でOK）

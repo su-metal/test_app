@@ -9,7 +9,6 @@ export const runtime = "nodejs"; // Stripe は Node ランタイム
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
 
-
 // ─────────────────────────────────────────────────────────────
 // ENV / Helpers
 // ─────────────────────────────────────────────────────────────
@@ -55,6 +54,19 @@ export async function POST(req: NextRequest) {
     }
     if (!lineUserId) {
       body = await req.json().catch(() => null);
+      // localhost 開発時の LIFF スキップ（UI から dev_skip_liff: true を送る）
+      try {
+        const host = req.headers.get("host") || "";
+        const isLocalHost =
+          /^localhost(?::\d+)?$/i.test(host) ||
+          /^127\.0\.0\.1(?::\d+)?$/i.test(host) ||
+          /^\[::1\](?::\d+)?$/i.test(host);
+        if (isLocalHost && body?.dev_skip_liff === true) {
+          lineUserId = "dev_local_user"; // 開発用ダミー
+        }
+      } catch {
+        /* noop */
+      }
       const tokenInBody: string | undefined = body?.id_token || body?.idToken;
       if (tokenInBody)
         lineUserId = await verifyLiffTokenString(String(tokenInBody));
@@ -119,6 +131,7 @@ export async function POST(req: NextRequest) {
     // B-2: プレオーダー（仮注文）作成
     const API_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
     const ANON = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+    const SERVICE = process.env.SUPABASE_SERVICE_ROLE_KEY || ANON;
     if (!API_URL || !ANON) {
       return NextResponse.json(
         { error: "server-misconfig:supabase" },
@@ -169,6 +182,50 @@ export async function POST(req: NextRequest) {
     }
     const pick = parsePickupLabelToJstIsoRange(String(pickup || ""));
 
+    // 店舗受取可能時間のプリセット・スナップショット（可能なら取得）
+    let pickupPresetSnapshot: any | null = null;
+    try {
+      if (storeId) {
+        const sRes = await fetch(
+          `${API_URL}/rest/v1/stores?id=eq.${encodeURIComponent(
+            String(storeId)
+          )}&select=current_pickup_slot_no`,
+          {
+            headers: { apikey: ANON, Authorization: `Bearer ${ANON}` },
+            cache: "no-store",
+          }
+        );
+        if (sRes.ok) {
+          const sRows = await sRes.json();
+          const slotNo = sRows?.[0]?.current_pickup_slot_no;
+          if (slotNo != null) {
+            const pRes = await fetch(
+              `${API_URL}/rest/v1/store_pickup_presets?store_id=eq.${encodeURIComponent(
+                String(storeId)
+              )}&slot_no=eq.${encodeURIComponent(
+                String(slotNo)
+              )}&select=slot_no,name,start_time,end_time,slot_minutes`,
+              {
+                headers: { apikey: ANON, Authorization: `Bearer ${ANON}` },
+                cache: "no-store",
+              }
+            );
+            if (pRes.ok) {
+              const pRows = await pRes.json();
+              pickupPresetSnapshot = Array.isArray(pRows)
+                ? pRows[0] ?? null
+                : pRows ?? null;
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.warn(
+        "[create-checkout-session] pickup preset snapshot warn:",
+        (e as any)?.message || e
+      );
+    }
+
     const preOrderPayload: any = {
       store_id: String(storeId ?? ""),
       code: code6(),
@@ -180,12 +237,15 @@ export async function POST(req: NextRequest) {
     };
     if (pick?.start) preOrderPayload.pickup_start = pick.start;
     if (pick?.end) preOrderPayload.pickup_end = pick.end;
+    // TODO(req v2): 小計・割引・手数料の正式分離
+
+    // TODO(req v2): スナップショット構造は要件書の正式定義へ
 
     const preRes = await fetch(`${API_URL}/rest/v1/orders?select=id,code`, {
       method: "POST",
       headers: {
-        apikey: ANON,
-        Authorization: `Bearer ${ANON}`,
+        apikey: SERVICE,
+        Authorization: `Bearer ${SERVICE}`,
         "Content-Type": "application/json",
         Prefer: "return=representation",
       },
@@ -203,6 +263,12 @@ export async function POST(req: NextRequest) {
     const pre = Array.isArray(preRows) ? preRows[0] : preRows;
     const orderId: string = String(pre?.id || "");
     const orderCode: string = String(pre?.code || "");
+    console.info("[create-checkout-session] pre-order created", {
+      orderId,
+      code: orderCode,
+      items: items.length,
+      total,
+    });
     if (!orderId)
       return NextResponse.json(
         { error: "preorder_id_missing" },
@@ -240,6 +306,35 @@ export async function POST(req: NextRequest) {
       },
       client_reference_id: orderCode || undefined,
     };
+
+    // メタデータの揺れを抑えるため冪等情報を同梱
+    try {
+      (params.metadata as any).email = String(userEmail ?? "");
+      (params.metadata as any).line_user_id = String(lineUserId ?? "");
+      (params.metadata as any).total_yen = String(total);
+      (params.metadata as any).items_json = JSON.stringify(items);
+      if (pickupPresetSnapshot) {
+        (params.metadata as any).pickup_presets_json =
+          JSON.stringify(pickupPresetSnapshot);
+      }
+      (params.payment_intent_data as any).metadata = {
+        ...((params.payment_intent_data as any)?.metadata || {}),
+        order_id: orderId,
+        line_user_id: String(lineUserId ?? ""),
+        store_id: String(storeId ?? ""),
+        total_yen: String(total),
+        items_json: JSON.stringify(items),
+        pickup_label: String(pickup ?? ""),
+        ...(pickupPresetSnapshot
+          ? { pickup_presets_json: JSON.stringify(pickupPresetSnapshot) }
+          : {}),
+      };
+    } catch (e) {
+      console.warn(
+        "[create-checkout-session] metadata enrich warn:",
+        (e as any)?.message || e
+      );
+    }
 
     const session = await stripe.checkout.sessions.create(params);
     return NextResponse.json(

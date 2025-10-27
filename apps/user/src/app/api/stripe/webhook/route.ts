@@ -71,7 +71,10 @@ export async function POST(req: NextRequest) {
       return new NextResponse("ok", { status: 200 });
 
     // HH:MM(〜|?|-)HH:MM を当日JSTのISOへ変換
-    function parsePickupLabelToJstIsoRange(label?: string): { start?: string; end?: string } {
+    function parsePickupLabelToJstIsoRange(label?: string): {
+      start?: string;
+      end?: string;
+    } {
       // どんな区切り(〜,～,-,–,—, to, 空白など)でも「時刻2つ」を検出して当日JSTのISOへ
       const text = String(label || "").trim();
       if (!text) return {};
@@ -102,7 +105,9 @@ export async function POST(req: NextRequest) {
       // Stripe 側メタデータ（Session / PI）を統合
       const md: Record<string, any> = (session.metadata || {}) as any;
       let piMeta: Record<string, any> = {};
-      try { piMeta = ((session.payment_intent as any)?.metadata || {}) as any; } catch {}
+      try {
+        piMeta = ((session.payment_intent as any)?.metadata || {}) as any;
+      } catch {}
       const meta = { ...piMeta, ...md } as Record<string, any>;
       const totalYenStr: string | undefined = meta.total_yen;
       const itemsJson: string | undefined = meta.items_json;
@@ -120,33 +125,42 @@ export async function POST(req: NextRequest) {
             process.env.SUPABASE_SERVICE_ROLE_KEY ||
             process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
           if (API_URL && SERVICE) {
-            const patch: Record<string, any> = { placed_at: new Date().toISOString() };
-            if (typeof totalYenStr === 'string' && /^\d+$/.test(totalYenStr)) {
+            const patch: Record<string, any> = {
+              placed_at: new Date().toISOString(),
+            };
+            if (typeof totalYenStr === "string" && /^\d+$/.test(totalYenStr)) {
               const n = Math.max(0, Number(totalYenStr) || 0);
               patch.total = n;
               // TODO(req v2): ここでは小計=合計（送料・手数料なし）
               patch.subtotal = n;
             }
-            if (typeof itemsJson === 'string' && itemsJson.trim()) {
-              try { patch.items = JSON.parse(itemsJson); } catch {}
+            if (typeof itemsJson === "string" && itemsJson.trim()) {
+              try {
+                patch.items = JSON.parse(itemsJson);
+              } catch {}
             }
-            if (typeof pickupLabel === 'string' && pickupLabel.trim()) {
+            if (typeof pickupLabel === "string" && pickupLabel.trim()) {
               patch.pickup_label = pickupLabel;
               const r = parsePickupLabelToJstIsoRange(pickupLabel);
               if (r.start) patch.pickup_start = r.start;
               if (r.end) patch.pickup_end = r.end;
             }
-            if (typeof presetJson === 'string' && presetJson.trim()) {
-              try { patch.pickup_presets_snapshot = JSON.parse(presetJson); } catch {}
+            if (typeof presetJson === "string" && presetJson.trim()) {
+              try {
+                patch.pickup_presets_snapshot = JSON.parse(presetJson);
+              } catch {}
             }
             console.info("[stripe/webhook] checkout.session.completed", {
               orderId,
               hasItems: !!patch.items,
-              itemsCount: Array.isArray(patch.items) ? patch.items.length : undefined,
+              itemsCount: Array.isArray(patch.items)
+                ? patch.items.length
+                : undefined,
               total: patch.total,
               pickup_label: patch.pickup_label,
             });
-            await fetch(`${API_URL}/rest/v1/orders?id=eq.${encodeURIComponent(orderId)}`,
+            await fetch(
+              `${API_URL}/rest/v1/orders?id=eq.${encodeURIComponent(orderId)}`,
               {
                 method: "PATCH",
                 headers: {
@@ -167,28 +181,60 @@ export async function POST(req: NextRequest) {
                 // 店舗名の取得（表示用）
                 let storeName: string | undefined;
                 try {
-                  const storeId = String(meta.store_id || '').trim();
+                  const storeId = String(meta.store_id || "").trim();
                   if (storeId && API_URL) {
-                    const sRes = await fetch(`${API_URL}/rest/v1/stores?id=eq.${encodeURIComponent(storeId)}&select=name&limit=1`, { headers: { apikey: SERVICE, Authorization: `Bearer ${SERVICE}` }, cache: 'no-store' });
-                    if (sRes.ok) { const arr = await sRes.json(); storeName = arr?.[0]?.name || undefined; }
+                    const sRes = await fetch(
+                      `${API_URL}/rest/v1/stores?id=eq.${encodeURIComponent(
+                        storeId
+                      )}&select=name&limit=1`,
+                      {
+                        headers: {
+                          apikey: SERVICE,
+                          Authorization: `Bearer ${SERVICE}`,
+                        },
+                        cache: "no-store",
+                      }
+                    );
+                    if (sRes.ok) {
+                      const arr = await sRes.json();
+                      storeName = arr?.[0]?.name || undefined;
+                    }
                   }
                 } catch {}
-                const totalText = typeof patch.total === 'number' ? `合計: ￥${patch.total.toLocaleString('ja-JP')}` : '';
-                const pickupText = patch.pickup_label ? `受取時間: ${patch.pickup_label}` : '';
+
+                // ★ 置き換え：チケットURLを固定値に
+                const ticketUrl =
+                  "https://liff.line.me/2008314807-lxkoyj4r/?tab=order";
+
+                // 受取時間は DB に書いた値を最優先（なければ metadata の値）
+                const pickupLabelForText = String(
+                  (patch as any)?.pickup_label || pickupLabel || ""
+                );
+
+                // ご指定フォーマットの本文を組み立て
+                const text = [
+                  "お支払いありがとうございます。",
+                  "ご注文を受け付けました🎉",
+                  `店舗名：${storeName ?? ""}`,
+                  `受取時間：${pickupLabelForText}`,
+                  "",
+                  `チケットを表示：${ticketUrl}`,
+                  "",
+                  "たべディグ",
+                  "リンクを開くにはこちらをタップ",
+                ].join("\n");
+
+                // LINE Push メッセージ
                 const body = {
                   to,
-                  messages: [
-                    { type: 'text', text: [storeName ? `【${storeName}】` : '', 'ご注文ありがとうございました。', totalText, pickupText].filter(Boolean).join('\n') || 'ご注文ありがとうございました。' },
-                  ],
+                  messages: [{ type: "text", text }],
                 };
-                await fetch('https://api.line.me/v2/bot/message/push', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-                  body: JSON.stringify(body),
-                });
               }
             } catch (e) {
-              console.warn('[stripe/webhook] line push warn:', (e as any)?.message || e);
+              console.warn(
+                "[stripe/webhook] line push warn:",
+                (e as any)?.message || e
+              );
             }
           }
         } catch {}

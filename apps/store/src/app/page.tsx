@@ -3625,35 +3625,76 @@ export default function StoreApp() {
 
     read(); window.addEventListener('hashchange', read); return () => window.removeEventListener('hashchange', read);
   }, []);
+
+  // --- 追加：ログアウト処理 ---
+  const logout = React.useCallback(async () => {
+    try {
+      // 1) クライアント側の選択情報などを掃除
+      try { localStorage.removeItem('store:selected'); } catch { }
+      try { (window as any).__STORE_ID__ = ""; } catch { }
+
+      // 2) サーバCookie（store_session）を無効化
+      await fetch("/api/auth/logout", { method: "POST", credentials: "include" }).catch(() => { });
+
+      // 3) ログイン画面へ
+      location.href = "/login";
+    } catch {
+      // 失敗しても最後はログインへ逃す
+      location.href = "/login";
+    }
+  }, []);
+
   const routeForUI = mounted ? route : 'orders';
 
   return (
     <div className="min-h-screen bg-zinc-50">
       <header className="sticky top-0 z-40 bg-white/80 backdrop-blur supports-[backdrop-filter]:bg-white/60 border-b">
         <div className="mx-auto max-w-[448px] lg:max-w-6xl px-4 py-3 flex items-center justify-between gap-2">
-          {/* <div className="text-base font-semibold tracking-tight shrink-0">店側アプリ</div> */}
+          {/* 左：ナビ */}
           <nav className="flex flex-wrap items-center gap-1 gap-y-1 text-sm">
-            <a href="#/orders" className={`px-3 py-1.5 rounded-lg border shrink-0 ${routeForUI === 'orders' ? 'bg-zinc-900 text-white border-zinc-900' : 'bg-white text-zinc-700 hover:bg-zinc-50'}`} suppressHydrationWarning>注文管理</a>
-            <a href="#/products" className={`px-3 py-1.5 rounded-lg border shrink-0 ${routeForUI === 'products' ? 'bg-zinc-900 text-white border-zinc-900' : 'bg-white text-zinc-700 hover:bg-zinc-50'}`} suppressHydrationWarning>商品管理</a>
+            <a
+              href="#/orders"
+              className={`px-3 py-1.5 rounded-lg border shrink-0 ${routeForUI === 'orders' ? 'bg-zinc-900 text-white border-zinc-900' : 'bg-white text-zinc-700 hover:bg-zinc-50'}`}
+              suppressHydrationWarning
+            >
+              注文管理
+            </a>
+            <a
+              href="#/products"
+              className={`px-3 py-1.5 rounded-lg border shrink-0 ${routeForUI === 'products' ? 'bg-zinc-900 text-white border-zinc-900' : 'bg-white text-zinc-700 hover:bg-zinc-50'}`}
+              suppressHydrationWarning
+            >
+              商品管理
+            </a>
             <a
               href="#/pickup"
-              className={`px-3 py-1.5 rounded-lg border shrink-0 ${routeForUI === 'pickup' ? 'bg-zinc-900 text-white border-zinc-900' : 'bg-white text-zinc-700 hover:bg-zinc-50'
-                }`}
+              className={`px-3 py-1.5 rounded-lg border shrink-0 ${routeForUI === 'pickup' ? 'bg-zinc-900 text-white border-zinc-900' : 'bg-white text-zinc-700 hover:bg-zinc-50'}`}
               suppressHydrationWarning
             >
               受取時間
             </a>
-
             <a
               href="/analytics"
               className="px-3 py-1.5 rounded-lg border shrink-0 bg-white text-zinc-700 hover:bg-zinc-50"
             >
               売上・分析
             </a>
-
           </nav>
+
+          {/* 右：ログアウト */}
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={logout}
+              className="px-3 py-1.5 rounded-lg border shrink-0 bg-white text-zinc-700 hover:bg-zinc-50 mr-5"
+              title="ログアウト"
+            >
+              ログアウト
+            </button>
+          </div>
         </div>
       </header>
+
       {routeForUI === 'orders' ? <OrdersPage /> : routeForUI === 'products' ? <ProductsPage /> : <PickupPresetPage />}
     </div>
   );

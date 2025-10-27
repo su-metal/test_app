@@ -8,37 +8,76 @@ function isUnauthed(req: NextRequest) {
   return !v || v === "undefined" || v.length < 16;
 }
 
-export function middleware(req: NextRequest) {
-  const { pathname } = req.nextUrl;
+/** 静的アセットや Next 内部パス、ヘルスチェックを除外 */
+function isPublicPath(pathname: string) {
+  if (
+    pathname.startsWith("/login") ||
+    pathname.startsWith("/_next/") ||
+    pathname.startsWith("/static/") ||
+    pathname.startsWith("/favicon") ||
+    pathname === "/robots.txt" ||
+    pathname === "/sitemap.xml" ||
+    pathname === "/healthz"
+  ) {
+    return true;
+  }
+  // 拡張子で静的ファイルを除外
+  if (/\.(ico|png|jpg|jpeg|gif|svg|webp|avif|css|js|map)$/i.test(pathname)) {
+    return true;
+  }
+  return false;
+}
 
-  // API（認証API以外）は未ログインなら 401 JSON
+export function middleware(req: NextRequest) {
+  const { pathname, origin, search } = req.nextUrl;
+
+  // 1) 公開パスは素通し
+  if (isPublicPath(pathname)) {
+    return NextResponse.next();
+  }
+
+  // 2) API ルート
   if (pathname.startsWith("/api/")) {
+    // 2-1) CORS プリフライトは常に許可
+    if (req.method === "OPTIONS") {
+      return NextResponse.next();
+    }
+    // 2-2) 認証系 API は公開
+    if (pathname.startsWith("/api/auth/")) {
+      return NextResponse.next();
+    }
+    // 2-3) それ以外の API は未ログインなら 401 JSON
     if (isUnauthed(req)) {
-      return new NextResponse(JSON.stringify({ error: "unauthorized" }), {
-        status: 401,
-        headers: { "content-type": "application/json; charset=utf-8" },
-      });
+      return NextResponse.json(
+        { ok: false, error: "UNAUTHORIZED" },
+        { status: 401 }
+      );
     }
     return NextResponse.next();
   }
 
-  // ページは未ログインなら /login へ 302
+  // 3) 通常ページ（トップ `/` を含む）
   if (isUnauthed(req)) {
-    const url = req.nextUrl.clone();
-    url.pathname = "/login";
-    url.search = "";
-    return NextResponse.redirect(url);
+    // GET/HEAD のみ 302 リダイレクト。それ以外は 401 を返す（副作用回避）
+    if (req.method === "GET" || req.method === "HEAD") {
+      const loginUrl = new URL("/login", origin);
+      // 元の訪問先を保持したい場合は next を付与（任意）
+      // loginUrl.searchParams.set("next", pathname + search);
+      return NextResponse.redirect(loginUrl);
+    }
+    return NextResponse.json(
+      { ok: false, error: "UNAUTHORIZED" },
+      { status: 401 }
+    );
   }
 
   return NextResponse.next();
 }
 
 /**
- * matcher を正規表現で指定し、公開パスはここで除外する。
- * - /login
- * - /api/auth/*
- * - Next.js 静的配信系 (_next/static, _next/image)
- * - favicon / assets / robots / sitemap
- * それ以外の全パス（トップ `/` を含む）に適用。
+ * 全パス対象にしつつ、公開パスは本文で除外。
+ * これにより `/` を含む全ページで未ログイン時は /login へ 302（GET/HEAD）。
  */
-export const config = { matcher: ["/:path*"] };
+export const config = {
+  matcher: ["/:path*"],
+};

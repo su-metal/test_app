@@ -853,11 +853,11 @@ const emitToast = (kind: ToastKind, msg: string) => {
 
 function ToastBar({ toast, onClose }: { toast: ToastPayload | null; onClose: () => void }) {
     if (!toast) return null;
-    const tone = toast.kind === "success" ? "bg-emerald-600" : toast.kind === "error" ? "bg-red-600" : "bg-zinc-800";
+    const tone = toast.kind === "success" ? "bg-red-500" : toast.kind === "error" ? "bg-red-600" : "bg-zinc-800";
     return (
         <div className={`fixed bottom-32 left-1/2 -translate-x-1/2 z-3101
-                   w-[72%] max-w-[520px]
-                   px-4 py-2 text-white rounded-full shadow ${tone}`}>
+                   w-[80%] max-w-[520px]
+                   px-10 py-2 text-white rounded-full shadow ${tone}`}>
             <div className="flex items-center gap-3">
                 <span className="text-sm whitespace-pre-wrap break-words">{toast.msg}</span>
                 <button type="button" className="text-xs underline cursor-pointer" onClick={onClose}>閉じる</button>
@@ -5190,9 +5190,22 @@ export default function UserPilotApp() {
                                                 </div>
                                                 <h3 className="text-lg font-semibold text-center mb-2">アレルギー・原材料について</h3>
                                                 <div className="text-sm text-zinc-700 space-y-2">
-                                                    <p>当アプリの商品は食品ロス削減を目的とした性質上、多くの場合、受け取りまで中身がわからない「福袋形式」での販売となります。そのため、個別商品のアレルゲンに関する詳細なご案内が難しいケースがあります。</p>
-                                                    <p>ご不安がある場合は、恐れ入りますが<strong>お店へ直接お問い合わせ</strong>ください。可能な範囲でご案内いたします。</p>
-                                                    <p className="text-zinc-500">なお、アレルギー等を理由とした商品の指定や入れ替えはお受けできない場合があります。</p>
+                                                    <p>
+                                                        このアプリでは、まだおいしく食べられる食品を活かすために、
+                                                        お店がその日の状況に合わせて詰め合わせた商品を販売しています。
+                                                        中身は受け取ってからのお楽しみとなることが多く、
+                                                        すべてのアレルギー情報を事前にお伝えできない場合があります。
+                                                    </p>
+                                                    <p>
+                                                        アレルギーや原材料が気になる方は、
+                                                        <strong>直接お店へお問い合わせください。</strong>
+                                                        分かる範囲でご案内いたします。
+                                                    </p>
+                                                    <p className="text-zinc-500 text-sm">
+                                                        ※ アレルギーを理由とした商品の変更や入れ替えは
+                                                        対応できない場合があります。あらかじめご了承ください。
+                                                    </p>
+
                                                 </div>
                                                 <div className="mt-3 text-right">
                                                     <button type="button" className="px-3 py-2 rounded-xl border bg-white hover:bg-zinc-50 text-sm" onClick={() => setAllergyOpen(false)}>閉じる</button>

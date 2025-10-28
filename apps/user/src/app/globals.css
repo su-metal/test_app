@@ -5,7 +5,7 @@
   --foreground: #171717;
 
   --cart-btn-bg: #5f95c5; /* デフォルト背景（例：sky-500） */
-  --cart-btn-fg: #010000; /* 文字色 */
+  --cart-btn-fg: #fff; /* 文字色 */
   --cart-btn-border: #5f95c5; /* 枠線 */
   --cart-btn-bg-hover: #888888; /* hover背景（例：sky-600） */
   --cart-btn-fg-hover: #ffffff; /* hover文字色 */

@@ -4639,15 +4639,28 @@ export default function UserPilotApp() {
                                                                         storeId={sid}
                                                                         value={pickupByGroup[gkey] ?? null}
                                                                         onSelect={(slot) => {
+                                                                            // 未選択（再タップで解除）に対応
+                                                                            if (!slot) {
+                                                                                setPickupByGroup(prev => ({ ...prev, [gkey]: null }));
+                                                                                return;
+                                                                            }
+
                                                                             // 保険：外部入力や直打ち対策で 20分前チェックは継続
-                                                                            const startMinSel = Number(slot.start.slice(0, 2)) * 60 + Number(slot.start.slice(3, 5));
+                                                                            const start = slot.start ?? "";
+                                                                            // "HH:MM" を分に変換（例: "13:40" -> 820）
+                                                                            const startMinSel =
+                                                                                Number(start.slice(0, 2)) * 60 + Number(start.slice(3, 5));
                                                                             const nowMinSel = nowMinutesJST();
+
                                                                             if (startMinSel < nowMinSel + LEAD_CUTOFF_MIN) {
                                                                                 emitToast("error", `直近枠は選べません（受け取り${LEAD_CUTOFF_MIN}分前まで）`);
                                                                                 return;
                                                                             }
+
+                                                                            // 正常時：選択を保存
                                                                             setPickupByGroup(prev => ({ ...prev, [gkey]: slot }));
                                                                         }}
+
                                                                         // ★ ポイント：10分切り上げ済みの開始時刻を渡す
                                                                         limitWindow={adjustedWin ?? undefined}
                                                                         stepOverride={(() => {
@@ -4680,6 +4693,21 @@ export default function UserPilotApp() {
                                                 </div>
 
                                                 <div className="p-4 border-t mt-2">
+                                                    {/* 注意：客都合キャンセル不可＋規約リンク */}
+                                                    <div className="mb-2 rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-xs leading-relaxed text-zinc-700">
+                                                        <span className="font-medium">ご注意：</span>
+                                                        お客さま都合でのキャンセル・変更はお受けできません。内容をご確認のうえお進みください。
+                                                        <span className="ml-1">
+                                                            <a href="/legal/cancellation" target="_blank" rel="noopener noreferrer" className="underline">
+                                                                キャンセルポリシー
+                                                            </a>
+                                                            <span className="mx-1">/</span>
+                                                            <a href="/legal/terms" target="_blank" rel="noopener noreferrer" className="underline">
+                                                                利用規約
+                                                            </a>
+                                                        </span>
+                                                    </div>
+
                                                     <button
                                                         type="button"
                                                         onClick={() => {

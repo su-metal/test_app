@@ -3892,6 +3892,11 @@ export default function UserPilotApp() {
                 return;
             }
 
+            // 直叩き経路にも短い接続タイムアウトを適用（AbortController）
+            const timeoutMs = 7000;
+            const ac = new AbortController();
+            const timeoutId = setTimeout(() => { try { ac.abort("timeout"); } catch {} }, timeoutMs);
+
             const res = await fetch("/api/stripe/create-checkout-session", {
                 method: "POST",
                 headers: {
@@ -3911,10 +3916,12 @@ export default function UserPilotApp() {
                 }),
 
                 credentials: 'include',
+                signal: ac.signal,
             });
 
             // 404/HTMLエラー対策：常に text を一度読む
             const text = await res.text();
+            clearTimeout(timeoutId);
             if (!res.ok) throw new Error(text || "create-checkout-session 失敗");
             const json = JSON.parse(text);
             const cs: string | undefined = json?.client_secret;

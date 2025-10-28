@@ -2,6 +2,7 @@ import type { Viewport, Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import LiffBoot from "./LiffBoot";
+import StripeBoot from "./stripe/StripeBoot";
 // import "leaflet/dist/leaflet.css";
 
 
@@ -39,6 +40,7 @@ export default function RootLayout({
       >
         {/* LIFF 起動（LINE アプリ内/外の双方を考慮） */}
         <LiffBoot />
+        <StripeBoot />
         {children}
       </body>
     </html>

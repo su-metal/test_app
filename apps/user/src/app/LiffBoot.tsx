@@ -2,6 +2,7 @@
 
 import { useEffect } from "react";
 import liff from "@line/liff";
+import { setCachedLiffIdToken } from "@/lib/liffTokenCache";
 
 /**
  * LiffBoot.tsx（全文置き換え版）
@@ -57,6 +58,14 @@ export default function LiffBoot() {
           console.info(
             "[LIFF] auto login suppressed (external browser or already logged in)"
           );
+        }
+
+        // 起動後に ID トークンを一度ウォーム
+        try {
+          const idt = liff.getIDToken?.() ?? null;
+          setCachedLiffIdToken(idt);
+        } catch {
+          // noop
         }
       } catch (err) {
         if (mounted) console.error("[LIFF] init/login failed:", err);

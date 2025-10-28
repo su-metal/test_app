@@ -620,6 +620,49 @@ function isPickupExpired(label: string): boolean {
     return now >= win.end;  // end を過ぎたら「期限切れ」
 }
 
+// --- サーバー基準の現在時刻（JST, 分）を取得（失敗時は端末時計にフォールバック） ---
+async function serverNowMinutesJST(supabase: any): Promise<number> {
+    try {
+        const supaUrl =
+            (supabase as any)?.rest?.url ||
+            (typeof process !== "undefined" ? (process as any)?.env?.NEXT_PUBLIC_SUPABASE_URL : "") ||
+            "";
+        const anon =
+            (supabase as any)?.rest?.headers?.apikey ||
+            (typeof process !== "undefined" ? (process as any)?.env?.NEXT_PUBLIC_SUPABASE_ANON_KEY : "") ||
+            "";
+
+        if (!supaUrl || !anon) {
+            // 資材がなければ端末時刻にフォールバック
+            return nowMinutesJST();
+        }
+
+        // /rest/v1/ に HEAD を打って Date ヘッダを読む（軽量＆CORS通る想定）
+        const res = await fetch(`${supaUrl}/`, {
+            method: "HEAD",
+            headers: { apikey: anon, Authorization: `Bearer ${anon}` },
+        });
+
+        const hs = res.headers?.get("date");
+        if (!hs) return nowMinutesJST();
+
+        const srv = new Date(hs); // UTC
+        // JSTの「時:分」を抽出して分に変換
+        const parts = new Intl.DateTimeFormat("ja-JP", {
+            timeZone: "Asia/Tokyo",
+            hour12: false,
+            hour: "2-digit",
+            minute: "2-digit",
+        }).formatToParts(srv);
+        const hh = Number(parts.find(p => p.type === "hour")?.value || "0");
+        const mm = Number(parts.find(p => p.type === "minute")?.value || "0");
+        return hh * 60 + mm;
+    } catch {
+        return nowMinutesJST();
+    }
+}
+
+
 // ▼ チケット単位の期限切れ判定（日付を優先。なければラベル互換）
 function isTicketExpired(o: Order): boolean {
     // 1) ISO（日付つき）を優先して厳密判定
@@ -730,6 +773,70 @@ async function canRedeemByStorePresets(
 
     const nowMin = nowMinutesJST();
     return nowMin >= common.start && nowMin <= common.end;
+}
+
+// --- 店舗プリセット基準の「現在フェーズ」を返す（before|during|after|unknown） ---
+async function pickupPhaseByStorePresets(
+    o: Order,
+    supabase: SupabaseClient | null,
+    presetMap: Record<string, { current: number | null; slots: Record<number, { start: string; end: string; name: string; step: number }> }>
+): Promise<"before" | "during" | "after" | "unknown"> {
+    // 1) ISO（サーバー確定の絶対時間）があればそれを最優先
+    const endTs = o?.pickupEnd ? Date.parse(String(o.pickupEnd)) : NaN;
+    const startTs = o?.pickupStart ? Date.parse(String(o.pickupStart)) : NaN;
+    if (Number.isFinite(endTs)) {
+        const now = Date.now(); // ISOは絶対時刻なので端末誤差の影響が小さい
+        if (Number.isFinite(startTs)) {
+            if (now < startTs) return "before";
+            if (now > endTs) return "after";
+            return "during";
+        }
+        // start がない場合：end のみ厳格、startは不明 → end超過のみ「after」、それ以外は「during」扱い
+        return now > endTs ? "after" : "during";
+    }
+
+    // 2) ISOが無いときはプリセットで“本日JSTの共通交差区間”を作る
+    if (!supabase) return "unknown";
+    const info = presetMap[o.shopId];
+    if (!info) return "unknown";
+
+    const productIds = Array.from(new Set((o?.lines || []).map(l => String(l?.item?.id || "")).filter(Boolean)));
+    if (productIds.length === 0) return "unknown";
+
+    const { data, error } = await supabase
+        .from("products")
+        .select("id,pickup_slot_no,store_id")
+        .in("id", productIds as any);
+
+    if (error || !Array.isArray(data) || data.length === 0) return "unknown";
+
+    const slotWindows: Array<{ start: number; end: number }> = [];
+    for (const row of data) {
+        const slotNo: number | null = (row as any)?.pickup_slot_no ?? null;
+        const useNo = slotNo ?? (info.current ?? null);
+        if (useNo == null) return "unknown";
+        const slot = info.slots[useNo];
+        const w = windowFromPresetSlot(slot || null);
+        if (!w) return "unknown";
+        slotWindows.push(w);
+    }
+    if (slotWindows.length === 0) return "unknown";
+
+    // 全商品の共通交差
+    const common = slotWindows.reduce<{ start: number; end: number } | null>((acc, w) => {
+        if (!acc) return { ...w };
+        const ns = Math.max(acc.start, w.start);
+        const ne = Math.min(acc.end, w.end);
+        return ns < ne ? { start: ns, end: ne } : null;
+    }, null);
+    if (!common) return "unknown";
+
+    // 3) サーバー基準の現在(JST, 分)
+    const nowMin = await serverNowMinutesJST(supabase);
+
+    if (nowMin < common.start) return "before";
+    if (nowMin > common.end) return "after";
+    return "during";
 }
 
 
@@ -1721,7 +1828,29 @@ function CompactTicketCard({
     const presetMap = (ctx?.presetMap ?? {}) as Record<string, StorePresetInfo>;
 
 
+    // 旧）const [redeemable, setRedeemable] = React.useState<boolean | null>(null);
+    // 新）フェーズと互換の真偽も保持
+    const [phase, setPhase] = React.useState<"before" | "during" | "after" | "unknown" | null>(null);
     const [redeemable, setRedeemable] = React.useState<boolean | null>(null);
+
+    React.useEffect(() => {
+        let alive = true;
+        (async () => {
+            try {
+                const ph = await pickupPhaseByStorePresets(o, supa, presetMap || {});
+                if (!alive) return;
+                setPhase(ph);
+                setRedeemable(ph === "during"); // 互換：真偽も更新
+            } catch {
+                if (alive) {
+                    setPhase("unknown");
+                    setRedeemable(false);
+                }
+            }
+        })();
+        return () => { alive = false; };
+    }, [o, supa, JSON.stringify(presetMap)]);
+
 
     React.useEffect(() => {
         let alive = true;
@@ -1736,8 +1865,13 @@ function CompactTicketCard({
         return () => { alive = false; };
     }, [o, supa, JSON.stringify(presetMap)]);
 
-    // 旧互換フォールバック：まだ判定前(null)の場合だけ従来ロジックを表示に利用
-    const expired = redeemable == null ? isTicketExpired(o) : !redeemable;
+
+    // 新）フェーズ未確定時のみ旧互換。確定後は "after" のみ期限切れ。
+    const expired =
+        phase == null
+            ? isTicketExpired(o) // 互換フォールバック
+            : (phase === "after");
+
 
     const panelId = `ticket-${o.id}`;
     // ▼ 店舗情報 BottomSheet の開閉
@@ -1904,7 +2038,7 @@ function CompactTicketCard({
                             <span className="font-medium"> redeemed</span> に更新されます。
                         </p>
                         {/* → 右側：削除 + 店舗情報（縦積み） */}
-                        <div className="shrink-0 flex flex-col gap-2 w-full max-w-[240px]">
+                        <div className="shrink-0 flex flex-col gap-2 min-w-[180px]">
                             {onDelete && (
                                 <button
                                     type="button"
@@ -3050,6 +3184,7 @@ export default function UserPilotApp() {
     }, [supabase, setOrders, setTab]);
 
     // 受け渡し済みになっても消えない場合のフェールセーフ: 定期ポーリングで同期
+    // 受け渡し済みになっても消えない場合のフェールセーフ: 定期ポーリングで同期
     const pendingKey = useMemo(() => {
         try { return JSON.stringify(orders.filter(o => o.status === 'paid').map(o => ({ id: o.id, code6: o.code6 }))); } catch { return ""; }
     }, [orders]);
@@ -3061,17 +3196,15 @@ export default function UserPilotApp() {
         const API_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
         const ANON = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
 
-        // 前回の interval が残っていたら必ず止める
+        // 既存 interval が残っていれば停止
         if (pollRef.current) {
             clearInterval(pollRef.current);
             pollRef.current = null;
         }
 
-        // 前提が揃ってなければ起動しない
+        // 前提チェック
         const targets = orders.filter(o => o.status === "paid");
         if (!API_URL || !ANON || !targets.length) return;
-
-        // 画面が非表示/オフラインなら動かさない（無駄＆ログ抑制）
         if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
         if (typeof navigator !== "undefined" && !navigator.onLine) return;
 
@@ -3082,65 +3215,73 @@ export default function UserPilotApp() {
             return "paid";
         };
 
-        let stopped = false; // 401 などで停止したら二度と回さない
-        const idsCsv = targets.map(o => String(o.id)).join(",");
+        // ✅ ここから追加：IDのサニタイズ＆重複排除＆分割
+        const UUIDish = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+        const ids = Array.from(
+            new Set(
+                targets
+                    .map(o => String(o.id || "").trim())
+                    .filter(id => UUIDish.test(id)) // 空や不正なIDを排除
+            )
+        );
+        if (ids.length === 0) return;
+
+        const chunk = <T,>(arr: T[], size: number) => {
+            const out: T[][] = [];
+            for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+            return out;
+        };
+        const chunks = chunk(ids, 50); // in() の実運用上の安全サイズ
+
+        let stopped = false; // 401 等で停止したら再実行しない
 
         const tick = async () => {
             if (stopped) return;
             try {
-                const rows = await getOrderLite(idsCsv); // ← ヘッダー付REST
+                // 複数チャンクを逐次取得してマージ
+                const allRows: Array<{ id: string; code: string | null; status?: string | null }> = [];
+                for (const part of chunks) {
+                    const csv = part.join(",");               // ← 空・重複はここまでで排除済み
+                    const rows = await getOrderLite(csv);     // ← 既存のRESTヘルパをそのまま利用:contentReference[oaicite:9]{index=9}】
+                    if (Array.isArray(rows)) allRows.push(...rows);
+                }
+
+                // 既存と同様の同期ロジック
                 setOrders(prev => {
                     let changed = false;
-
-                    // 既存の「ヒットしたら status を同期」部分
                     const next = prev.map(o => {
-                        const hit = rows.find(r =>
+                        const hit = allRows.find(r =>
                             String(r.id) === String(o.id) ||
-                            (normalizeCode6(r.code) === normalizeCode6(o.code6))
+                            (normalizeCode6(r.code) && normalizeCode6(r.code) === normalizeCode6(o.code6))
                         );
                         if (!hit) return o;
-                        const ns = toLocal(hit.status || undefined);
+                        const ns = toLocal(hit.status ?? undefined);
+
                         if (ns !== o.status) { changed = true; return { ...o, status: ns }; }
                         return o;
                     });
-
-                    // ★ここを追加：DB から消えている paid を間引く
-                    const liveIds = new Set(rows.map(r => String(r.id)));
-                    const liveCodes = new Set(rows.map(r => normalizeCode6(r.code)));
-                    const pruned = next.filter(o => {
-                        if (o.status !== 'paid') return true; // 履歴(redeemed)はそのまま
-                        const hasId = liveIds.has(String(o.id));
-                        const hasCode = liveCodes.has(normalizeCode6(o.code6));
-                        if (!hasId && !hasCode) { changed = true; return false; }
-                        return true;
-                    });
-
-                    return changed ? pruned : prev;
+                    return changed ? next : prev;
                 });
-
-            } catch (err: any) {
-                // 401 を検知したら停止（雪だるま防止）
-                if (err?.status === 401 || err?.message === "UNAUTHORIZED") {
-                    if (DEBUG) console.warn("[orders poll] 401 Unauthorized detected. Stop polling.");
+            } catch (e: any) {
+                // 401 は停止（鍵や権限が不整合）
+                if (e?.status === 401 || String(e?.message || "").includes("401")) {
                     stopped = true;
                     if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
                     return;
                 }
-                if (DEBUG) console.warn("[orders poll] exception:", err);
+                // それ以外は次周期で再試行
+                if (process.env.NEXT_PUBLIC_DEBUG === '1') console.warn('[orders:poll] exception', e);
             }
         };
 
-        // 即時 + 周期（タブが可視かつオンライン時のみ実行）
-        tick();
-        pollRef.current = window.setInterval(() => {
-            if (document.visibilityState === "visible" && navigator.onLine) tick();
-        }, 4000);
+        // 立ち上げ時に少し待ってから1回、以降は10秒ごと
+        const t0 = window.setTimeout(tick, 1200);
+        const t = window.setInterval(tick, 10000);
+        pollRef.current = t;
 
-        // cleanup
-        return () => {
-            if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
-        };
-    }, [pendingKey]); // ← 依存はこのキーだけ（orders丸ごとは不可）
+        return () => { window.clearTimeout(t0); window.clearInterval(t); };
+    }, [pendingKey]); // ← 既存どおり orders 由来のキーで再構築
+
 
     useEffect(() => {
         console.log('[diag] ANON head =', (process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '').slice(0, 12));

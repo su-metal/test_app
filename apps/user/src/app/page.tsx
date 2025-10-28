@@ -1740,6 +1740,80 @@ function CompactTicketCard({
     const expired = redeemable == null ? isTicketExpired(o) : !redeemable;
 
     const panelId = `ticket-${o.id}`;
+    // ▼ 店舗情報 BottomSheet の開閉
+    const [shopInfoOpen, setShopInfoOpen] = React.useState(false);
+
+    // ▼ LocalStorage の店舗一覧から、このチケットの店舗を特定
+    const [shopsLS] = useLocalStorageState<Shop[]>(K.shops, []);
+    const s = React.useMemo(
+        () => shopsLS.find(ss => String(ss.id) === String(o.shopId)) ?? null,
+        [shopsLS, o.shopId]
+    );
+
+    // ▼ ホームの「店舗詳細を見る」と同等の正規化（表示用メタ）
+    const m = React.useMemo(() => {
+        const anyS: any = s || {};
+        const open = anyS.open ?? anyS.open_time ?? anyS?.meta?.open;
+        const close = anyS.close ?? anyS.close_time ?? anyS?.meta?.close;
+
+        const hours =
+            anyS.hours ??
+            anyS?.meta?.hours ??
+            (open && close ? `${open}-${close}` : undefined);
+
+        const holiday = anyS.holiday ?? anyS.closed ?? anyS?.meta?.holiday;
+        const payments = Array.isArray(anyS.payments) ? anyS.payments : anyS?.meta?.payments;
+        const category = anyS.category ?? anyS?.meta?.category;
+
+        return { hours, holiday, payments, category };
+    }, [s]);
+
+    // ▼ Google マップ URL（place_id 優先 → gmap_url → 住所）
+    const googleMapsUrlForShopLocal = (shop: Shop | null) => {
+        if (!shop) return "https://www.google.com/maps";
+        const pid = shop.place_id && String(shop.place_id).trim();
+        if (pid) {
+            const label = (shop.name || "").trim() || "場所";
+            return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(label)}&query_place_id=${encodeURIComponent(pid)}`;
+        }
+        if (shop.gmap_url) return String(shop.gmap_url);
+        if (shop.address) return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(shop.address)}`;
+        return "https://www.google.com/maps";
+    };
+
+    // ▼ 追加：Googleマップの埋め込みURL（<iframe src=...> 用）
+    const googleMapsEmbedUrlForShopLocal = (shop: Shop | null): string | null => {
+        if (!shop) return null;
+
+        // 1) すでに gmap_embed_src があれば最優先（DBに保存されている埋め込み用URL）
+        const embedSrc = (shop as any)?.gmap_embed_src;
+        if (embedSrc && typeof embedSrc === "string") {
+            return embedSrc;
+        }
+
+        // 2) place_id があれば place ベースの埋め込み
+        if (shop.place_id) {
+            // 「Google Maps Embed API」の place 埋め込み（APIキー不要の共有リンク形式にフォールバック）
+            const label = encodeURIComponent(String(shop.name ?? "場所"));
+            const pid = encodeURIComponent(String(shop.place_id));
+            // 共有リンク互換（/maps/embed?）を使うと CSP との相性がよいケースが多い
+            return `https://www.google.com/maps/embed?pb=!1m2!1s0x0:0x0!2m2!1s${label}!2splace_id:${pid}`;
+        }
+
+        // 3) 座標があれば座標埋め込み
+        if (typeof shop.lat === "number" && typeof shop.lng === "number") {
+            const q = `${shop.lat},${shop.lng}`;
+            return `https://www.google.com/maps?q=${encodeURIComponent(q)}&output=embed`;
+        }
+
+        // 4) 住所があれば住所クエリで埋め込み
+        if (shop.address) {
+            return `https://www.google.com/maps?q=${encodeURIComponent(shop.address)}&output=embed`;
+        }
+
+        return null;
+    };
+
 
 
     return (
@@ -1829,21 +1903,126 @@ function CompactTicketCard({
                             ※ 店頭で6桁コードまたはQRを提示してください。受取完了は店舗アプリで行われ、ステータスが
                             <span className="font-medium"> redeemed</span> に更新されます。
                         </p>
-                        {onDelete && (
+                        {/* → 右側：削除 + 店舗情報（縦積み） */}
+                        <div className="shrink-0 flex flex-col gap-2 w-full max-w-[240px]">
+                            {onDelete && (
+                                <button
+                                    type="button"
+                                    onClick={onDelete}
+                                    className="w-full inline-flex items-center justify-center gap-1 rounded-lg border px-2 py-1 text-[12px] hover:bg-zinc-50"
+                                    aria-label="このチケットを削除"
+                                    title="このチケットを削除"
+                                >
+                                    🗑️ このチケットを削除
+                                </button>
+                            )}
+
+                            {/* 追加：店舗情報（同じ右カラム内で削除ボタンの直下に縦積み） */}
                             <button
                                 type="button"
-                                onClick={onDelete}
-                                className="shrink-0 inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-[12px] hover:bg-zinc-50"
-                                aria-label="このチケットを削除"
-                                title="このチケットを削除"
+                                onClick={() => setShopInfoOpen(true)}
+                                className="w-full inline-flex items-center justify-center gap-1 rounded-lg border px-2 py-1 text-[12px] hover:bg-zinc-50"
+                                aria-label="店舗情報を開く"
+                                title="店舗情報を開く"
                             >
-                                🗑️ このチケットを削除
+                                🏪 店舗情報
                             </button>
-                        )}
+                        </div>
                     </div>
                 </div>
             )}
             {/* ▼ 受取時間超過オーバーレイ（視覚的に「使えない」を明示） */}
+            {/* ▼ 店舗情報ボトムシート */}
+            {s && (
+                <BottomSheet
+                    open={shopInfoOpen}
+                    title="店舗情報"
+                    onClose={() => setShopInfoOpen(false)}
+                >
+                    <div className="px-4 space-y-3">
+                        {/* 店名 */}
+                        <div className="text-base font-semibold">
+                            {s.name ?? "店舗"}
+                        </div>
+
+                        {/* 住所 + MAP */}
+                        <div className="text-sm">
+                            <div className="text-zinc-500 mb-1">住所</div>
+                            <div className="flex items-center justify-between gap-2">
+                                <div className="min-w-0 truncate">{s.address ?? "—"}</div>
+                                <a
+                                    href={googleMapsUrlForShopLocal(s)}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="shrink-0 rounded-full border px-3 py-1 text-sm"
+                                >
+                                    地図を開く
+                                </a>
+                            </div>
+                            {/* ▼ 追加：埋め込みマップ（iframe） */}
+                            {(() => {
+                                const src = googleMapsEmbedUrlForShopLocal(s);
+                                if (!src) return null; // 住所も place_id も無い等のケースは非表示
+                                return (
+                                    <div className="mt-3">
+                                        {/* 16:9 のレスポンシブ枠。高さは親幅に追随 */}
+                                        <div
+                                            className="relative w-full overflow-hidden rounded-xl border"
+                                            style={{ paddingBottom: "56.25%" }}
+                                        >
+                                            <iframe
+                                                src={src}
+                                                className="absolute left-0 top-0 h-full w-full border-0"
+                                                loading="lazy"
+                                                referrerPolicy="no-referrer-when-downgrade"
+                                                allowFullScreen
+                                                title="店舗マップ"
+                                            />
+                                        </div>
+                                    </div>
+                                );
+                            })()}
+
+                        </div>
+
+                        {/* 営業情報（ホームの“店舗詳細を見る”と同等） */}
+                        <div className="grid grid-cols-2 gap-3 text-sm">
+                            <div>
+                                <div className="text-zinc-500 mb-1">営業時間</div>
+                                <div>{m.hours ?? "—"}</div>
+                            </div>
+                            <div>
+                                <div className="text-zinc-500 mb-1">定休日</div>
+                                <div>{m.holiday ?? "—"}</div>
+                            </div>
+                        </div>
+
+                        {/* 連絡先 / 公式サイト */}
+                        <div className="flex items-center gap-2 text-sm">
+                            {s.tel && (
+                                <a
+                                    href={`tel:${String(s.tel).replace(/\D/g, "")}`}
+                                    className="inline-flex items-center rounded-full border px-3 py-1 text-sm"
+                                >
+                                    電話
+                                </a>
+                            )}
+                            {/* Shop は website ではなく url */}
+                            {s.url && (
+                                <a
+                                    href={String(s.url).startsWith("http") ? String(s.url) : `https://${s.url}`}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="inline-flex items-center rounded-full border px-3 py-1 text-sm"
+                                >
+                                    公式サイト
+                                </a>
+                            )}
+                        </div>
+                    </div>
+                </BottomSheet>
+            )}
+
             {expired && (
                 <div
                     className="
@@ -4639,15 +4818,28 @@ export default function UserPilotApp() {
                                                                         storeId={sid}
                                                                         value={pickupByGroup[gkey] ?? null}
                                                                         onSelect={(slot) => {
+                                                                            // 未選択（再タップで解除）に対応
+                                                                            if (!slot) {
+                                                                                setPickupByGroup(prev => ({ ...prev, [gkey]: null }));
+                                                                                return;
+                                                                            }
+
                                                                             // 保険：外部入力や直打ち対策で 20分前チェックは継続
-                                                                            const startMinSel = Number(slot.start.slice(0, 2)) * 60 + Number(slot.start.slice(3, 5));
+                                                                            const start = slot.start ?? "";
+                                                                            // "HH:MM" を分に変換（例: "13:40" -> 820）
+                                                                            const startMinSel =
+                                                                                Number(start.slice(0, 2)) * 60 + Number(start.slice(3, 5));
                                                                             const nowMinSel = nowMinutesJST();
+
                                                                             if (startMinSel < nowMinSel + LEAD_CUTOFF_MIN) {
                                                                                 emitToast("error", `直近枠は選べません（受け取り${LEAD_CUTOFF_MIN}分前まで）`);
                                                                                 return;
                                                                             }
+
+                                                                            // 正常時：選択を保存
                                                                             setPickupByGroup(prev => ({ ...prev, [gkey]: slot }));
                                                                         }}
+
                                                                         // ★ ポイント：10分切り上げ済みの開始時刻を渡す
                                                                         limitWindow={adjustedWin ?? undefined}
                                                                         stepOverride={(() => {
@@ -4680,6 +4872,21 @@ export default function UserPilotApp() {
                                                 </div>
 
                                                 <div className="p-4 border-t mt-2">
+                                                    {/* 注意：客都合キャンセル不可＋規約リンク */}
+                                                    <div className="mb-2 rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-xs leading-relaxed text-zinc-700">
+                                                        <span className="font-medium">ご注意：</span>
+                                                        お客さま都合でのキャンセル・変更はお受けできません。内容をご確認のうえお進みください。
+                                                        <span className="ml-1">
+                                                            <a href="/legal/cancellation" target="_blank" rel="noopener noreferrer" className="underline">
+                                                                キャンセルポリシー
+                                                            </a>
+                                                            <span className="mx-1">/</span>
+                                                            <a href="/legal/terms" target="_blank" rel="noopener noreferrer" className="underline">
+                                                                利用規約
+                                                            </a>
+                                                        </span>
+                                                    </div>
+
                                                     <button
                                                         type="button"
                                                         onClick={() => {

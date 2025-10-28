@@ -43,7 +43,7 @@ function nowMinutesJST() {
 
 export default function PickupTimeSelector(props: {
     storeId: string;
-    onSelect: (slot: PickupSlot) => void;
+    onSelect: (slot: PickupSlot | null) => void; // ← null を許容（再タップで解除）
     value?: PickupSlot | null;
     className?: string;
     /** 近すぎ確認の閾値（分）。既定30分 */
@@ -66,7 +66,6 @@ export default function PickupTimeSelector(props: {
         stepOverride,
     } = props;
 
-
     const [preset, setPreset] = useState<Preset | null>(null);
     const [allSlots, setAllSlots] = useState<PickupSlot[]>([]);
     const [loading, setLoading] = useState(true);
@@ -76,6 +75,7 @@ export default function PickupTimeSelector(props: {
         const id = setInterval(() => setNowMin(nowMinutesJST()), 60_000);
         return () => clearInterval(id);
     }, []);
+
     // 取得 & スロット生成
     const refresh = useCallback(async () => {
         setLoading(true);
@@ -187,7 +187,6 @@ export default function PickupTimeSelector(props: {
         });
     }, [allSlots, limitWindow]);
 
-
     // ==== 現在以降に限定（JST） ====
     const futureSlots = useMemo(() => {
         const gate = nowMin + leadCutoffMin;
@@ -210,16 +209,8 @@ export default function PickupTimeSelector(props: {
         return g;
     }, [futureSlots]);
 
-    // 初期選択の“時”は、value が今以降ならその時、なければ最初の時
-    const initialHour = useMemo(() => {
-        const vv = value?.start ? hhmmToMinutes(value.start) : null;
-        if (vv != null && futureSlots.some(s => s.start === value!.start)) {
-            return value!.start.slice(0, 2);
-        }
-        const it = groups.keys().next();
-        return it.done ? null : it.value;
-    }, [groups, futureSlots, value?.start]);
-
+    // ✅ 初期は「未選択」。既存 value があればその“時”のみ初期表示、それ以外は null
+    const initialHour = useMemo(() => (value?.start ? value.start.slice(0, 2) : null), [value?.start]);
     const [hour, setHour] = useState<string | null>(initialHour);
     useEffect(() => { setHour(initialHour); }, [initialHour]);
 
@@ -227,10 +218,15 @@ export default function PickupTimeSelector(props: {
     const minutes = useMemo(() => (hour ? groups.get(hour) ?? [] : []), [groups, hour]);
 
     // ==== 近すぎ確認（選択時） ====
-    const handleSelect = (s: PickupSlot) => {
-        const nowMin = nowMinutesJST();
+    const handleSelect = (s: PickupSlot | null) => {
+        // 解除（null）のときは即反映
+        if (!s) {
+            onSelect(null);
+            return;
+        }
+        const nowMinV = nowMinutesJST();
         const startMin = hhmmToMinutes(s.start);
-        const delta = startMin - nowMin; // 分（state由来）
+        const delta = startMin - nowMinV; // 分
         if (delta < leadCutoffMin) {
             alert(`受け取りまで${delta < 0 ? 0 : delta}分です。直近枠は選べません（${leadCutoffMin}分前まで）。`);
             return;
@@ -255,7 +251,6 @@ export default function PickupTimeSelector(props: {
     if (loading) return <div className={`text-xs text-zinc-500 ${className}`}>受取時間を読み込み中…</div>;
     if (allSlots.length === 0) return <div className={`text-xs text-zinc-500 ${className}`}>受取時間の候補がありません。</div>;
     if (futureSlots.length === 0) {
-
         return (
             <div className={`w-full ${className}`}>
                 <div className="mb-1.5 text-sm font-medium">
@@ -280,7 +275,7 @@ export default function PickupTimeSelector(props: {
                 </div>
             </div>
 
-            {/* Row 1: 時 */}
+            {/* Row 1: 時（n時）— ✅ 再タップで解除し、分候補を隠す＆選択解除 */}
             <div className="flex items-center gap-1 mb-2">
                 {hasHourScroll && (
                     <button
@@ -303,7 +298,15 @@ export default function PickupTimeSelector(props: {
                             <button
                                 key={h}
                                 type="button"
-                                onClick={() => setHour(h)}
+                                onClick={() => {
+                                    if (selected) {
+                                        // 時を再タップ → 完全解除（時・分ともに未選択）
+                                        setHour(null);
+                                        handleSelect(null);
+                                    } else {
+                                        setHour(h);
+                                    }
+                                }}
                                 aria-pressed={selected}
                                 className={[
                                     "px-3 py-1.5 rounded-full border text-sm whitespace-nowrap",
@@ -329,56 +332,65 @@ export default function PickupTimeSelector(props: {
                 )}
             </div>
 
-            {/* Row 2: 分（選択した“時”のみ、10分刻み） */}
-            <div className="flex items-center gap-1">
-                {hasMinScroll && (
-                    <button
-                        type="button"
-                        className="h-7 px-2 rounded-md border text-xs bg-white hover:bg-zinc-50"
-                        onClick={() => scrollRail(minRailRef, "prev")}
-                        aria-label="前の分"
+            {/* Row 2: 分（xx:xx）— ✅ 同じ分を再タップで解除 */}
+            {hour != null && (
+                <div className="flex items-center gap-1">
+                    {hasMinScroll && (
+                        <button
+                            type="button"
+                            className="h-7 px-2 rounded-md border text-xs bg-white hover:bg-zinc-50"
+                            onClick={() => scrollRail(minRailRef, "prev")}
+                            aria-label="前の分"
+                        >
+                            ‹
+                        </button>
+                    )}
+                    <div
+                        ref={minRailRef}
+                        className="flex-1 flex gap-2 overflow-x-auto scroll-p-2"
+                        style={{ scrollbarWidth: "none" } as any}
                     >
-                        ‹
-                    </button>
-                )}
-                <div
-                    ref={minRailRef}
-                    className="flex-1 flex gap-2 overflow-x-auto scroll-p-2"
-                    style={{ scrollbarWidth: "none" } as any}
-                >
-                    {minutes.map((s) => {
-                        const selected = value?.label === s.label;
-                        const minuteLabel = s.start.slice(3, 5); // "00" | "10" ...
-                        return (
-                            <button
-                                key={s.label}
-                                type="button"
-                                onClick={() => handleSelect(s)}
-                                aria-pressed={selected}
-                                className={[
-                                    "px-3 py-1.5 rounded-full border text-sm whitespace-nowrap",
-                                    selected
-                                        ? "bg-zinc-900 text-white border-zinc-900"
-                                        : "bg-white text-zinc-800 hover:bg-zinc-50",
-                                ].join(" ")}
-                                title={`${s.start}–${s.end}`}
-                            >
-                                {hour} : {minuteLabel}
-                            </button>
-                        );
-                    })}
+                        {minutes.map((s) => {
+                            const selected = value?.label === s.label;
+                            const minuteLabel = s.start.slice(3, 5); // "00" | "10" ...
+                            return (
+                                <button
+                                    key={s.label}
+                                    type="button"
+                                    onClick={() => {
+                                        if (selected) {
+                                            // 同じ分を再タップ → 解除
+                                            handleSelect(null);
+                                        } else {
+                                            handleSelect(s);
+                                        }
+                                    }}
+                                    aria-pressed={selected}
+                                    className={[
+                                        "px-3 py-1.5 rounded-full border text-sm whitespace-nowrap",
+                                        selected
+                                            ? "bg-zinc-900 text-white border-zinc-900"
+                                            : "bg-white text-zinc-800 hover:bg-zinc-50",
+                                    ].join(" ")}
+                                    title={`${s.start}–${s.end}`}
+                                >
+                                    {hour} : {minuteLabel}
+                                </button>
+                            );
+                        })}
+                    </div>
+                    {hasMinScroll && (
+                        <button
+                            type="button"
+                            className="h-7 px-2 rounded-md border text-xs bg-white hover:bg-zinc-50"
+                            onClick={() => scrollRail(minRailRef, "next")}
+                            aria-label="次の分"
+                        >
+                            ›
+                        </button>
+                    )}
                 </div>
-                {hasMinScroll && (
-                    <button
-                        type="button"
-                        className="h-7 px-2 rounded-md border text-xs bg-white hover:bg-zinc-50"
-                        onClick={() => scrollRail(minRailRef, "next")}
-                        aria-label="次の分"
-                    >
-                        ›
-                    </button>
-                )}
-            </div>
+            )}
         </div>
     );
 }

@@ -11,6 +11,8 @@ import type { ReactNode } from 'react';
 import { normalizeCode6 } from "@/lib/code6";
 // Stripe（ブラウザ用 SDK）
 import { loadStripe } from "@stripe/stripe-js";
+import { prefetchCheckout, signatureOf, getCached as getPrefetched, invalidateCacheIfMismatch } from "@/lib/checkoutPrefetch";
+import { getLiffIdTokenCached } from "@/lib/liffTokenCache";
 
 
 // --- LIFF 初期化（closeWindow を確実に動かすため） ---
@@ -1654,6 +1656,13 @@ function BottomSheet({
     );
 }
 
+function StripeReadyWrapper() {
+    React.useEffect(() => {
+        try { performance.mark?.("stripe_ready"); } catch { /* noop */ }
+    }, []);
+    return <EmbeddedCheckout />;
+}
+
 /**
  * TinyQR (production)
  * - 依存: qrcode
@@ -2235,6 +2244,7 @@ export default function UserPilotApp() {
     const [showCardFullForm, setShowCardFullForm] = useState(false);
 
     const [checkoutClientSecret, setCheckoutClientSecret] = useState<string | null>(null);
+    const [checkoutError, setCheckoutError] = useState<string | null>(null);
     const [isCheckoutOpen, setIsCheckoutOpen] = useState(false);
 
     // コンポーネント“内”で再定義（①で削除したものの正しい版）
@@ -3855,6 +3865,10 @@ export default function UserPilotApp() {
 
         try {
             setIsPaying(true);
+            performance.mark?.("tap_checkout");
+            setIsCheckoutOpen(true);
+            setCheckoutError(null);
+            performance.mark?.("sheet_opened");
             // A-1: LIFF の ID トークンを取得して Authorization に付与
             // A-1: 開発環境(localhost)では LIFF ログインをスキップ
             const isLocal = typeof window !== "undefined" && (
@@ -3867,14 +3881,16 @@ export default function UserPilotApp() {
             let idToken: string | undefined;
             if (!isLocal) {
                 try {
-                    const { default: liff } = await import("@line/liff");
-                    idToken = liff.getIDToken() || undefined;
+                    idToken = (await getLiffIdTokenCached()) || undefined;
                 } catch { /* noop */ }
                 if (!idToken) {
                     throw new Error("LIFF のログインが必要です。アプリ内ブラウザで開いてください。");
                 }
             }
-
+            // 先に secret が適用済みなら新規作成を省略
+            if (checkoutClientSecret) {
+                return;
+            }
 
             const res = await fetch("/api/stripe/create-checkout-session", {
                 method: "POST",
@@ -3913,12 +3929,54 @@ export default function UserPilotApp() {
             } catch { /* noop */ }
         } catch (e: any) {
             console.error(e);
+            try { setCheckoutError(String(e?.message || 'エラーが発生しました')); } catch {}
             emitToast("error", e?.message || "Stripe セッション作成に失敗しました");
         } finally {
             setIsPaying(false);
         }
-    }, [orderTarget, cartGroups, userEmail, pickupByGroup]);
+    }, [orderTarget, cartGroups, userEmail, pickupByGroup, checkoutClientSecret]);
 
+    // 計測: client_secret 準備完了
+    useEffect(() => {
+        if (checkoutClientSecret) {
+            try { performance.mark?.("secret_ready"); } catch {}
+        }
+    }, [checkoutClientSecret]);
+
+
+    // --- 先読み（プリフェッチ）: カートタブ表示時/アイドル時に実行 ---
+    useEffect(() => {
+        const key = orderTarget;
+        if (!key) { setCheckoutClientSecret(null); return; }
+        const g = cartGroups[key];
+        if (!g || g.lines.length === 0) { setCheckoutClientSecret(null); return; }
+        const sel = pickupByGroup[key] ?? null;
+        const pickupLabel = sel ? `${sel.start}?${sel.end}` : "";
+        const linesPayload = g.lines.map(l => ({ id: l.item.id, name: l.item.name, price: Number(l.item.price) || 0, qty: Number(l.qty) || 0, })).filter(x => x.qty > 0);
+        if (linesPayload.length === 0) { setCheckoutClientSecret(null); return; }
+
+        // 入力が変わったら古い secret を破棄
+        setCheckoutClientSecret(null);
+
+        const run = () => {
+            prefetchCheckout({
+                storeId: g.storeId,
+                userEmail,
+                lines: linesPayload,
+                pickup: pickupLabel,
+                devSkipLiff: true,
+                returnUrl: `${location.origin}/checkout/success`,
+            }, { timeoutMs: 6000 }).then((cs) => {
+                // まだ入力が同じなら適用
+                setCheckoutClientSecret(prev => prev || cs);
+            }).catch(() => { /* 静かに失敗 */ });
+        };
+
+        // requestIdleCallback があれば優先、なければ短い遅延
+        const ric = (window as any).requestIdleCallback as undefined | ((cb: Function, opts?: any) => any);
+        if (ric) { ric(() => run(), { timeout: 1200 }); } else { setTimeout(run, 300); }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [tab, orderTarget, JSON.stringify(cartGroups[orderTarget || ""]?.lines || []), JSON.stringify(pickupByGroup[orderTarget || ""] || null), userEmail]);
 
 
     // --- 開発用：この店舗の注文をすべてリセット（削除） ---
@@ -5184,6 +5242,7 @@ export default function UserPilotApp() {
                                                 <button
                                                     type="button"
                                                     onClick={() => startStripeCheckout()}
+                                                    aria-busy={isPaying}
                                                     disabled={
                                                         isPaying ||
                                                         !selectedPayLabel ||
@@ -5256,6 +5315,7 @@ export default function UserPilotApp() {
                                                 <button
                                                     type="button"
                                                     onClick={() => startStripeCheckout()}
+                                                    aria-busy={isPaying}
                                                     disabled={isPaying || ((cartGroups[orderTarget]?.lines.length ?? 0) === 0)}
                                                     className="w-full px-3 py-2 rounded border cursor-pointer disabled:opacity-40 bg-zinc-900 text-white"
                                                 >
@@ -5399,20 +5459,43 @@ export default function UserPilotApp() {
 
                     {/* ▼▼ Stripe 決済用ボトムシート：client_secret が取れたら表示 ▼▼ */}
                     <BottomSheet
-                        open={isCheckoutOpen && !!checkoutClientSecret}
+                        open={isCheckoutOpen}
                         title="お支払い（Stripe）"
                         onClose={() => { setIsCheckoutOpen(false); setCheckoutClientSecret(null); }}
                     >
-                        {checkoutClientSecret && (
+                        {checkoutClientSecret ? (
                             <EmbeddedCheckoutProvider
                                 stripe={stripePromise}
                                 options={{ clientSecret: checkoutClientSecret }}
                             >
                                 {/* EmbeddedCheckout 自体が注文詳細＋決済UIをすべて描画します */}
                                 <div className="px-0">
-                                    <EmbeddedCheckout />
+                                    <StripeReadyWrapper />
                                 </div>
                             </EmbeddedCheckoutProvider>
+                        ) : (
+                            checkoutError ? (
+                                <div className="px-4 py-6 text-center">
+                                    <div className="text-sm text-red-600">{checkoutError}</div>
+                                    <div className="mt-4 flex justify-center gap-3">
+                                        <button type="button" className="px-3 py-2 rounded border bg-white hover:bg-zinc-50" onClick={() => startStripeCheckout()}>
+                                            再試行
+                                        </button>
+                                        <button type="button" className="px-3 py-2 rounded border bg-white hover:bg-zinc-50" onClick={() => setIsCheckoutOpen(false)}>
+                                            閉じる
+                                        </button>
+                                    </div>
+                                </div>
+                            ) : (
+                                <div className="px-4 py-6" aria-busy>
+                                    <div className="animate-pulse space-y-3">
+                                        <div className="h-6 bg-zinc-200 rounded" />
+                                        <div className="h-4 bg-zinc-200 rounded w-5/6" />
+                                        <div className="h-4 bg-zinc-200 rounded w-2/3" />
+                                        <div className="h-10 bg-zinc-200 rounded mt-4" />
+                                    </div>
+                                </div>
+                            )
                         )}
                     </BottomSheet>
 

@@ -3,10 +3,21 @@ import { useEffect } from "react";
 
 export default function CheckoutCompleteRedirect() {
   useEffect(() => {
-    // 既存のフロー互換: /checkout/complete?session_id=... → /checkout/success へ移動
-    // TODO(req v2): 必要に応じて完了ページ専用の検証UIを実装
+    // 既存: /checkout/complete?session_id=... → /checkout/success へ移動
     const search = typeof window !== "undefined" ? window.location.search : "";
-    window.location.replace(`/checkout/success${search}`);
+
+    // 「完了経由」を後工程（success / home）で判定できるよう二重フラグをセット
+    try {
+      sessionStorage.setItem("afterCheckoutComplete", "1");
+    } catch { }
+
+    // 元のクエリにフラグを足す
+    const hasQuery = !!search && search.length > 0;
+    const join = hasQuery ? "&" : "?";
+    const next = `/checkout/success${search}${join}fromComplete=1`;
+
+    // 履歴に残さない置換遷移（戻るで /complete に戻さない）
+    window.location.replace(next);
   }, []);
 
   return (
@@ -21,4 +32,3 @@ export default function CheckoutCompleteRedirect() {
     </main>
   );
 }
-

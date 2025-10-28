@@ -2310,6 +2310,43 @@ export default function UserPilotApp() {
         history.replaceState(null, "", url.toString());
     }, [tab]);
 
+    // 決済完了画面 → ホームに戻ってきた直後の「戻る」をアプリ終了にする
+    useEffect(() => {
+        if (typeof window === "undefined") return;
+
+        // 直前ページが同一オリジンの /checkout/success かどうかで判定
+        const ref = document.referrer || "";
+        const isFromCheckoutSuccess = ref.includes("/checkout/success");
+        if (!isFromCheckoutSuccess) return;
+
+        // 二段ガードで戻るを吸収し、LIFF を閉じる（端末ブラウザでも多重押下に耐性）
+        const href = location.href;
+        history.pushState({ __fromCheckoutGuard: 1 }, "", href);
+        history.pushState({ __fromCheckoutGuard: 2 }, "", href);
+
+        const onPop = () => {
+            const close = async () => {
+                try {
+                    const { default: liff } = await import("@line/liff").catch(() => ({ default: {} as any }));
+                    if (typeof (liff as any)?.closeWindow === "function") {
+                        (liff as any).closeWindow();
+                        return;
+                    }
+                } finally {
+                    // 念のため現URLを再度 push して連打での抜けを防止
+                    history.pushState({ __fromCheckoutGuard: Date.now() }, "", href);
+                }
+                // フォールバック：LIFF が無い/閉じられない場合は window.close 試行
+                try { window.close(); } catch { }
+            };
+            close();
+        };
+
+        window.addEventListener("popstate", onPop);
+        return () => window.removeEventListener("popstate", onPop);
+    }, []);
+
+
 
     // ヘッダー隠し（ホーム画面専用）
     const [hideHeader, setHideHeader] = useState(false);
@@ -2902,9 +2939,6 @@ export default function UserPilotApp() {
             document.removeEventListener('visibilitychange', onVis);
         };
     }, [supabase]);
-
-
-
 
 
     // DBから stores を読む（全件・上限あり）
@@ -3856,6 +3890,7 @@ export default function UserPilotApp() {
                     pickup: pickupLabel,
                     // 本番では id_token を渡す。localhost では渡さない（サーバ側で緩和する想定）
                     ...(idToken ? { id_token: idToken } : { dev_skip_liff: true }),
+                    // 決済完了→ホーム遷移後の戻る抑止フロー判定に使うフラグを付与
                     returnUrl: `${location.origin}/checkout/success`,
                 }),
 
@@ -4197,6 +4232,7 @@ export default function UserPilotApp() {
             </button>
         );
     }
+
 
 
     return (

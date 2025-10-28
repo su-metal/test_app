@@ -3609,29 +3609,48 @@ export default function UserPilotApp() {
 
 
 
-    const QtyChip = ({ sid, it }: { sid: string; it: Item }) => {
+    const QtyChip = ({
+        sid,
+        it,
+        variant = "default",     // ← 追加: モーダル用に "modal" を指定できる
+    }: {
+        sid: string;
+        it: Item;
+        variant?: "default" | "modal";
+    }) => {
         const reserved = getReserved(sid, it.id);
         const remain = Math.max(0, it.stock - reserved);
+
+        // ▼ バリアントごとのサイズ定義（ホーム=default / モーダル=modal）
+        const btnSize = variant === "modal" ? "w-11 h-11 text-[12px]" : "w-9 h-9 text-[10px]";
+        const countSize = variant === "modal" ? "text-2xl min-w-[2rem]" : "text-xl min-w-[1.5rem]";
+        const wrapPad = variant === "modal" ? "px-0 py-1.5" : "px-0 py-1";
+
         return (
-            <div className="inline-flex items-center rounded-full px-0 py-1 text-sm select-none">
+            <div className={`inline-flex items-center rounded-full ${wrapPad} text-sm select-none`}>
                 <button
                     type="button"
-                    className="w-9 h-9 text-[10px] leading-none rounded-full border cursor-pointer disabled:opacity-40 flex items-center justify-center"
+                    className={`${btnSize} leading-none rounded-full border cursor-pointer disabled:opacity-40 flex items-center justify-center`}
                     disabled={reserved <= 0}
                     onClick={() => changeQty(sid, it, -1)}
                     aria-label="数量を減らす"
-                >−</button>
-                <span className="mx-2 min-w-[1.5rem] font-semibold  text-xl text-center tabular-nums">{reserved}</span>
+                >
+                    −
+                </button>
+                <span className={`mx-2 font-semibold ${countSize} text-center tabular-nums`}>{reserved}</span>
                 <button
                     type="button"
-                    className="w-9 h-9 text-[10px] leading-none rounded-full border cursor-pointer disabled:opacity-40 flex items-center justify-center"
+                    className={`${btnSize} leading-none rounded-full border cursor-pointer disabled:opacity-40 flex items-center justify-center`}
                     disabled={remain <= 0}
                     onClick={() => changeQty(sid, it, +1)}
                     aria-label="数量を増やす"
-                >＋</button>
+                >
+                    ＋
+                </button>
             </div>
         );
     };
+
 
 
     // noChrome=true のとき、外枠（rounded/border/bg）を外す
@@ -3844,7 +3863,7 @@ export default function UserPilotApp() {
                 }}
                 className={[
                     "inline-flex items-center justify-center",
-                    "px-3 py-2 rounded-xl border",
+                    "px-3 py-2 rounded-full border",
                     "bg-[var(--cart-btn-bg)] text-[var(--cart-btn-fg)] border-[var(--cart-btn-border)]",
                     "disabled:opacity-40 disabled:cursor-not-allowed",
                     "transition-colors",
@@ -3858,7 +3877,6 @@ export default function UserPilotApp() {
             </button>
         );
     }
-
 
 
     return (
@@ -4282,38 +4300,10 @@ export default function UserPilotApp() {
                                                     {/* スクショ準拠：フル幅の3段レイアウト */}
                                                     <div className="mt-3 space-y-2">
                                                         {/* 1) 緑の大ボタン：カートを見る（数） */}
-                                                        <button
-                                                            type="button"
-                                                            onClick={() => {
-                                                                setTab("cart");
-                                                                setPendingScrollShopId(s.id);
-                                                            }}
-                                                            disabled={(qtyByShop[s.id] || 0) === 0}
-                                                            className={[
-                                                                "w-full h-12 rounded-full",
-                                                                "bg-[#5f95c5] hover:bg-emerald-600",
-                                                                "text-white font-semibold",
-                                                                "flex items-center justify-center gap-2",
-                                                                "transition-colors",
-                                                                "w-full h-12 rounded-full",
-                                                                "bg-[#5f95c5] hover:bg-emerald-600",
-                                                                "text-white font-semibold",
-                                                                "flex items-center justify-center gap-2",
-                                                                "transition-colors",
-                                                                "disabled:opacity-40 disabled:cursor-not-allowed"
-                                                            ].join(" ")}
-                                                            aria-label="カートを見る"
-                                                            title="カートを見る"
-                                                            aria-disabled={(qtyByShop[s.id] || 0) === 0}
-                                                        >
-                                                            <span className="text-base"> <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="mr-2" aria-hidden="true">
-                                                                <circle cx="9" cy="21" r="1"></circle>
-                                                                <circle cx="20" cy="21" r="1"></circle>
-                                                                <path d="M1 1h4l2.68 13.39A2 2 0 0 0 9.62 16h7.76a2 2 0 0 0 2-1.61L21 8H6"></path>
-                                                            </svg></span>
-                                                            <span>カートを見る（{qtyByShop[s.id] || 0}）</span>
-                                                        </button>
-
+                                                        <ViewCartButton
+                                                            shopId={s.id}
+                                                            className="w-full h-12 rounded-full font-semibold flex items-center justify-center gap-2"
+                                                        />
                                                         {/* 2) 白ボタン：カートを空にする */}
                                                         <button
                                                             type="button"
@@ -4321,7 +4311,7 @@ export default function UserPilotApp() {
                                                             disabled={(qtyByShop[s.id] || 0) === 0}
                                                             className={[
                                                                 "w-full h-12 rounded-full",
-                                                                "bg-white border",
+                                                                "bg-white border border-zinc-300",
                                                                 "text-zinc-800 font-semibold",
                                                                 "flex items-center justify-center gap-2",
                                                                 "disabled:opacity-40 disabled:cursor-not-allowed",
@@ -5173,7 +5163,7 @@ export default function UserPilotApp() {
 
                                         {/* ▼ 追加：中央揃えの増減チップ */}
                                         <div className=" flex justify-center">
-                                            <QtyChip sid={detail.shopId} it={detail.item} />
+                                            <QtyChip sid={detail.shopId} it={detail.item} variant="modal" />
                                         </div>
 
                                         {/* ▼ 追加：モーダル内の「カートを見る」（ホームと同じコンポーネント） */}

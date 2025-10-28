@@ -2166,7 +2166,7 @@ function CompactTicketCard({
                 </BottomSheet>
             )}
 
-            {expired && (
+            {phase !== null && expired && (
                 <div
                     className="
       absolute inset-0 z-10 rounded-2xl
@@ -2176,6 +2176,7 @@ function CompactTicketCard({
     "
                     aria-hidden="false"
                 >
+
                     <div className="text-center text-white">
 
                         <div className="text-sm font-semibold">受取可能時間を過ぎたため、このチケットは利用できません</div>
@@ -3895,7 +3896,7 @@ export default function UserPilotApp() {
             // 直叩き経路にも短い接続タイムアウトを適用（AbortController）
             const timeoutMs = 7000;
             const ac = new AbortController();
-            const timeoutId = setTimeout(() => { try { ac.abort("timeout"); } catch {} }, timeoutMs);
+            const timeoutId = setTimeout(() => { try { ac.abort("timeout"); } catch { } }, timeoutMs);
 
             const res = await fetch("/api/stripe/create-checkout-session", {
                 method: "POST",
@@ -3936,7 +3937,7 @@ export default function UserPilotApp() {
             } catch { /* noop */ }
         } catch (e: any) {
             console.error(e);
-            try { setCheckoutError(String(e?.message || 'エラーが発生しました')); } catch {}
+            try { setCheckoutError(String(e?.message || 'エラーが発生しました')); } catch { }
             emitToast("error", e?.message || "Stripe セッション作成に失敗しました");
         } finally {
             setIsPaying(false);
@@ -3946,7 +3947,7 @@ export default function UserPilotApp() {
     // 計測: client_secret 準備完了
     useEffect(() => {
         if (checkoutClientSecret) {
-            try { performance.mark?.("secret_ready"); } catch {}
+            try { performance.mark?.("secret_ready"); } catch { }
         }
     }, [checkoutClientSecret]);
 

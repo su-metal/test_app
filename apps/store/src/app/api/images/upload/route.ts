@@ -129,9 +129,19 @@ export async function POST(req: NextRequest) {
         path: v.path,
         url: v.url,
       }));
+
+      // ���C���摜�ƃT�u�摜�̃J�����̒l���X�V
+      // UI は main_image_path/sub_image_path[1|2] を参照して表示するため必須
+      const col =
+        slot === "main"
+          ? "main_image_path"
+          : slot === "sub1"
+          ? "sub_image_path1"
+          : "sub_image_path2";
+
       await supabase
         .from("products")
-        .update({ image_variants: variantsJson })
+        .update({ [col]: biggest.path, image_variants: variantsJson })
         .eq("id", productId);
     } catch {}
 

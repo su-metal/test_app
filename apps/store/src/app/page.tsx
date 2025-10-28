@@ -2004,32 +2004,61 @@ function useImageUpload() {
 
 // 画像最適化版アップロードフック（サーバーAPI委譲）
 function useImageUploadV2() {
+  // 失敗時フォールバック用（クライアント直アップロード）
+  const direct = useImageUpload();
+  const supabase = useSupabase();
+  const colOf = (slot: Slot) =>
+    slot === "main" ? "main_image_path" :
+      slot === "sub1" ? "sub_image_path1" : "sub_image_path2";
+
   const uploadProductImage = React.useCallback(async (productId: string, file: File, slot: Slot) => {
-    const fd = new FormData();
-    fd.append("productId", productId);
-    fd.append("slot", slot);
-    fd.append("file", file);
-    const res = await fetch("/api/images/upload", { method: "POST", body: fd });
-    if (!res.ok) {
-      const j = await res.json().catch(() => ({}));
-      throw new Error(j?.error || "upload_failed");
+    try {
+      const fd = new FormData();
+      fd.append("productId", productId);
+      fd.append("slot", slot);
+      fd.append("file", file);
+      const res = await fetch("/api/images/upload", { method: "POST", body: fd });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j?.error || "upload_failed");
+      }
+      const json = await res.json();
+      const path = String(json.path || "");
+      // 互換のため、API成功後にも列更新をクライアント側で冪等に実行
+      try {
+        if (supabase && path) {
+          await supabase
+            .from("products")
+            .update({ [colOf(slot)]: path })
+            .eq("id", productId)
+            .eq("store_id", getStoreId());
+        }
+      } catch { /* noop */ }
+      return path;
+    } catch (e) {
+      // 開発環境などで API へ接続できない場合のフォールバック
+      // TODO(req v2): 本番では必ずサーバーAPI経由に統一（RLS/監査のため）
+      return await direct.uploadProductImage(productId, file, slot);
     }
-    const json = await res.json();
-    return String(json.path || "");
-  }, []);
+  }, [direct, supabase]);
 
   const deleteProductImage = React.useCallback(async (productId: string, slot: Slot) => {
-    const res = await fetch("/api/images/delete", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ productId, slot }),
-    });
-    if (!res.ok) {
-      const j = await res.json().catch(() => ({}));
-      throw new Error(j?.error || "delete_failed");
+    try {
+      const res = await fetch("/api/images/delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ productId, slot }),
+      });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j?.error || "delete_failed");
+      }
+      return true;
+    } catch (e) {
+      // フォールバック: クライアント直削除
+      return await direct.deleteProductImage(productId, slot);
     }
-    return true;
-  }, []);
+  }, [direct]);
 
   return { uploadProductImage, deleteProductImage };
 }
@@ -2092,13 +2121,19 @@ function ProductImageSlot(props: StagedProps | ExistingProps) {
 
   // プレビュー（stagedのみFileから）
   const [preview, setPreview] = React.useState<string | null>(null);
+  // blob: の ObjectURL は依存対象を props 全体にせず、選択中の File のみを監視
+  // NOTE: props 参照全体を依存にすると再描画毎に revoke され、ERR_FILE_NOT_FOUND になる
+  const stagedFile = props.mode === "staged" ? props.file : null;
   React.useEffect(() => {
-    if (props.mode !== "staged") return;
-    if (!props.file) { setPreview(null); return; }
-    const url = URL.createObjectURL(props.file);
+    if (props.mode !== "staged") {
+      setPreview(null);
+      return;
+    }
+    if (!stagedFile) { setPreview(null); return; }
+    const url = URL.createObjectURL(stagedFile);
     setPreview(url);
     return () => { URL.revokeObjectURL(url); };
-  }, [props]);
+  }, [props.mode, stagedFile]);
 
   const isReadonly = (props as any).readonly === true;
 

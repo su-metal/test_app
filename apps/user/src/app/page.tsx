@@ -54,62 +54,62 @@ function useInitLiffOnce() {
 
 
 // --- ホームで「戻る」= LIFFを閉じる（毎回ルート固定 & 競合耐性あり） ---
-function RootBackGuardOnHome() {
-    useInitLiffOnce();
+// function RootBackGuardOnHome() {
+//     useInitLiffOnce();
 
-    React.useEffect(() => {
-        if (typeof window === "undefined") return;
+//     React.useEffect(() => {
+//         if (typeof window === "undefined") return;
 
-        // ① ダミー履歴を「二段」積む（pop を1回吸収しても、もう1回分残す）
-        //   - A(元) → B(ダミー1) → C(ダミー2=現行)
-        //   - 戻る1回目: C→B (popstate発火) … ここで forward/push で吸収しつつ closeWindow
-        //   - 戻る2回目: 端末が二度目の戻るを要求しても、同様に吸収
-        const href = location.href;
-        history.pushState({ __homeGuard: 1 }, "", href);
-        history.pushState({ __homeGuard: 2 }, "", href);
+//         // ① ダミー履歴を「二段」積む（pop を1回吸収しても、もう1回分残す）
+//         //   - A(元) → B(ダミー1) → C(ダミー2=現行)
+//         //   - 戻る1回目: C→B (popstate発火) … ここで forward/push で吸収しつつ closeWindow
+//         //   - 戻る2回目: 端末が二度目の戻るを要求しても、同様に吸収
+//         const href = location.href;
+//         history.pushState({ __homeGuard: 1 }, "", href);
+//         history.pushState({ __homeGuard: 2 }, "", href);
 
-        // ② タブ同期（?tab=… の replaceState）による直後の上書きを防ぐため、数 ms 遅延で印を付け直す
-        //    ※ この関数自体が一度だけ走ればよい（ホーム初回マウント時）
-        setTimeout(() => {
-            try { history.replaceState({ __homeGuard: 3 }, "", location.href); } catch { }
-        }, 16);
+//         // ② タブ同期（?tab=… の replaceState）による直後の上書きを防ぐため、数 ms 遅延で印を付け直す
+//         //    ※ この関数自体が一度だけ走ればよい（ホーム初回マウント時）
+//         setTimeout(() => {
+//             try { history.replaceState({ __homeGuard: 3 }, "", location.href); } catch { }
+//         }, 16);
 
-        const tryClose = async () => {
-            // LIFF優先で閉じる
-            try {
-                const w = window as any;
-                if (w.liff?.closeWindow) {
-                    await w.liff.closeWindow();
-                    return;
-                }
-            } catch { /* fallthrough */ }
+//         const tryClose = async () => {
+//             // LIFF優先で閉じる
+//             try {
+//                 const w = window as any;
+//                 if (w.liff?.closeWindow) {
+//                     await w.liff.closeWindow();
+//                     return;
+//                 }
+//             } catch { /* fallthrough */ }
 
-            // フォールバック1: window.close()
-            try { window.close(); } catch { }
+//             // フォールバック1: window.close()
+//             try { window.close(); } catch { }
 
-            // フォールバック2: about:blank に置換（戻れない）
-            try { location.replace("about:blank"); } catch { }
-        };
+//             // フォールバック2: about:blank に置換（戻れない）
+//             try { location.replace("about:blank"); } catch { }
+//         };
 
-        const onPop = (ev: PopStateEvent) => {
-            // 直前の戻るで別画面へ遷移しきる前に「前へ戻す」か「再push」して吸収
-            try {
-                // 履歴を再び一段進め、常にこのページに留まる
-                history.forward();         // forward できない場合もあるが harmless
-                history.pushState({ __homeGuard: Date.now() }, "", href);
-            } catch { /* noop */ }
+//         const onPop = (ev: PopStateEvent) => {
+//             // 直前の戻るで別画面へ遷移しきる前に「前へ戻す」か「再push」して吸収
+//             try {
+//                 // 履歴を再び一段進め、常にこのページに留まる
+//                 history.forward();         // forward できない場合もあるが harmless
+//                 history.pushState({ __homeGuard: Date.now() }, "", href);
+//             } catch { /* noop */ }
 
-            // 少し遅らせて閉じる（forward/push の適用を優先）
-            setTimeout(tryClose, 0);
-        };
+//             // 少し遅らせて閉じる（forward/push の適用を優先）
+//             setTimeout(tryClose, 0);
+//         };
 
-        window.addEventListener("popstate", onPop);
+//         window.addEventListener("popstate", onPop);
 
-        return () => window.removeEventListener("popstate", onPop);
-    }, []);
+//         return () => window.removeEventListener("popstate", onPop);
+//     }, []);
 
-    return null;
-}
+//     return null;
+// }
 
 
 // 新: ロード失敗時は null を返す
@@ -4335,7 +4335,7 @@ export default function UserPilotApp() {
         <MinimalErrorBoundary>
             <PresetMapContext.Provider value={{ presetMap }}>
                 <div className="min-h-screen bg-[#faf8f4]">{/* 柔らかいベージュ背景 */}
-                    <RootBackGuardOnHome />
+                    {/* <RootBackGuardOnHome /> */}
                     {tab !== "home" && (
                         <header
                             className={[

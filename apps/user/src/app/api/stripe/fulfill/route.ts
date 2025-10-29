@@ -114,6 +114,7 @@ export async function GET(req: Request) {
         items,
         total,
         status: "PENDING",
+        placed_at: new Date().toISOString(),
       };
       if (lineUserId) (payload as any).line_user_id = lineUserId;
       if (pick?.start) payload.pickup_start = pick.start;

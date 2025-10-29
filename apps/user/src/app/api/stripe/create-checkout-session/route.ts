@@ -155,7 +155,10 @@ export async function POST(req: NextRequest) {
         .toString()
         .padStart(6, "0");
     }
-    function parsePickupLabelToJstIsoRange(label?: string): { start?: string; end?: string } {
+    function parsePickupLabelToJstIsoRange(label?: string): {
+      start?: string;
+      end?: string;
+    } {
       // どんな区切り(〜,～,-,–,—, to, 空白など)でも「時刻2つ」を検出して当日JSTのISOへ
       const text = String(label || "").trim();
       if (!text) return {};
@@ -240,39 +243,7 @@ export async function POST(req: NextRequest) {
 
     // TODO(req v2): スナップショット構造は要件書の正式定義へ
 
-    const preRes = await fetch(`${API_URL}/rest/v1/orders?select=id,code`, {
-      method: "POST",
-      headers: {
-        apikey: SERVICE,
-        Authorization: `Bearer ${SERVICE}`,
-        "Content-Type": "application/json",
-        Prefer: "return=representation",
-      },
-      body: JSON.stringify(preOrderPayload),
-      cache: "no-store",
-    });
-    if (!preRes.ok) {
-      const t = await preRes.text().catch(() => "");
-      return NextResponse.json(
-        { error: "preorder_failed", detail: `${preRes.status} ${t}` },
-        { status: 400 }
-      );
-    }
-    const preRows = await preRes.json();
-    const pre = Array.isArray(preRows) ? preRows[0] : preRows;
-    const orderId: string = String(pre?.id || "");
-    const orderCode: string = String(pre?.code || "");
-    console.info("[create-checkout-session] pre-order created", {
-      orderId,
-      code: orderCode,
-      items: items.length,
-      total,
-    });
-    if (!orderId)
-      return NextResponse.json(
-        { error: "preorder_id_missing" },
-        { status: 500 }
-      );
+    // 事前の orders 生成は行わない（決済完了まで店舗に渡さない）
 
     // -------- 1) Customer 既存メールで取得 or 作成（任意） --------
     let customerId: string | undefined;
@@ -285,6 +256,10 @@ export async function POST(req: NextRequest) {
       else
         customerId = (await stripe.customers.create({ email: userEmail })).id;
     }
+
+    // TODO(req v2): 事前の注文ID発行は廃止。以下は後方互換のためのダミー。
+    const orderId: string = "";
+    const orderCode: string = "";
 
     // -------- 2) セッション生成（内部相関のみ） --------
     const params: Stripe.Checkout.SessionCreateParams = {

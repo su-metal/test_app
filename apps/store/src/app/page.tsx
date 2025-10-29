@@ -188,25 +188,26 @@ async function downscaleFile(
 
 // ===== Supabase クライアント =====
 function useSupabase() {
+  const sid = getStoreId();
   return useMemo(() => {
     if (typeof window === "undefined") return null;
     const w = window as any;
-    if (w.__supabase) return w.__supabase;
+    const cacheKey = `__supabase_${String(sid || '').trim() || 'default'}`;
+    if (w[cacheKey]) return w[cacheKey];
     const url = (process.env.NEXT_PUBLIC_SUPABASE_URL as string | undefined) || w.NEXT_PUBLIC_SUPABASE_URL;
     const key = (process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY as string | undefined) || w.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-    const sid = getStoreId();
     if (!url || !key) return null;
     try {
       // 空文字の x-store-id を送らない
       const headers: Record<string, string> = {};
       if (String(sid || '').trim()) headers['x-store-id'] = String(sid);
       const sb = createClient(url, key, { global: { headers } });
-      (w as any).__supabase = sb;
+      w[cacheKey] = sb;
       return sb;
     } catch {
       return null;
     }
-  }, []);
+  }, [sid]);
 }
 
 
@@ -491,7 +492,11 @@ function useProducts() {
             setProducts(prev => prev.filter(it => it.id !== id));
           }
         )
-        .subscribe() as RealtimeChannel;
+        .subscribe((status: string) => {
+          if (typeof process !== 'undefined' && process.env?.NODE_ENV !== 'production') {
+            console.info('[realtime:products]', status);
+          }
+        }) as RealtimeChannel;
 
       channelRef.current = ch;
     })();
@@ -757,6 +762,7 @@ function useOrders() {
       .from('orders')
       .select('id,store_id,code,customer,items,total,placed_at,status,pickup_start,pickup_end,redeem_request_at,redeemed_at')
       .eq('store_id', sid)
+      .not('placed_at', 'is', null)
       .order('placed_at', { ascending: false })
       .limit(50);
 
@@ -793,6 +799,7 @@ function useOrders() {
       .from('orders')
       .select('id,store_id,code,customer,items,total,placed_at,status,pickup_start,pickup_end,redeem_request_at,redeemed_at')
       .eq('store_id', sid)
+      .not('placed_at', 'is', null)
       .order('placed_at', { ascending: false });
     if (error) {
       setErr(error.message || 'データ取得に失敗しました');
@@ -806,12 +813,14 @@ function useOrders() {
         .channel(chanName)
         .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'orders', filter: `store_id=eq.${sid}` }, (p: any) => {
           if (!p?.new) return;
+          if (!p.new.placed_at) return; // 支払い未完了の仮注文は無視
           const row = mapOrder(p.new as OrdersRow);
           setOrders(prev => upsertById(prev, row));
           lastEventAtRef.current = Date.now();
         })
         .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'orders', filter: `store_id=eq.${sid}` }, (p: any) => {
           if (!p?.new) return;
+          if (!p.new.placed_at) return; // 支払い未完了の仮注文は無視
           const row = mapOrder(p.new as OrdersRow);
           setOrders(prev => upsertById(prev, row));
           lastEventAtRef.current = Date.now();
@@ -824,7 +833,11 @@ function useOrders() {
           setOrders(prev => prev.filter(o => o.id !== id));
           lastEventAtRef.current = Date.now();
         })
-        .subscribe() as RealtimeChannel;
+        .subscribe((status: string) => {
+          if (typeof process !== 'undefined' && process.env?.NODE_ENV !== 'production') {
+            console.info('[realtime:orders]', status);
+          }
+        }) as RealtimeChannel;
       channelRef.current = ch;
     } catch { setErr('リアルタイム購読に失敗しました'); }
     setReady(true);

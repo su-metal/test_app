@@ -1570,6 +1570,7 @@ function BottomSheet({
     children: React.ReactNode;
 }) {
     const startY = React.useRef(0);
+    const startX = React.useRef(0); // ★ 追加：ジェスチャ開始時のX
     const currentY = React.useRef(0);
     const [dragY, setDragY] = React.useState(0);
     const [dragging, setDragging] = React.useState(false);
@@ -1582,16 +1583,32 @@ function BottomSheet({
         startY.current = t.clientY;
         currentY.current = t.clientY;
         setDragging(true);
+        startX.current = t.clientX; // ★ 追加
     };
     const onTouchMove = (e: React.TouchEvent) => {
         if (!dragging) return;
         const t = e.touches[0];
-        currentY.current = t.clientY;
-        const dy = Math.max(0, currentY.current - startY.current);
-        setDragY(dy);
-        e.preventDefault(); // ← ハンドル内のみなので内部フォーム/iframeのスクロールは邪魔しない
+
+        // ★ iOSの戻るジェスチャ保護：画面左端 24px では一切介入しない
+        if (t.clientX <= 24) return;
+
+        // 変位計算
+        const dx = t.clientX - startX.current;
+        const dyRaw = t.clientY - startY.current;
+
+        // 垂直優位（=シートのドラッグ操作）のみ介入
+        if (Math.abs(dyRaw) >= Math.abs(dx)) {
+            const dy = Math.max(0, dyRaw);
+            currentY.current = t.clientY;
+            setDragY(dy);
+            // ★ 垂直ドラッグ時だけネイティブスクロール/戻るジェスチャを抑止
+            e.preventDefault();
+        }
+        // 水平優位（戻るスワイプ含む）はスルー → ブラウザ/OSへ委ねる
     };
+
     const onTouchEnd = () => {
+        if (!dragging) return;
         setDragging(false);
         if (dragY > 120) { onClose(); setDragY(0); return; }
         setDragY(0);

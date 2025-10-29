@@ -27,7 +27,7 @@ export default function RedeemConfirmWatcher() {
     const load = async () => {
       try {
         const idt = await getLiffIdTokenCached().catch(() => null);
-        const headers: Record<string, string> = { };
+        const headers: Record<string, string> = {};
         if (idt) headers["authorization"] = `Bearer ${idt}`;
         const r = await fetch("/api/orders/redeem-request/latest", { cache: "no-store", headers });
         const j = (await r.json()) as LatestRes;
@@ -46,7 +46,7 @@ export default function RedeemConfirmWatcher() {
     if (visible) {
       (async () => {
         const idt = await getLiffIdTokenCached().catch(() => null);
-        const headers: Record<string, string> = { };
+        const headers: Record<string, string> = {};
         if (idt) headers["authorization"] = `Bearer ${idt}`;
         fetch("/api/orders/redeem-request/latest", { cache: "no-store", headers })
           .then(r => r.json())
@@ -55,40 +55,106 @@ export default function RedeemConfirmWatcher() {
     }
   }, [visible]);
 
-  // スワイプ UI（横ドラッグ）
+  // スワイプ UI（横ドラッグ） — rAF/計測キャッシュでスムーズに
   const trackRef = React.useRef<HTMLDivElement | null>(null);
   const knobRef = React.useRef<HTMLDivElement | null>(null);
-  const posRef = React.useRef(0);
+
+  // 計測キャッシュ
+  const maxXRef = React.useRef(0);      // つまみが移動できる最大X
   const draggingRef = React.useRef(false);
 
+  // 描画更新用
+  const pendingXRef = React.useRef<number | null>(0);
+  const rafRef = React.useRef<number | null>(null);
+  const transitionEnabledRef = React.useRef(true);
+
+  const setKnobTransform = (x: number) => {
+    const k = knobRef.current;
+    if (!k) return;
+    // GPU向けに translate3d を使用
+    k.style.transform = `translate3d(${x}px,0,0)`;
+  };
+
+  const disableTransition = () => {
+    if (!transitionEnabledRef.current) return;
+    transitionEnabledRef.current = false;
+    const k = knobRef.current;
+    if (k) k.style.transition = "none";
+  };
+  const enableTransition = () => {
+    if (transitionEnabledRef.current) return;
+    transitionEnabledRef.current = true;
+    const k = knobRef.current;
+    if (k) k.style.transition = "transform 200ms ease-out";
+  };
+
   const resetKnob = React.useCallback(() => {
-    posRef.current = 0;
-    const k = knobRef.current; if (k) k.style.transform = `translateX(0px)`;
+    enableTransition();
+    setKnobTransform(0);
   }, []);
+
+  const flushRaf = () => {
+    rafRef.current = null;
+    const x = pendingXRef.current;
+    if (x == null) return;
+    pendingXRef.current = null;
+    setKnobTransform(x);
+  };
+
+  const scheduleRaf = () => {
+    if (rafRef.current != null) return;
+    rafRef.current = requestAnimationFrame(flushRaf);
+  };
+
+  const measureOnce = () => {
+    const track = trackRef.current;
+    const k = knobRef.current;
+    if (!track || !k) return;
+    // pointerdown 時に1回だけ計測
+    const trackW = track.clientWidth; // reflowコスト低
+    const knobW = k.offsetWidth;
+    maxXRef.current = Math.max(0, trackW - knobW);
+  };
 
   const onDown = React.useCallback((ev: React.PointerEvent) => {
     if (submitting) return;
     draggingRef.current = true;
+    measureOnce();
+    disableTransition();
     (ev.target as Element).setPointerCapture(ev.pointerId);
   }, [submitting]);
+
   const onMove = React.useCallback((ev: React.PointerEvent) => {
     if (!draggingRef.current) return;
-    const track = trackRef.current; const k = knobRef.current;
+    const track = trackRef.current;
+    const k = knobRef.current;
     if (!track || !k) return;
-    const rect = track.getBoundingClientRect();
-    const x = Math.max(0, Math.min(rect.width - k.offsetWidth, ev.clientX - rect.left - k.offsetWidth / 2));
-    posRef.current = x;
-    k.style.transform = `translateX(${x}px)`;
+    const rectLeft = track.getBoundingClientRect().left; // 位置だけ参照（幅は pointerdown 測定済み）
+    const half = k.offsetWidth / 2; // これもコスト低い
+    const raw = ev.clientX - rectLeft - half;
+    const x = Math.max(0, Math.min(maxXRef.current, raw));
+    pendingXRef.current = x;
+    scheduleRaf();
   }, []);
-  const onUp = React.useCallback(async () => {
+
+  const onUp = React.useCallback(async (_ev?: React.PointerEvent) => {
     if (!draggingRef.current) return;
     draggingRef.current = false;
-    const track = trackRef.current; const k = knobRef.current;
-    if (!track || !k || !target) return resetKnob();
-    const passed = posRef.current > (track.clientWidth - k.offsetWidth) * 0.85;
-    if (!passed) return resetKnob();
+
+    const k = knobRef.current;
+    if (!k) return resetKnob();
+
+    const passed = (pendingXRef.current ?? 0) > maxXRef.current * 0.85;
+
+    if (!passed) {
+      return resetKnob();
+    }
+
     // 確定
     setSubmitting(true);
+    enableTransition(); // 最終到達のアニメを効かせる
+    setKnobTransform(maxXRef.current);
+
     try {
       const idt = await getLiffIdTokenCached().catch(() => null);
       const headers: Record<string, string> = { "content-type": "application/json" };
@@ -96,13 +162,13 @@ export default function RedeemConfirmWatcher() {
       const r = await fetch("/api/orders/redeem", {
         method: "POST",
         headers,
-        body: JSON.stringify({ orderId: target.id })
+        body: JSON.stringify({ orderId: target!.id }),
       });
       const j = await r.json();
       if (j?.ok) {
-        setOpen(false); setTarget(null);
+        setOpen(false);
+        setTarget(null);
       } else {
-        // エラー時は開いたまま
         console.error("[redeem] failed:", j?.error || r.status);
         resetKnob();
       }
@@ -112,7 +178,8 @@ export default function RedeemConfirmWatcher() {
     } finally {
       setSubmitting(false);
     }
-  }, [target, resetKnob]);
+  }, [resetKnob, target]);
+
 
   if (!open || !target) return null;
 
@@ -126,17 +193,28 @@ export default function RedeemConfirmWatcher() {
         <div className="mt-4">
           <div
             ref={trackRef}
-            className={`relative w-full h-12 rounded-full ${submitting ? 'bg-emerald-600/10' : 'bg-zinc-100'} select-none overflow-hidden`}
+            className={`relative w-full h-12 rounded-full ${submitting ? 'bg-emerald-600/10' : 'bg-zinc-100'} 
+              select-none touch-none overflow-hidden`}
             onPointerDown={onDown}
             onPointerMove={onMove}
             onPointerUp={onUp}
+            onPointerCancel={onUp}
+            onPointerLeave={() => {
+              // つまみの外に出た場合も終了扱い（ユーザー体験を安定させる）
+              if (draggingRef.current) onUp();
+            }}
+
+
           >
             <div className="absolute inset-0 grid place-items-center pointer-events-none text-sm text-zinc-600">
               {submitting ? '確定しました' : '右にスワイプして確定'}
             </div>
             <div
               ref={knobRef}
-              className={`absolute top-1 left-1 h-10 w-28 rounded-full ${submitting ? 'bg-emerald-600' : 'bg-zinc-900'} text-white grid place-items-center text-sm`}
+              // 初期は transition 有効。ドラッグ開始で JS が一時的に切ります。
+              className={`absolute top-1 left-1 h-10 w-28 rounded-full ${submitting ? 'bg-emerald-600' : 'bg-zinc-900'} 
+                text-white grid place-items-center text-sm will-change-[transform]`}
+              style={{ transition: "transform 200ms ease-out" }}
             >
               {submitting ? '確定中…' : 'スワイプ'}
             </div>

@@ -442,7 +442,7 @@ function useProducts() {
     if (!supabase) return; setPloading(true); setPerr(null);
     const { data, error } = await supabase
       .from('products')
-      .select('id,store_id,name,price,stock,updated_at,main_image_path,sub_image_path1,sub_image_path2,pickup_slot_no,publish_at,note')
+      .select('id,store_id,name,price,stock,main_image_path,sub_image_path1,sub_image_path2,pickup_slot_no,publish_at,note')
       .eq('store_id', getStoreId())
       .order('updated_at', { ascending: false });
     if (error) setPerr(error.message || '商品の取得に失敗しました');
@@ -521,7 +521,7 @@ function useProducts() {
           pickup_slot_no: payload.pickup_slot_no ?? null,
           note: payload.note ?? null,
         })
-        .select('id,store_id,name,price,stock,updated_at,main_image_path,sub_image_path1,sub_image_path2,pickup_slot_no,publish_at,note')
+        .select('id,store_id,name,price,stock,main_image_path,sub_image_path1,sub_image_path2,pickup_slot_no,publish_at,note')
         .single();
 
       if (error) {
@@ -581,7 +581,7 @@ function useProducts() {
       .update({ pickup_slot_no: slot })
       .eq('id', id)
       .eq('store_id', getStoreId())
-      .select('id,store_id,name,price,stock,updated_at,main_image_path,sub_image_path1,sub_image_path2,pickup_slot_no,publish_at,note')
+      .select('id,store_id,name,price,stock,main_image_path,sub_image_path1,sub_image_path2,pickup_slot_no,publish_at,note')
       .single();
     if (error) {
       // 失敗時はリロードで整合
@@ -601,7 +601,7 @@ function useProducts() {
       .update({ publish_at: isoOrNull })
       .eq('id', id)
       .eq('store_id', getStoreId())
-      .select('id,store_id,name,price,stock,updated_at,main_image_path,sub_image_path1,sub_image_path2,pickup_slot_no,publish_at')
+      .select('id,store_id,name,price,stock,main_image_path,sub_image_path1,sub_image_path2,pickup_slot_no,publish_at')
       .single();
     if (error) {
       await load(); // 差し戻し
@@ -623,7 +623,7 @@ function useProducts() {
       .update({ note: normalized })
       .eq('id', id)
       .eq('store_id', getStoreId())
-      .select('id,store_id,name,price,stock,updated_at,main_image_path,sub_image_path1,sub_image_path2,pickup_slot_no,publish_at,note')
+      .select('id,store_id,name,price,stock,main_image_path,sub_image_path1,sub_image_path2,pickup_slot_no,publish_at,note')
       .single();
 
     if (error) {
@@ -664,7 +664,7 @@ function useProducts() {
       .update(normalized)
       .eq('id', id)
       .eq('store_id', getStoreId())
-      .select('id,store_id,name,price,stock,updated_at,main_image_path,sub_image_path1,sub_image_path2,pickup_slot_no,publish_at,note')
+      .select('id,store_id,name,price,stock,main_image_path,sub_image_path1,sub_image_path2,pickup_slot_no,publish_at,note')
       .single();
 
     if (error) {
@@ -755,10 +755,11 @@ function useOrders() {
     // 直近だけ薄く取る（最新 50 件）
     const { data, error } = await supabase
       .from('orders')
-      .select('id,store_id,code,customer,items,total,placed_at,updated_at,status,pickup_start,pickup_end,redeem_request_at,redeemed_at')
+      .select('id,store_id,code,customer,items,total,placed_at,status,pickup_start,pickup_end,redeem_request_at,redeemed_at')
       .eq('store_id', sid)
       .order('placed_at', { ascending: false })
       .limit(50);
+
 
     if (error) return; // ポーリングは失敗しても黙って次回
     const rows = ((data ?? []) as OrdersRow[]).map(mapOrder);

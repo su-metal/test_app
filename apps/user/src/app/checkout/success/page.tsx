@@ -78,11 +78,11 @@ export default function SuccessPage() {
   const handleBackToApp = useCallback(() => {
     try {
       // ホーム側のガードを一度だけ有効化するためのフラグ
-      sessionStorage.setItem("afterCheckoutComplete", "1");
+      sessionStorage.setItem("came_from_checkout", "1");
     } catch { }
 
     // 履歴置換で完了画面に戻れないようにする（ホーム側は ?postComplete=1 を見てガード）
-    router.replace("/?postComplete=1");
+    router.replace("/?from=success");
   }, [router]);
 
   return (

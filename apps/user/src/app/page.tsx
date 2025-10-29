@@ -2249,13 +2249,28 @@ function DisclosureButton({
 
 export default function UserPilotApp() {
 
-    // ホーム正規化（履歴の親ルート化 + 戻る=終了［1回限り］）
+    // ホーム正規化（履歴の親ルート化）＋ 戻る=終了は「決済成功/キャンセルから戻ったときだけ」適用
     useEffect(() => {
         if (typeof window === "undefined") return;
-        // TODO(req v2): ホーム到達時は必ず親ルート扱いに正規化
+        // TODO(req v2): ホーム到達時は親ルート扱いに正規化。終了ハンドラは成功/キャンセル復帰時のみ。
+
+        let needExitOnce = false;
+
         try {
             const u = new URL(window.location.href);
-            const keys = ["from", "came_from_checkout", "fromComplete"];
+            const from = u.searchParams.get("from"); // success | cancel など
+            if (from === "success" || from === "cancel") needExitOnce = true;
+
+            // sessionStorage フラグ（success/cancel 画面で設定）
+            try {
+                if (sessionStorage.getItem("came_from_checkout") === "1") {
+                    needExitOnce = true;
+                    sessionStorage.removeItem("came_from_checkout");
+                }
+            } catch { /* noop */ }
+
+            // 不要クエリを除去
+            const keys = ["from", "came_from_checkout", "fromComplete"]; // 正規化で消す
             let changed = false;
             for (const k of keys) {
                 if (u.searchParams.has(k)) { u.searchParams.delete(k); changed = true; }
@@ -2264,6 +2279,8 @@ export default function UserPilotApp() {
                 history.replaceState(null, "", u.toString());
             }
         } catch { /* noop */ }
+
+        if (!needExitOnce) return; // 通常ホームではガードを置かない（スワイプは常に反映）
 
         // 戻る=アプリ終了（1回限り）。多段pushや常駐ガードは禁止。
         const href = location.href;
@@ -2280,8 +2297,8 @@ export default function UserPilotApp() {
                     return;
                 }
             } catch { /* noop */ }
-            try { window.close(); } catch { /* noop */ }
-            try { location.replace("about:blank"); } catch { /* noop */ }
+            // フォールバック: 直前のページへ戻す（ユーザー操作＝スワイプを尊重）
+            try { history.back(); } catch { /* noop */ }
         };
         window.addEventListener("popstate", onPop);
         return () => window.removeEventListener("popstate", onPop);

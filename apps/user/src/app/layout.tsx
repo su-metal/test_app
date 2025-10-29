@@ -1,3 +1,4 @@
+// apps/user/src/app/layout.tsx
 import type { Viewport, Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
@@ -5,12 +6,11 @@ import LiffBoot from "./LiffBoot";
 import StripeBoot from "./stripe/StripeBoot";
 // import "leaflet/dist/leaflet.css";
 
-
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
   maximumScale: 1,
-  userScalable: false, // ← これでピンチズーム禁止
+  userScalable: false,
 };
 
 const geistSans = Geist({
@@ -30,17 +30,40 @@ export const metadata: Metadata = {
 
 export default function RootLayout({
   children,
-}: Readonly<{
-  children: React.ReactNode;
-}>) {
+}: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="ja">
-      <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
-      >
+      {/* ▼▼ 追加：Stripe を含む外部ドメインへの事前接続（DNS解決/SSLハンドシェイク短縮） ▼▼ */}
+      <head>
+        {/* 基本 Stripe */}
+        <link rel="dns-prefetch" href="https://js.stripe.com" />
+        <link rel="preconnect" href="https://js.stripe.com" crossOrigin="" />
+
+        {/* CDN 経由のアセット */}
+        <link rel="dns-prefetch" href="https://m.stripe.com" />
+        <link rel="preconnect" href="https://m.stripe.com" crossOrigin="" />
+        <link rel="dns-prefetch" href="https://q.stripe.com" />
+        <link rel="preconnect" href="https://q.stripe.com" crossOrigin="" />
+        <link rel="dns-prefetch" href="https://r.stripe.com" />
+        <link rel="preconnect" href="https://r.stripe.com" crossOrigin="" />
+        <link rel="dns-prefetch" href="https://api.stripe.com" />
+        <link rel="preconnect" href="https://api.stripe.com" crossOrigin="" />
+        <link rel="dns-prefetch" href="https://stripecdn.com" />
+        <link rel="dns-prefetch" href="https://*.stripecdn.com" />
+        <link rel="preconnect" href="https://*.stripecdn.com" crossOrigin="" />
+
+        {/* 埋め込みで iframe が使われる場合の保険（必要なければ残してOK） */}
+        <meta httpEquiv="x-dns-prefetch-control" content="on" />
+      </head>
+      {/* ▲▲ 追加ここまで ▲▲ */}
+
+      <body className={`${geistSans.variable} ${geistMono.variable} antialiased`}>
         {/* LIFF 起動（LINE アプリ内/外の双方を考慮） */}
         <LiffBoot />
+
+        {/* Stripe 周りの初期化：Elements/StripeAppLoader はこの子で行う想定 */}
         <StripeBoot />
+
         {children}
       </body>
     </html>

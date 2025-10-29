@@ -13,6 +13,8 @@ import { normalizeCode6 } from "@/lib/code6";
 import { loadStripe } from "@stripe/stripe-js";
 import { prefetchCheckout, signatureOf, getCached as getPrefetched, invalidateCacheIfMismatch } from "@/lib/checkoutPrefetch";
 import { getLiffIdTokenCached } from "@/lib/liffTokenCache";
+// 既存の import 群の中に追加
+import { Elements } from "@stripe/react-stripe-js";
 
 
 // --- LIFF 初期化（closeWindow を確実に動かすため） ---
@@ -108,8 +110,6 @@ function RootBackGuardOnHome() {
 
     return null;
 }
-
-
 
 
 // 新: ロード失敗時は null を返す
@@ -2243,8 +2243,6 @@ export default function UserPilotApp() {
 
     // 「別のカードを使う」クリックで従来フォームを開くトグル
     const [showCardFullForm, setShowCardFullForm] = useState(false);
-
-    const [checkoutClientSecret, setCheckoutClientSecret] = useState<string | null>(null);
     const [checkoutError, setCheckoutError] = useState<string | null>(null);
     const [isCheckoutOpen, setIsCheckoutOpen] = useState(false);
 
@@ -2799,12 +2797,27 @@ export default function UserPilotApp() {
     useEffect(() => { if (detail) { setGIndex(0); setAllergyOpen(false); } }, [detail, setGIndex]);
 
     const [clock, setClock] = useState<string>("");
+    const [checkoutClientSecret, setCheckoutClientSecret] = useState<string | null>(null);
+    const [isPrefetchingCheckout, setIsPrefetchingCheckout] = useState(false);
     useEffect(() => {
         const tick = () => setClock(new Date().toLocaleTimeString());
         tick();
         const id = setInterval(tick, 30_000);
         return () => clearInterval(id);
     }, []);
+
+    // 既存の state: isCheckoutOpen / checkoutClientSecret / checkoutError / lines などを前提
+    useEffect(() => {
+        if (!isCheckoutOpen) return;
+        if (checkoutClientSecret) return; // 取得済みなら再取得しない
+
+        // ここで create-checkout-session を叩く既存関数を呼ぶ（なければ fetch 実装）
+        startStripeCheckout().catch((e) => {
+            console.error(e);
+            setCheckoutError("決済の準備に失敗しました。再試行してください。");
+        });
+    }, [isCheckoutOpen, checkoutClientSecret]);
+
 
     // Googleマップの遷移先URL（place_id 最優先 → 既存のフォールバック）
     const googleMapsUrlForShop = (s: Shop) => {

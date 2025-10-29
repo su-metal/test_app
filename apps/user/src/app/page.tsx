@@ -2249,6 +2249,44 @@ function DisclosureButton({
 
 export default function UserPilotApp() {
 
+    // ホーム正規化（履歴の親ルート化 + 戻る=終了［1回限り］）
+    useEffect(() => {
+        if (typeof window === "undefined") return;
+        // TODO(req v2): ホーム到達時は必ず親ルート扱いに正規化
+        try {
+            const u = new URL(window.location.href);
+            const keys = ["from", "came_from_checkout", "fromComplete"];
+            let changed = false;
+            for (const k of keys) {
+                if (u.searchParams.has(k)) { u.searchParams.delete(k); changed = true; }
+            }
+            if (changed) {
+                history.replaceState(null, "", u.toString());
+            }
+        } catch { /* noop */ }
+
+        // 戻る=アプリ終了（1回限り）。多段pushや常駐ガードは禁止。
+        const href = location.href;
+        try { history.pushState({ __homeBackOnce: 1 }, "", href); } catch { /* noop */ }
+
+        const onPop = async () => {
+            // 自己解除して常駐しない
+            window.removeEventListener("popstate", onPop);
+            try {
+                const mod = await import("@line/liff").catch(() => ({ default: null as any }));
+                const liff = (mod as any)?.default as any;
+                if (liff && typeof liff.closeWindow === "function") {
+                    liff.closeWindow();
+                    return;
+                }
+            } catch { /* noop */ }
+            try { window.close(); } catch { /* noop */ }
+            try { location.replace("about:blank"); } catch { /* noop */ }
+        };
+        window.addEventListener("popstate", onPop);
+        return () => window.removeEventListener("popstate", onPop);
+    }, []);
+
     // 保存済みカードの一覧（必要に応じてAPI連携に差し替え可：いまはデモ用）
     const savedCards = useMemo(
         () => [
@@ -2343,7 +2381,7 @@ export default function UserPilotApp() {
         // 直前ページが同一オリジンの /checkout/success かどうかで判定
         const ref = document.referrer || "";
         const isFromCheckoutSuccess = ref.includes("/checkout/success");
-        if (!isFromCheckoutSuccess) return;
+        return; // 履歴ガードはホーム正規化に一本化（常駐禁止）
 
         // 二段ガードで戻るを吸収し、LIFF を閉じる（端末ブラウザでも多重押下に耐性）
         const href = location.href;

@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 import React, { useMemo, useState, useEffect, useRef, useCallback } from "react";
 import { createClient, type RealtimeChannel } from "@supabase/supabase-js";
 
@@ -717,6 +717,8 @@ function useProducts() {
 
 // ===== Orders =====
 function useOrders() {
+  // 直近のイベント受信時刻（INSERT/UPDATE/DELETE）を記録して、無音時のみポーリングを走らせる
+  const lastEventAtRef = useRef<number>(Date.now());
   const supabase = useSupabase();
   const invChan = useBroadcast('inventory-sync');
   const orderChan = useBroadcast('order-sync');
@@ -742,6 +744,28 @@ function useOrders() {
     // 直近が先頭になるように、最後に入ったものを優先しつつ逆順で返す
     return Array.from(m.values());
   };
+
+
+  // --- フェイルセーフ用の軽量リフレッシュ（サブスクの貼り直しはしない）---
+  const softRefresh = useCallback(async () => {
+    if (!supabase) return;
+    const sid = getStoreId();
+    if (!String(sid || '').trim()) return;
+
+    // 直近だけ薄く取る（最新 50 件）
+    const { data, error } = await supabase
+      .from('orders')
+      .select('id,store_id,code,customer,items,total,placed_at,updated_at,status,pickup_start,pickup_end,redeem_request_at,redeemed_at')
+      .eq('store_id', sid)
+      .order('placed_at', { ascending: false })
+      .limit(50);
+
+    if (error) return; // ポーリングは失敗しても黙って次回
+    const rows = ((data ?? []) as OrdersRow[]).map(mapOrder);
+
+    // 既存配列にマージして重複排除（順序は最新優先）
+    setOrders(prev => uniqById([...rows, ...prev]));
+  }, [supabase, setOrders]);
 
 
   const cleanup = useCallback(() => {
@@ -783,11 +807,13 @@ function useOrders() {
           if (!p?.new) return;
           const row = mapOrder(p.new as OrdersRow);
           setOrders(prev => upsertById(prev, row));
+          lastEventAtRef.current = Date.now();
         })
         .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'orders', filter: `store_id=eq.${sid}` }, (p: any) => {
           if (!p?.new) return;
           const row = mapOrder(p.new as OrdersRow);
           setOrders(prev => upsertById(prev, row));
+          lastEventAtRef.current = Date.now();
         })
         // NOTE: DELETE は REPLICA IDENTITY 設定次第で old に store_id が含まれないため、フィルタを外す
         .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'orders' }, (p: any) => {
@@ -795,6 +821,7 @@ function useOrders() {
           const id = String(oldRow.id || '');
           if (!id) return;
           setOrders(prev => prev.filter(o => o.id !== id));
+          lastEventAtRef.current = Date.now();
         })
         .subscribe() as RealtimeChannel;
       channelRef.current = ch;
@@ -803,6 +830,22 @@ function useOrders() {
   }, [supabase, cleanup, chanName]);
 
   useEffect(() => { fetchAndSubscribe(); return () => { cleanup(); }; }, [fetchAndSubscribe, cleanup]);
+  // --- フェイルセーフ：Realtime が無音のときだけ薄く再同期する ---
+  // 15秒毎にチェックし、直近12秒イベントが無ければ softRefresh を実行
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      // 直近に Realtime で何か来ていればスキップ
+      const silentMs = Date.now() - lastEventAtRef.current;
+      if (silentMs < 12_000) return;
+      // 無音が続いている場合のみ軽量再同期
+      softRefresh();
+      // 実行時点を「イベント」とみなし、連打しないように軽く更新
+      lastEventAtRef.current = Date.now();
+    }, 15_000);
+
+    return () => { window.clearInterval(id); };
+  }, [softRefresh]);
+
 
   // 新（RPC経由）:
   const fulfill = useCallback(async (id: string, opts?: { override?: boolean }) => {

@@ -3254,6 +3254,42 @@ function toMinutes(hhmm: string): number {
   return h * 60 + m;
 }
 
+// ISO文字列（UTCでも可）をJSTの「その日の分(0..1439)」に変換
+function isoToMinutesJST(iso: string): number {
+  const d = new Date(iso);
+  const parts = new Intl.DateTimeFormat('ja-JP', {
+    timeZone: 'Asia/Tokyo',
+    hour12: false, hour: '2-digit', minute: '2-digit'
+  }).formatToParts(d);
+  const hh = Number(parts.find(p => p.type === 'hour')?.value || '0');
+  const mm = Number(parts.find(p => p.type === 'minute')?.value || '0');
+  return hh * 60 + mm;
+}
+
+// 日跨ぎ対応の「ウィンドウ内に区間が“完全に収まる”」判定
+// rangeStart..rangeEnd が windowStart..windowEnd に内包されるか
+function isRangeWithinWindow(rangeStart: number, rangeEnd: number, windowStart: number, windowEnd: number): boolean {
+  // 0長のウィンドウは不可
+  if (windowStart === windowEnd) return false;
+
+  // 非日跨ぎウィンドウ
+  if (windowStart < windowEnd) {
+    // 受取区間が日跨ぎなら（例: 23:50〜00:10）、非日跨ぎウィンドウに収まらない
+    if (rangeStart > rangeEnd) return false;
+    return windowStart <= rangeStart && rangeEnd <= windowEnd;
+  }
+
+  // 日跨ぎウィンドウ（例: 22:00〜02:00）
+  // 軸を windowStart に揃えるため、windowStart 未満は+1440して比較
+  const norm = (m: number) => (m < windowStart ? m + 1440 : m);
+  const rS = norm(rangeStart);
+  const rE = norm(rangeEnd <= rangeStart ? rangeEnd + 1440 : rangeEnd);
+  const wS = windowStart;
+  const wE = windowEnd + 1440;
+  return wS <= rS && rE <= wE;
+}
+
+
 // 日跨ぎ対応の区間内判定
 function inWindow(nowMin: number, startMin: number, endMin: number): boolean {
   if (startMin === endMin) return false;        // 0長区間は許可しない
@@ -3333,12 +3369,22 @@ function OrdersPage() {
     if (slots.length === 0) return true; // 制約なし
     // プリセットが欠けていれば安全側でNG
     if (slots.some(s => !presets[s]?.start || !presets[s]?.end)) return false;
-    const now = nowMinutesJST();
+    // 注文のユーザー受取時間（区間）で判定
+    const sIso = o.pickupStart;
+    const eIso = o.pickupEnd;
+    // 受取時間が未設定の場合は安全側で「時間内」とみなす（既存動作踏襲）
+    if (!sIso || !eIso) return true;
+
+    const rStart = isoToMinutesJST(sIso);
+    const rEnd = isoToMinutesJST(eIso);
+
+    // すべての商品のプリセット時間に「受取区間が内包」されているか（= intersection 判定）
     return slots.every((s) => {
       const st = toMinutes(presets[s].start);
       const en = toMinutes(presets[s].end);
-      return inWindow(now, st, en);
+      return isRangeWithinWindow(rStart, rEnd, st, en);
     });
+
   }, [supabase, presets]);
 
 

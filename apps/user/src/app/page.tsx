@@ -2870,6 +2870,9 @@ export default function UserPilotApp() {
 
     const [clock, setClock] = useState<string>("");
     const [checkoutClientSecret, setCheckoutClientSecret] = useState<string | null>(null);
+    // Stripeシート開閉時の履歴補正（シート由来の余分な1件を除去）
+    const checkoutHistLenRef = useRef<number | null>(null);
+    const checkoutUrlRef = useRef<string | null>(null);
     const [isPrefetchingCheckout, setIsPrefetchingCheckout] = useState(false);
     useEffect(() => {
         const tick = () => setClock(new Date().toLocaleTimeString());
@@ -2889,6 +2892,33 @@ export default function UserPilotApp() {
             setCheckoutError("決済の準備に失敗しました。再試行してください。");
         });
     }, [isCheckoutOpen, checkoutClientSecret]);
+
+    // シート開閉に伴う“最初の戻るが無効になる”現象の抑制
+    useEffect(() => {
+        if (typeof window === "undefined") return;
+        if (isCheckoutOpen) {
+            // 開く直前の履歴長とURLを記録
+            try {
+                checkoutHistLenRef.current = history.length;
+                checkoutUrlRef.current = location.href;
+            } catch { /* noop */ }
+            return;
+        }
+        // 閉じた直後: Stripe/ブラウザ側で同一URLの pushState が積まれていれば1件のみ巻き戻す
+        try {
+            const prevLen = checkoutHistLenRef.current;
+            const prevUrl = checkoutUrlRef.current;
+            checkoutHistLenRef.current = null;
+            checkoutUrlRef.current = null;
+            if (prevLen == null || prevUrl == null) return;
+            const currLen = history.length;
+            const currUrl = location.href;
+            // 同一URLで履歴が +1 件だけ増えている場合に限り、1件だけ戻す
+            if (currUrl === prevUrl && currLen === prevLen + 1) {
+                history.back();
+            }
+        } catch { /* noop */ }
+    }, [isCheckoutOpen]);
 
 
     // Googleマップの遷移先URL（place_id 最優先 → 既存のフォールバック）

@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 import React, { useMemo, useState, useEffect, useRef, useCallback } from "react";
 import { createClient, type RealtimeChannel } from "@supabase/supabase-js";
 
@@ -42,6 +42,9 @@ type OrdersRow = {
   pickup_end?: string | null;
   pickup_label?: string | null;
   pickup_presets_snapshot?: any | null;
+  // 二段階引換: リクエスト/確定時刻（optional）
+  redeem_request_at?: string | null;
+  redeemed_at?: string | null;
 };
 
 type Order = {
@@ -57,6 +60,7 @@ type Order = {
   pickupEnd: string | null;
   pickupLabel?: string | null;
   presetLabel?: string | null;
+  redeemRequestedAt?: string | null;
 };
 
 type ProductsRow = {
@@ -762,7 +766,7 @@ function useOrders() {
     setErr(null); cleanup();
     const { data, error } = await supabase
       .from('orders')
-      .select('id,store_id,code,customer,items,total,placed_at,status,pickup_start,pickup_end')
+      .select('id,store_id,code,customer,items,total,placed_at,status,pickup_start,pickup_end,redeem_request_at,redeemed_at')
       .eq('store_id', sid)
       .order('placed_at', { ascending: false });
     if (error) {
@@ -855,6 +859,29 @@ function useOrders() {
     }
   }, [supabase, orders, orderChan, setOrders, setErr]);
 
+  // 二段階引換: 受け取り確定依頼を送る
+  const requestRedeem = useCallback(async (id: string) => {
+    try {
+      const r = await fetch('/api/store/orders/request-redeem', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ orderId: id }),
+      });
+      const j = await r.json().catch(() => null);
+      if (!r.ok || !j?.ok) {
+        emitToast('error', '依頼に失敗しました。もう一度お試しください。');
+        return;
+      }
+      const nowIso = new Date().toISOString();
+      setOrders(prev => prev.map(o => (
+        o.id === id ? { ...o, redeemRequestedAt: (o as any).redeemRequestedAt || nowIso } : o
+      )));
+      emitToast('success', '受け取り確定の依頼を送信しました。');
+    } catch {
+      emitToast('error', '通信に失敗しました。時間をおいて再試行してください。');
+    }
+  }, [setOrders]);
+
   const clearPending = useCallback(async () => {
     if (!(typeof window !== 'undefined' && window.confirm('「受取待ちの注文」をすべて削除しますか？'))) return;
     if (!supabase) { setOrders(prev => prev.filter(o => o.status !== 'PENDING')); return; }
@@ -880,7 +907,7 @@ function useOrders() {
 
   const pending = useMemo(() => orders.filter(o => o.status === 'PENDING'), [orders]);
   const fulfilled = useMemo(() => orders.filter(o => o.status === 'FULFILLED'), [orders]);
-  return { ready, err, orders, pending, fulfilled, fulfill, clearPending, clearFulfilled, retry: fetchAndSubscribe } as const;
+  return { ready, err, orders, pending, fulfilled, fulfill, requestRedeem, clearPending, clearFulfilled, retry: fetchAndSubscribe } as const;
 }
 
 
@@ -927,7 +954,7 @@ const StatusBadge = React.memo(function StatusBadge({ status }: { status: OrderS
   );
 });
 
-const OrderCard = React.memo(function OrderCard({ order, onHandoff }: { order: Order; onHandoff: (o: Order) => void; }) {
+const OrderCard = React.memo(function OrderCard({ order, onHandoff, onRequestRedeem }: { order: Order; onHandoff: (o: Order) => void; onRequestRedeem: (id: string) => void; }) {
   const onClick = useCallback(() => onHandoff(order), [onHandoff, order]);
   const mounted = useMounted();
   const supabase = useSupabase();
@@ -981,7 +1008,12 @@ const OrderCard = React.memo(function OrderCard({ order, onHandoff }: { order: O
     <div className="rounded-2xl border bg-white shadow-sm p-4 flex flex-col gap-3">
       <div className="flex items-center justify-between">
         <div className="font-medium">{order.customer}</div>
-        <StatusBadge status={order.status} />
+        <div className="flex items-center gap-2">
+          {(order as any).redeemRequestedAt ? (
+            <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs border bg-blue-50 text-blue-700 border-blue-200">受け取り確定待ち</span>
+          ) : null}
+          <StatusBadge status={order.status} />
+        </div>
       </div>
       <div className="text-sm text-zinc-600">注文ID: {order.id}</div>
       <div className="text-sm text-zinc-700">受取時間: {jpPickupRange}</div>
@@ -1010,7 +1042,11 @@ const OrderCard = React.memo(function OrderCard({ order, onHandoff }: { order: O
         <span className="font-semibold">{yen(order.total)}</span>
       </div>
       {order.status === 'PENDING' ? (
-        <button onClick={onClick} className="w-full rounded-xl bg-zinc-900 text-white py-2.5 text-sm font-medium hover:bg-zinc-800 active:opacity-90">受け渡し（コード照合）</button>
+        (order as any).redeemRequestedAt ? (
+          <div className="w-full rounded-xl bg-blue-600/10 text-blue-700 py-2.5 text-sm text-center font-medium">受け取り確定待ち</div>
+        ) : (
+          <button onClick={onClick} className="w-full rounded-xl bg-zinc-900 text-white py-2.5 text-sm font-medium hover:bg-zinc-800 active:opacity-90">受け渡し（コード照合）</button>
+        )
       ) : (
         <div className="w-full rounded-xl bg-emerald-600/10 text-emerald-700 py-2.5 text-sm text-center font-medium">受け渡し完了</div>
       )}
@@ -3222,7 +3258,7 @@ function canPickupNowByPresets(
 function OrdersPage() {
   const { presets } = usePickupPresets(); // 既存
   const supabase = useSupabase();         // ← 追加
-  const { ready, err, pending, fulfilled, fulfill, clearPending, clearFulfilled, retry } = useOrders();
+  const { ready, err, pending, fulfilled, fulfill, requestRedeem, clearPending, clearFulfilled, retry } = useOrders();
   const [current, setCurrent] = useState<Order | null>(null);
   const [codeInput, setCodeInput] = useState("");
   const [codeErr, setCodeErr] = useState<string | null>(null);
@@ -3281,7 +3317,7 @@ function OrdersPage() {
           >未引換を一括削除</button>
         </div>
         {pending.length === 0 ? (<div className="rounded-xl border bg-white p-6 text-sm text-zinc-600">現在、受取待ちの注文はありません。</div>) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">{pending.map(o => (<OrderCard key={o.id} order={o} onHandoff={setCurrent} />))}</div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">{pending.map(o => (<OrderCard key={o.id} order={o} onHandoff={setCurrent} onRequestRedeem={requestRedeem} />))}</div>
         )}
       </section>
       <section>
@@ -3296,7 +3332,7 @@ function OrdersPage() {
           >一括削除</button>
         </div>
         {fulfilled.length === 0 ? (<div className="rounded-xl border bg-white p-6 text-sm text-zinc-600">まだ受け渡し済みの注文はありません。</div>) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 opacity-90">{fulfilled.map(o => (<OrderCard key={o.id} order={o} onHandoff={() => { }} />))}</div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 opacity-90">{fulfilled.map(o => (<OrderCard key={o.id} order={o} onHandoff={() => { }} onRequestRedeem={() => { }} />))}</div>
         )}
       </section>
       {current && (
@@ -3386,7 +3422,7 @@ function OrdersPage() {
                     }
 
                     // 時間内 → 通常受取を実行
-                    fulfill(current!.id);
+                    requestRedeem(current!.id);
                     setCurrent(null); setCodeInput(""); setCodeErr(null);
                   }}
 

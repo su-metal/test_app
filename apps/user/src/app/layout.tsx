@@ -4,6 +4,7 @@ import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import LiffBoot from "./LiffBoot";
 import StripeBoot from "./stripe/StripeBoot";
+import RedeemConfirmWatcher from "@/components/RedeemConfirmWatcher";
 // import "leaflet/dist/leaflet.css";
 
 export const viewport: Viewport = {
@@ -63,6 +64,9 @@ export default function RootLayout({
 
         {/* Stripe 周りの初期化：Elements/StripeAppLoader はこの子で行う想定 */}
         <StripeBoot />
+
+        {/* 受け取り確定の依頼を自動検知してボトムシート表示 */}
+        <RedeemConfirmWatcher />
 
         {children}
       </body>

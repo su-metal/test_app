@@ -932,38 +932,7 @@ const OrderCard = React.memo(function OrderCard({ order, onHandoff }: { order: O
   const mounted = useMounted();
   const supabase = useSupabase();
   const [presetLabelCur, setPresetLabelCur] = React.useState("");
-  React.useEffect(() => {
-    let alive = true;
-    (async () => {
-      try {
-        if (!supabase) return;
-        const sid = String(order.storeId || "").trim();
-        if (!sid) return;
-        const { data: storeRow } = await (supabase as any)
-          .from('stores')
-          .select('current_pickup_slot_no')
-          .eq('id', sid)
-          .single();
-        const slotNo: number | null = (storeRow?.current_pickup_slot_no ?? null);
-        if (slotNo == null) { if (alive) setPresetLabelCur(''); return; }
-        const { data: presetRows } = await (supabase as any)
-          .from('store_pickup_presets')
-          .select('start_time,end_time')
-          .eq('store_id', sid)
-          .eq('slot_no', slotNo)
-          .limit(1);
-        const row = Array.isArray(presetRows) ? presetRows[0] : null;
-        if (row) {
-          const st = String(row.start_time || '').slice(0, 5);
-          const en = String(row.end_time || '').slice(0, 5);
-          if (alive) setPresetLabelCur(`${st}〜${en}`);
-        } else {
-          if (alive) setPresetLabelCur('');
-        }
-      } catch { /* noop */ }
-    })();
-    return () => { alive = false; };
-  }, [supabase, order.storeId]);
+
   // 商品の pickup_slot_no から「店舗受取可能時間（プリセット）」を導出
   const { presets } = usePickupPresets();
   React.useEffect(() => {
@@ -988,7 +957,7 @@ const OrderCard = React.memo(function OrderCard({ order, onHandoff }: { order: O
           const p = (presets as any)[n as 1 | 2 | 3];
           if (p && p.start && p.end) labels.push(`${p.start}〜${p.end}`);
         }
-        if (alive) setPresetLabelCur(labels.join(' / '));
+        if (alive) setPresetLabelCur(labels.length ? labels.join(' / ') : (order.presetLabel ?? ''));
       } catch {
         if (alive) setPresetLabelCur('');
       }

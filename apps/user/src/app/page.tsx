@@ -2658,36 +2658,12 @@ export default function UserPilotApp() {
     useLockBodyScroll(!!detail || isCheckoutOpen);
     const detailImages = useMemo<string[]>(() => {
         if (!detail?.item) return [];
-
-        // 1) gallery_images 優先（string[] でも {path:string}[] でも受ける）
-        const g = (detail.item as any)?.gallery_images as unknown;
-        if (Array.isArray(g) && g.length > 0) {
-            return g
-                .map((x: any) => (typeof x === "string" ? x : x?.path))
-                .filter((p: any): p is string => !!p);
-        }
-
-        // 2) image_variants があれば、main/sub1/sub2 から最大幅の path を拾う
-        const iv = (detail.item as any)?.image_variants as
-            | { [k in "main" | "sub1" | "sub2"]?: Array<{ path: string; width: number }> }
-            | undefined;
-        if (iv && (iv.main?.length || iv.sub1?.length || iv.sub2?.length)) {
-            const pickLargest = (arr?: Array<{ path: string; width: number }>) =>
-                (arr && arr.length > 0)
-                    ? arr.slice().sort((a, b) => b.width - a.width)[0]?.path
-                    : undefined;
-            return [pickLargest(iv.main), pickLargest(iv.sub1), pickLargest(iv.sub2)]
-                .filter((p): p is string => !!p);
-        }
-
-        // 3) フォールバック: 既存3フィールド
         return [
             detail.item.main_image_path,
             detail.item.sub_image_path1,
             detail.item.sub_image_path2,
         ].filter((x): x is string => !!x);
     }, [detail]);
-
 
 
 
@@ -2705,10 +2681,9 @@ export default function UserPilotApp() {
         if (detailImages.length === 0) return [];
         return [
             detailImages[detailImages.length - 1],
-            ...detailImages, // ← ここをスプレッドに修正（.detailImages は誤り）
+            ...detailImages,
             detailImages[0],
         ];
-
     }, [detailImages]);
 
     const imgCount = detailImages.length;

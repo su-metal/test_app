@@ -352,32 +352,102 @@ function haversineKm(a: { lat: number; lng: number }, b: { lat: number; lng: num
 }
 
 // === Supabase Storage の public 画像 URL を作る（クエリ無し・安定） ===
+const PUBLIC_STORAGE_PREFIX = "storage/v1/object/public/public-images/";
+
+function isAbsoluteUrl(maybeUrl: string): boolean {
+    if (!maybeUrl) return false;
+    if (/^https?:\/\//i.test(maybeUrl)) return true;
+    try {
+        new URL(maybeUrl);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+/** Supabase の public-images バケット内パスを正規化（余分な prefix や先頭スラッシュを除去） */
+function toBucketRelativePath(raw: string): string {
+    let path = raw.trim();
+    if (!path) return "";
+
+    // 1) 先頭スラッシュを除去
+    path = path.replace(/^\/+/, "");
+
+    // 2) storage/v1/object/public/... 付きの形式を相対パスへ
+    if (path.startsWith(PUBLIC_STORAGE_PREFIX)) {
+        return path.slice(PUBLIC_STORAGE_PREFIX.length);
+    }
+
+    // 3) public-images/ から始まる場合もバケット直下として扱う
+    if (path.startsWith("public-images/")) {
+        return path.slice("public-images/".length);
+    }
+
+    return path;
+}
+
+/** Supabase public-images 内のファイルを指す URL を生成（既に絶対 URL の場合はそのまま返却） */
 function publicImageUrl(path: string | null | undefined): string | null {
     if (!path) return null;
-    const base = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-    return `${base}/storage/v1/object/public/public-images/${path}`;
+    const trimmed = path.trim();
+    if (!trimmed) return null;
+
+    if (isAbsoluteUrl(trimmed)) {
+        return trimmed;
+    }
+
+    const base = (process.env.NEXT_PUBLIC_SUPABASE_URL || "").replace(/\/+$/, "");
+    if (!base) return null;
+
+    const relative = toBucketRelativePath(trimmed);
+    return `${base}/${PUBLIC_STORAGE_PREFIX}${relative}`;
 }
 
 // 画像派生の URL 配列を構築
 const SIZE_PRESETS = [320, 480, 640, 960, 1280] as const;
 type Variant = { url: string; width: number };
 function buildVariantsFromPath(path: string): Variant[] {
-    const base = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-    const m = path.match(/^(.*)_(main|sub1|sub2)_(\d+)\.webp$/);
+    const base = (process.env.NEXT_PUBLIC_SUPABASE_URL || "").replace(/\/+$/, "");
+    if (!base) return [];
+
+    const absolute = publicImageUrl(path);
+    const relative = toBucketRelativePath(isAbsoluteUrl(path) ? (() => {
+        try {
+            const url = new URL(path);
+            const marker = `/${PUBLIC_STORAGE_PREFIX}`;
+            const idx = url.pathname.indexOf(marker);
+            if (idx >= 0) {
+                return url.pathname.slice(idx + marker.length);
+            }
+            return path;
+        } catch {
+            return path;
+        }
+    })() : path);
+
+    const m = relative.match(/^(.*)_(main|sub1|sub2)_(\d+)\.webp$/);
     if (m) {
         const prefix = m[1];
         const slot = m[2];
-        return SIZE_PRESETS.map((w) => ({ url: `${base}/storage/v1/object/public/public-images/${prefix}_${slot}_${w}.webp`, width: w }));
+        return SIZE_PRESETS.map((w) => ({
+            url: `${base}/${PUBLIC_STORAGE_PREFIX}${prefix}_${slot}_${w}.webp`,
+            width: w,
+        }));
     }
     // 既存（単一パス）フォールバック
-    return [{ url: `${base}/storage/v1/object/public/public-images/${path}`, width: 1280 }];
+    return absolute ? [{ url: absolute, width: 1280 }] : [];
 }
 function variantsForItem(it: Item, slot: 'main' | 'sub1' | 'sub2' = 'main'): Variant[] {
-    const base = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+    const base = (process.env.NEXT_PUBLIC_SUPABASE_URL || "").replace(/\/+$/, "");
+    if (!base) return [];
+
     const v = (it as any)?.image_variants?.[slot] as Array<{ path: string; width: number }> | undefined;
     if (Array.isArray(v) && v.length > 0) {
         return v
-            .map((x) => ({ url: `${base}/storage/v1/object/public/public-images/${x.path}`, width: Number(x.width) }))
+            .map((x) => ({
+                url: publicImageUrl(x.path) ?? `${base}/${PUBLIC_STORAGE_PREFIX}${toBucketRelativePath(String(x.path ?? ""))}`,
+                width: Number(x.width),
+            }))
             .sort((a, b) => a.width - b.width);
     }
     const p = slot === 'main' ? it.main_image_path : slot === 'sub1' ? it.sub_image_path1 : it.sub_image_path2;
@@ -5666,22 +5736,24 @@ export default function UserPilotApp() {
                                                         setGIndex(targetIndexRef.current);
                                                     }}
                                                 >
-                                                    {loopImages.map((path, i) => (
-                                                        <div key={`slide-${i}-${path}`} style={{ width: `${100 / (imgCount + 2)}%`, height: '100%', flex: `0 0 ${100 / (imgCount + 2)}%` }}>
-                                                            <img
-                                                                src={publicImageUrl(path)!}
-                                                                srcSet={buildVariantsFromPath(path).map(v => `${v.url} ${v.width}w`).join(', ')}
-                                                                sizes="(min-width: 768px) 800px, 100vw"
-                                                                alt={i === pos ? `${detail.item.name} 画像 ${gIndex + 1}/${imgCount}` : ''}
-                                                                className="w-full h-full object-cover select-none"
-                                                                draggable={false}
-                                                                loading={i === pos ? 'eager' : 'lazy'}
-                                                                decoding="async"
-                                                                width={1280}
-                                                                height={720}  /* aspect-[16/9] の枠に合わせた目安 */
-                                                            />
-                                                        </div>
-                                                    ))}
+                                                    {loopImages.map((path, i) => {
+                                                        const eager = i === pos;
+                                                        const label = eager ? `${detail.item.name} 画像 ${gIndex + 1}/${imgCount}` : "";
+                                                        return (
+                                                            <div
+                                                                key={`slide-${i}-${path}`}
+                                                                style={{ width: `${100 / (imgCount + 2)}%`, height: '100%', flex: `0 0 ${100 / (imgCount + 2)}%` }}
+                                                                className="relative"
+                                                            >
+                                                                <BgImage
+                                                                    path={path}
+                                                                    alt={label}
+                                                                    className="w-full h-full rounded-none"
+                                                                    eager={eager}
+                                                                />
+                                                            </div>
+                                                        );
+                                                    })}
                                                 </div>
 
                                                 {/* 枚数バッジ n/n */}

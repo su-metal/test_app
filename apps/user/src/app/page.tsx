@@ -4228,7 +4228,7 @@ export default function UserPilotApp() {
         const remain = Math.max(0, it.stock - reserved);
 
         // ▼ バリアントごとのサイズ定義（ホーム=default / モーダル=modal）
-        const btnSize = variant === "modal" ? "w-11 h-11 text-[12px]" : "w-9 h-9 text-[10px]";
+        const btnSize = variant === "modal" ? "w-11 h-11 text-[18px]" : "w-9 h-9 text-[16px]";
         const countSize = variant === "modal" ? "text-2xl min-w-[2rem]" : "text-xl min-w-[1.5rem]";
         const wrapPad = variant === "modal" ? "px-0 py-1.5" : "px-0 py-1";
 
@@ -4236,7 +4236,7 @@ export default function UserPilotApp() {
             <div className={`inline-flex items-center rounded-full ${wrapPad} text-sm select-none`}>
                 <button
                     type="button"
-                    className={`${btnSize} leading-none rounded-full border cursor-pointer disabled:opacity-40 flex items-center justify-center`}
+                    className={`${btnSize} leading-none rounded-full bg-[#f5f5f5] cursor-pointer disabled:opacity-40 flex items-center justify-center`}
                     disabled={reserved <= 0}
                     onClick={() => changeQty(sid, it, -1)}
                     aria-label="数量を減らす"
@@ -4246,7 +4246,7 @@ export default function UserPilotApp() {
                 <span className={`mx-2 font-semibold ${countSize} text-center tabular-nums`}>{reserved}</span>
                 <button
                     type="button"
-                    className={`${btnSize} leading-none rounded-full border cursor-pointer disabled:opacity-40 flex items-center justify-center`}
+                    className={`${btnSize} leading-none rounded-full bg-[#f5f5f5] cursor-pointer disabled:opacity-40 flex items-center justify-center`}
                     disabled={remain <= 0}
                     onClick={() => changeQty(sid, it, +1)}
                     aria-label="数量を増やす"
@@ -4849,24 +4849,26 @@ export default function UserPilotApp() {
                                                 >
                                                     {/* ヒーロー画像 */}
                                                     <div className="relative">
-                                                        <img
-                                                            src={
-                                                                s.cover_image_path
-                                                                    ? publicImageUrl(s.cover_image_path)!
-                                                                    : idx % 3 === 0
-                                                                        ? "https://images.unsplash.com/photo-1495474472287-4d71bcdd2085?q=80&w=1200&auto=format&fit=crop"
-                                                                        : idx % 3 === 1
-                                                                            ? "https://images.unsplash.com/photo-1475855581690-80accde3ae2b?q=80&w=1200&auto=format&fit=crop"
-                                                                            : "https://images.unsplash.com/photo-1460306855393-0410f61241c7?q=80&w=1200&auto=format&fit=crop"
-                                                            }
-                                                            alt={s.name}
-                                                            className="w-full h-44 object-cover rounded-2xl"
-                                                            loading="lazy"
-                                                            decoding="async"
-                                                            width={1200}
-                                                            height={176}  /* h-44 ≒ 44 * 4 = 176px */
-                                                        />
-                                                        <div className="absolute left-3 top-3 px-2 py-1 font-semibold rounded bg-[#fff2d1] text-[#5f95c5] text-sm">
+                                                        <div className="-mx-4 -mt-4 rounded-t-2xl overflow-hidden">
+                                                            <img
+                                                                src={
+                                                                    s.cover_image_path
+                                                                        ? publicImageUrl(s.cover_image_path)!
+                                                                        : idx % 3 === 0
+                                                                            ? "https://images.unsplash.com/photo-1495474472287-4d71bcdd2085?q=80&w=1200&auto=format&fit=crop"
+                                                                            : idx % 3 === 1
+                                                                                ? "https://images.unsplash.com/photo-1475855581690-80accde3ae2b?q=80&w=1200&auto=format&fit=crop"
+                                                                                : "https://images.unsplash.com/photo-1460306855393-0410f61241c7?q=80&w=1200&auto=format&fit=crop"
+                                                                }
+                                                                alt={s.name}
+                                                                className="w-full h-44 object-cover"
+                                                                loading="lazy"
+                                                                decoding="async"
+                                                                width={1200}
+                                                                height={176}  /* h-44 ≒ 44 * 4 = 176px */
+                                                            />
+                                                        </div>
+                                                        <div className="absolute left-2 top-3 px-2 py-1 font-semibold rounded bg-[#fff2d1] text-[#5f95c5] text-sm">
                                                             {s.name}
                                                         </div>
                                                         {(() => {
@@ -4889,7 +4891,7 @@ export default function UserPilotApp() {
                                                     </div>
 
                                                     {hasAny ? (
-                                                        <div className="mt-3 space-y-2">
+                                                        <div className="mt-5 space-y-2">
                                                             {visibleItems.map(it => (
                                                                 <ProductLine key={it.id} sid={s.id} it={it} />
                                                             ))}

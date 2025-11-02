@@ -5702,7 +5702,7 @@ export default function UserPilotApp() {
                 {detail && (
                     <BottomSheet
                         open
-                        title=""
+                        title={detail.item.name}
                         onClose={() => setDetail(null)}
                     >
                         <div className="w-full bg-white max-h-[90vh] flex flex-col overflow-hidden">
@@ -5711,53 +5711,54 @@ export default function UserPilotApp() {
                             >
                                 {/* メイン画像（3枚ギャラリー） */}
                                 {detailImages.length > 0 ? (
-                                    <div className="relative overflow-hidden  bg-black aspect-[16/9]">
-                                        <div
-                                            className="absolute inset-0 h-full"
-                                            style={{
-                                                display: 'flex',
-                                                width: `${(imgCount + 2) * 100}%`, // クローン込みの幅
-                                                height: '100%',
-                                                transform: `translateX(-${pos * (100 / (imgCount + 2))}%)`,
-                                                transition: anim ? 'transform 320ms ease' : 'none',
-                                                willChange: 'transform',
-                                                backfaceVisibility: 'hidden',
-                                            }}
-                                            onTransitionEnd={() => {
-                                                // 1) どのケースでもアニメ終了後は必ず解除
-                                                setAnim(false);
+                                    <div className="px-6">
+                                        <div className="relative overflow-hidden rounded-2xl bg-black aspect-[16/9]">
+                                            <div
+                                                className="absolute inset-0 h-full"
+                                                style={{
+                                                    display: 'flex',
+                                                    width: `${(imgCount + 2) * 100}%`, // クローン込みの幅
+                                                    height: '100%',
+                                                    transform: `translateX(-${pos * (100 / (imgCount + 2))}%)`,
+                                                    transition: anim ? 'transform 320ms ease' : 'none',
+                                                    willChange: 'transform',
+                                                    backfaceVisibility: 'hidden',
+                                                }}
+                                                onTransitionEnd={() => {
+                                                    // 1) どのケースでもアニメ終了後は必ず解除
+                                                    setAnim(false);
 
-                                                // 2) クローン端にいたら本物へ瞬間ジャンプ（transition なし）
-                                                setPos((p) => {
-                                                    if (p === 0) return imgCount;        // 左端クローン → 末尾の実画像へ
-                                                    if (p === imgCount + 1) return 1;    // 右端クローン → 先頭の実画像へ
-                                                    return p;                            // 中間ならそのまま
-                                                });
+                                                    // 2) クローン端にいたら本物へ瞬間ジャンプ（transition なし）
+                                                    setPos((p) => {
+                                                        if (p === 0) return imgCount;        // 左端クローン → 末尾の実画像へ
+                                                        if (p === imgCount + 1) return 1;    // 右端クローン → 先頭の実画像へ
+                                                        return p;                            // 中間ならそのまま
+                                                    });
 
-                                                // 3) 表示中インデックスを確定
-                                                setGIndex(targetIndexRef.current);
-                                            }}
-                                        >
-                                            {loopImages.map((path, i) => {
-                                                const eager = i === pos;
-                                                const label = eager ? `${detail.item.name} 画像 ${gIndex + 1}/${imgCount}` : "";
-                                                return (
-                                                    <div
-                                                        key={`slide-${i}-${path}`}
-                                                        style={{ width: `${100 / (imgCount + 2)}%`, height: '100%', flex: `0 0 ${100 / (imgCount + 2)}%` }}
-                                                        className="relative"
-                                                    >
-                                                        <BgImage
-                                                            path={path}
-                                                            alt={label}
-                                                            className="w-full h-full rounded-none"
-                                                            eager={eager}
-                                                        />
-                                                    </div>
-                                                );
-                                            })}
+                                                    // 3) 表示中インデックスを確定
+                                                    setGIndex(targetIndexRef.current);
+                                                }}
+                                            >
+                                                {loopImages.map((path, i) => {
+                                                    const eager = i === pos;
+                                                    const label = eager ? `${detail.item.name} 画像 ${gIndex + 1}/${imgCount}` : "";
+                                                    return (
+                                                        <div
+                                                            key={`slide-${i}-${path}`}
+                                                            style={{ width: `${100 / (imgCount + 2)}%`, height: '100%', flex: `0 0 ${100 / (imgCount + 2)}%` }}
+                                                            className="relative"
+                                                        >
+                                                            <BgImage
+                                                                path={path}
+                                                                alt={label}
+                                                                className="w-full h-full rounded-none"
+                                                                eager={eager}
+                                                            />
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
                                         </div>
-
                                         {/* 枚数バッジ n/n */}
                                         <div className="absolute right-2 bottom-2 px-2 py-0.5 rounded-full bg-black/60 text-white text-xs">
                                             {imgCount > 0 ? (gIndex + 1) : 0}/{imgCount}
@@ -5789,7 +5790,7 @@ export default function UserPilotApp() {
                             </div>
 
                             <div className="pt-6 pb-4 px-8  space-y-3 overflow-auto">
-                                <div className="text-lg font-semibold leading-tight break-words">{detail.item.name}</div>
+                                {/* <div className="text-lg font-semibold leading-tight break-words">{detail.item.name}</div> */}
                                 <div className="text-sm text-zinc-600 flex items-center gap-3">
                                     <span className="inline-flex items-center gap-1">
                                         <span>⏰</span><span>受取 {detail.item.pickup}</span>

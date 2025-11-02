@@ -1635,7 +1635,7 @@ function BottomSheet({
     children,
 }: {
     open: boolean;
-    title?: string;
+    title?: ReactNode;
     onClose: () => void;
     children: React.ReactNode;
 }) {
@@ -5702,7 +5702,11 @@ export default function UserPilotApp() {
                 {detail && (
                     <BottomSheet
                         open
-                        title={detail.item.name}
+                        title={
+                            <div className="px-4 text-[16px] sm:text-[22px] font-bold leading-tight" >
+                                {detail.item.name}
+                            </div>
+                        }
                         onClose={() => setDetail(null)}
                     >
                         <div className="w-full bg-white max-h-[90vh] flex flex-col overflow-hidden">
@@ -5760,7 +5764,7 @@ export default function UserPilotApp() {
                                             </div>
                                         </div>
                                         {/* 枚数バッジ n/n */}
-                                        <div className="absolute right-2 bottom-2 px-2 py-0.5 rounded-full bg-black/60 text-white text-xs">
+                                        <div className="absolute right-10 bottom-2 px-2 py-0.5 rounded-full bg-black/60 text-white text-xs">
                                             {imgCount > 0 ? (gIndex + 1) : 0}/{imgCount}
                                         </div>
                                     </div>

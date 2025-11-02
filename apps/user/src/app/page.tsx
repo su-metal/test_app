@@ -5693,195 +5693,194 @@ export default function UserPilotApp() {
                             )
                         )}
                     </BottomSheet>
+                </div>
+                {/* ▲▲ ここまで ▲▲ */}
 
-                    {/* ▲▲ ここまで ▲▲ */}
 
-
-                    {/* 商品詳細モーダル */}
-                    {detail && (
-                        <div role="dialog" aria-modal="true" className="fixed inset-0 z-[2000]">
+                {/* 商品詳細モーダル */}
+                {/* 商品詳細（ボトムシート） */}
+                {detail && (
+                    <BottomSheet
+                        open
+                        title=""
+                        onClose={() => setDetail(null)}
+                    >
+                        <div className="w-full bg-white max-h-[85vh] flex flex-col overflow-hidden">
                             <div
-                                className="absolute inset-0 bg-black/40 z-[2000]"
-                                onClick={() => setDetail(null)}
-                            />
-                            <div className="absolute inset-0 flex items-center justify-center p-4 z-[2001] pointer-events-none">
-                                <div className="max-w-[520px] w-full bg-white rounded-2xl shadow-xl max-h-[85vh] flex flex-col overflow-hidden pointer-events-auto">
-                                    <div
-                                        className="relative" ref={carouselWrapRef}
+                                className="relative" ref={carouselWrapRef}
+                            >
+                                {/* メイン画像（3枚ギャラリー） */}
+                                {detailImages.length > 0 ? (
+                                    <div className="relative overflow-hidden  bg-black aspect-[16/9]">
+                                        <div
+                                            className="absolute inset-0 h-full"
+                                            style={{
+                                                display: 'flex',
+                                                width: `${(imgCount + 2) * 100}%`, // クローン込みの幅
+                                                height: '100%',
+                                                transform: `translateX(-${pos * (100 / (imgCount + 2))}%)`,
+                                                transition: anim ? 'transform 320ms ease' : 'none',
+                                                willChange: 'transform',
+                                                backfaceVisibility: 'hidden',
+                                            }}
+                                            onTransitionEnd={() => {
+                                                // 1) どのケースでもアニメ終了後は必ず解除
+                                                setAnim(false);
+
+                                                // 2) クローン端にいたら本物へ瞬間ジャンプ（transition なし）
+                                                setPos((p) => {
+                                                    if (p === 0) return imgCount;        // 左端クローン → 末尾の実画像へ
+                                                    if (p === imgCount + 1) return 1;    // 右端クローン → 先頭の実画像へ
+                                                    return p;                            // 中間ならそのまま
+                                                });
+
+                                                // 3) 表示中インデックスを確定
+                                                setGIndex(targetIndexRef.current);
+                                            }}
+                                        >
+                                            {loopImages.map((path, i) => {
+                                                const eager = i === pos;
+                                                const label = eager ? `${detail.item.name} 画像 ${gIndex + 1}/${imgCount}` : "";
+                                                return (
+                                                    <div
+                                                        key={`slide-${i}-${path}`}
+                                                        style={{ width: `${100 / (imgCount + 2)}%`, height: '100%', flex: `0 0 ${100 / (imgCount + 2)}%` }}
+                                                        className="relative"
+                                                    >
+                                                        <BgImage
+                                                            path={path}
+                                                            alt={label}
+                                                            className="w-full h-full rounded-none"
+                                                            eager={eager}
+                                                        />
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+
+                                        {/* 枚数バッジ n/n */}
+                                        <div className="absolute right-2 bottom-2 px-2 py-0.5 rounded-full bg-black/60 text-white text-xs">
+                                            {imgCount > 0 ? (gIndex + 1) : 0}/{imgCount}
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <div className="w-full h-56 bg-zinc-100 flex items-center justify-center text-6xl rounded-t-2xl">
+                                        <span>{detail.item.photo}</span>
+                                    </div>
+                                )}
+
+
+                                {/* 左右ナビ（2枚以上） */}
+                                {imgCount > 1 && (
+                                    <>
+                                        <GalleryNavBtn side="left" onClick={goPrev} label="前の画像" />
+                                        <GalleryNavBtn side="right" onClick={goNext} label="次の画像" />
+                                    </>
+                                )}
+
+
+                                {/* 閉じる */}
+                                {/* <button
+                                    type="button"
+                                    aria-label="閉じる"
+                                    className="absolute top-2 right-2 w-8 h-8 rounded-full bg-white/90 border flex items-center justify-center"
+                                    onClick={() => setDetail(null)}
+                                >✕</button> */}
+                            </div>
+
+                            <div className="p-4 space-y-3 overflow-auto">
+                                <div className="text-lg font-semibold leading-tight break-words">{detail.item.name}</div>
+                                <div className="text-sm text-zinc-600 flex items-center gap-3">
+                                    <span className="inline-flex items-center gap-1">
+                                        <span>⏰</span><span>受取 {detail.item.pickup}</span>
+                                    </span>
+                                    <span className="ml-auto text-xl font-extrabold tabular-nums text-zinc-900">
+                                        {currency(detail.item.price)}
+                                    </span>
+                                </div>
+                                <div className="text-sm text-zinc-700 bg-zinc-50 rounded-xl p-3">
+                                    {detail?.item?.note && detail.item.note.trim().length > 0
+                                        ? detail.item.note
+                                        : 'お店のおすすめ商品です。数量限定のため、お早めにお求めください。'}
+                                </div>
+
+                                <div className="pt-1">
+                                    <button
+                                        type="button"
+                                        onClick={() => setAllergyOpen(true)}
+                                        className="inline-flex items-center gap-1 text-[13px] text-[#6b0f0f] underline decoration-1 underline-offset-2"
                                     >
-                                        {/* メイン画像（3枚ギャラリー） */}
-                                        {detailImages.length > 0 ? (
-                                            <div className="relative overflow-hidden rounded-t-2xl bg-black aspect-[16/9]">
-                                                <div
-                                                    className="absolute inset-0 h-full"
-                                                    style={{
-                                                        display: 'flex',
-                                                        width: `${(imgCount + 2) * 100}%`, // クローン込みの幅
-                                                        height: '100%',
-                                                        transform: `translateX(-${pos * (100 / (imgCount + 2))}%)`,
-                                                        transition: anim ? 'transform 320ms ease' : 'none',
-                                                        willChange: 'transform',
-                                                        backfaceVisibility: 'hidden',
-                                                    }}
-                                                    onTransitionEnd={() => {
-                                                        // 1) どのケースでもアニメ終了後は必ず解除
-                                                        setAnim(false);
+                                        <span
+                                            aria-hidden
+                                            className="inline-grid place-items-center w-4 h-4 rounded-full bg-[#6b0f0f] text-white text-[10px]"
+                                        >i</span>
+                                        <span>アレルギー・原材料について</span>
+                                    </button>
+                                </div>
 
-                                                        // 2) クローン端にいたら本物へ瞬間ジャンプ（transition なし）
-                                                        setPos((p) => {
-                                                            if (p === 0) return imgCount;        // 左端クローン → 末尾の実画像へ
-                                                            if (p === imgCount + 1) return 1;    // 右端クローン → 先頭の実画像へ
-                                                            return p;                            // 中間ならそのまま
-                                                        });
+                                {/* ▼ 追加：その直下に残数 */}
+                                <div className="mt-6 flex justify-center">
+                                    <RemainChip remain={Math.max(0, detail.item.stock - getReserved(detail.shopId, detail.item.id))} />
+                                </div>
 
-                                                        // 3) 表示中インデックスを確定
-                                                        setGIndex(targetIndexRef.current);
-                                                    }}
-                                                >
-                                                    {loopImages.map((path, i) => {
-                                                        const eager = i === pos;
-                                                        const label = eager ? `${detail.item.name} 画像 ${gIndex + 1}/${imgCount}` : "";
-                                                        return (
-                                                            <div
-                                                                key={`slide-${i}-${path}`}
-                                                                style={{ width: `${100 / (imgCount + 2)}%`, height: '100%', flex: `0 0 ${100 / (imgCount + 2)}%` }}
-                                                                className="relative"
-                                                            >
-                                                                <BgImage
-                                                                    path={path}
-                                                                    alt={label}
-                                                                    className="w-full h-full rounded-none"
-                                                                    eager={eager}
-                                                                />
-                                                            </div>
-                                                        );
-                                                    })}
-                                                </div>
+                                {/* ▼ 追加：中央揃えの増減チップ */}
+                                <div className=" flex justify-center">
+                                    <QtyChip sid={detail.shopId} it={detail.item} variant="modal" />
+                                </div>
 
-                                                {/* 枚数バッジ n/n */}
-                                                <div className="absolute right-2 bottom-2 px-2 py-0.5 rounded-full bg-black/60 text-white text-xs">
-                                                    {imgCount > 0 ? (gIndex + 1) : 0}/{imgCount}
-                                                </div>
-                                            </div>
-                                        ) : (
-                                            <div className="w-full h-56 bg-zinc-100 flex items-center justify-center text-6xl rounded-t-2xl">
-                                                <span>{detail.item.photo}</span>
-                                            </div>
-                                        )}
-
-
-                                        {/* 左右ナビ（2枚以上） */}
-                                        {imgCount > 1 && (
-                                            <>
-                                                <GalleryNavBtn side="left" onClick={goPrev} label="前の画像" />
-                                                <GalleryNavBtn side="right" onClick={goNext} label="次の画像" />
-                                            </>
-                                        )}
-
-
-                                        {/* 閉じる */}
-                                        <button
-                                            type="button"
-                                            aria-label="閉じる"
-                                            className="absolute top-2 right-2 w-8 h-8 rounded-full bg-white/90 border flex items-center justify-center"
-                                            onClick={() => setDetail(null)}
-                                        >✕</button>
-                                    </div>
-
-                                    <div className="p-4 space-y-3 overflow-auto">
-
-
-                                        <div className="text-lg font-semibold leading-tight break-words">{detail.item.name}</div>
-                                        <div className="text-sm text-zinc-600 flex items-center gap-3">
-                                            <span className="inline-flex items-center gap-1">
-                                                <span>⏰</span><span>受取 {detail.item.pickup}</span>
-                                            </span>
-                                            <span className="ml-auto text-xl font-extrabold tabular-nums text-zinc-900">
-                                                {currency(detail.item.price)}
-                                            </span>
-                                        </div>
-                                        <div className="text-sm text-zinc-700 bg-zinc-50 rounded-xl p-3">
-                                            {detail?.item?.note && detail.item.note.trim().length > 0
-                                                ? detail.item.note
-                                                : 'お店のおすすめ商品です。数量限定のため、お早めにお求めください。'}
-                                        </div>
-
-                                        <div className="pt-1">
-                                            <button
-                                                type="button"
-                                                onClick={() => setAllergyOpen(true)}
-                                                className="inline-flex items-center gap-1 text-[13px] text-[#6b0f0f] underline decoration-1 underline-offset-2"
-                                            >
-                                                <span
-                                                    aria-hidden
-                                                    className="inline-grid place-items-center w-4 h-4 rounded-full bg-[#6b0f0f] text-white text-[10px]"
-                                                >i</span>
-                                                <span>アレルギー・原材料について</span>
-                                            </button>
-                                        </div>
-
-                                        {/* ▼ 追加：その直下に残数 */}
-                                        <div className="mt-6 flex justify-center">
-                                            <RemainChip remain={Math.max(0, detail.item.stock - getReserved(detail.shopId, detail.item.id))} />
-                                        </div>
-
-                                        {/* ▼ 追加：中央揃えの増減チップ */}
-                                        <div className=" flex justify-center">
-                                            <QtyChip sid={detail.shopId} it={detail.item} variant="modal" />
-                                        </div>
-
-                                        {/* ▼ 追加：モーダル内の「カートを見る」（ホームと同じコンポーネント） */}
-                                        <div className="pt-3 px-2 mb-6 flex justify-center">
-                                            <ViewCartButton
-                                                className="w-full max-w-[480px] h-12 text-[15px] text-white"
-                                                shopId={detail.shopId}
-                                                onAfterOpenCart={() => setDetail(null)}  // ← 押下後にモーダルを閉じる
-                                            />
-                                        </div>
-                                    </div>
-
+                                {/* ▼ 追加：モーダル内の「カートを見る」（ホームと同じコンポーネント） */}
+                                <div className="pt-3 px-2 mb-6 flex justify-center">
+                                    <ViewCartButton
+                                        className="w-full max-w-[480px] h-12 text-[15px] text-white"
+                                        shopId={detail.shopId}
+                                        onAfterOpenCart={() => setDetail(null)}  // ← 押下後にモーダルを閉じる
+                                    />
                                 </div>
                             </div>
-                            {allergyOpen && (
-                                <div className="absolute inset-0 z-[2002] pointer-events-none">
-                                    <div className="absolute inset-0 bg-black/30 pointer-events-auto" onClick={() => setAllergyOpen(false)} />
-                                    <div className="absolute left-1/2 -translate-x-1/2 bottom-4 w-full max-w-[520px] px-4 pointer-events-auto">
-                                        <div className="mx-auto rounded-2xl bg-white border shadow-2xl overflow-hidden">
-                                            <div className="py-2 grid place-items-center"><div aria-hidden className="h-1.5 w-12 rounded-full bg-zinc-300" /></div>
-                                            <div className="px-4 pb-4">
-                                                <div className="flex items-center justify-center mb-2">
-                                                    <span className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-red-700 text-white text-sm" aria-hidden>i</span>
-                                                </div>
-                                                <h3 className="text-lg font-semibold text-center mb-2">アレルギー・原材料について</h3>
-                                                <div className="text-sm text-zinc-700 space-y-2">
-                                                    <p>
-                                                        このアプリでは、まだおいしく食べられる食品を活かすために、
-                                                        お店がその日の状況に合わせて詰め合わせた商品を販売しています。
-                                                        中身は受け取ってからのお楽しみとなることが多く、
-                                                        すべてのアレルギー情報を事前にお伝えできない場合があります。
-                                                    </p>
-                                                    <p>
-                                                        アレルギーや原材料が気になる方は、
-                                                        <strong>直接お店へお問い合わせください。</strong>
-                                                        分かる範囲でご案内いたします。
-                                                    </p>
-                                                    <p className="text-zinc-500 text-sm">
-                                                        ※ アレルギーを理由とした商品の変更や入れ替えは
-                                                        対応できない場合があります。あらかじめご了承ください。
-                                                    </p>
 
-                                                </div>
-                                                <div className="mt-3 text-right">
-                                                    <button type="button" className="px-3 py-2 rounded-xl border bg-white hover:bg-zinc-50 text-sm" onClick={() => setAllergyOpen(false)}>閉じる</button>
-                                                </div>
+                        </div>
+
+                        {allergyOpen && (
+                            <div className="absolute inset-0 z-[2002] pointer-events-none">
+                                <div className="absolute inset-0 bg-black/30 pointer-events-auto" onClick={() => setAllergyOpen(false)} />
+                                <div className="absolute left-1/2 -translate-x-1/2 bottom-4 w-full max-w-[520px] px-4 pointer-events-auto">
+                                    <div className="mx-auto rounded-2xl bg-white border shadow-2xl overflow-hidden">
+                                        <div className="py-2 grid place-items-center"><div aria-hidden className="h-1.5 w-12 rounded-full bg-zinc-300" /></div>
+                                        <div className="px-4 pb-4">
+                                            <div className="flex items-center justify-center mb-2">
+                                                <span className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-red-700 text-white text-sm" aria-hidden>i</span>
+                                            </div>
+                                            <h3 className="text-lg font-semibold text-center mb-2">アレルギー・原材料について</h3>
+                                            <div className="text-sm text-zinc-700 space-y-2">
+                                                <p>
+                                                    このアプリでは、まだおいしく食べられる食品を活かすために、
+                                                    お店がその日の状況に合わせて詰め合わせた商品を販売しています。
+                                                    中身は受け取ってからのお楽しみとなることが多く、
+                                                    すべてのアレルギー情報を事前にお伝えできない場合があります。
+                                                </p>
+                                                <p>
+                                                    アレルギーや原材料が気になる方は、
+                                                    <strong>直接お店へお問い合わせください。</strong>
+                                                    分かる範囲でご案内いたします。
+                                                </p>
+                                                <p className="text-zinc-500 text-sm">
+                                                    ※ アレルギーを理由とした商品の変更や入れ替えは
+                                                    対応できない場合があります。あらかじめご了承ください。
+                                                </p>
+
+                                            </div>
+                                            <div className="mt-3 text-right">
+                                                <button type="button" className="px-3 py-2 rounded-xl border bg-white hover:bg-zinc-50 text-sm" onClick={() => setAllergyOpen(false)}>閉じる</button>
                                             </div>
                                         </div>
                                     </div>
                                 </div>
-                            )}
-                        </div>
-                    )}
-                </div >
+
+                            </div>
+                        )}
+                    </BottomSheet>
+                )}
+
 
                 {/* シート①：支払い方法の選択 */}
                 {

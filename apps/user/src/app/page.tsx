@@ -4783,7 +4783,7 @@ export default function UserPilotApp() {
 
 
 
-                                <div className="grid grid-cols-1 gap-3">
+                                <div className="grid grid-cols-1 gap-9">
                                     {shopsSorted.map((s, idx) => {
                                         // ★ デバッグ：埋め込み src → 座標 抽出値 と MAP リンク最終URLを確認
                                         if (process.env.NEXT_PUBLIC_DEBUG === '1') {
@@ -5705,7 +5705,7 @@ export default function UserPilotApp() {
                         title=""
                         onClose={() => setDetail(null)}
                     >
-                        <div className="w-full bg-white max-h-[85vh] flex flex-col overflow-hidden">
+                        <div className="w-full bg-white max-h-[90vh] flex flex-col overflow-hidden">
                             <div
                                 className="relative" ref={carouselWrapRef}
                             >
@@ -5788,7 +5788,7 @@ export default function UserPilotApp() {
                                 >✕</button> */}
                             </div>
 
-                            <div className="p-4 space-y-3 overflow-auto">
+                            <div className="pt-6 pb-4 px-8  space-y-3 overflow-auto">
                                 <div className="text-lg font-semibold leading-tight break-words">{detail.item.name}</div>
                                 <div className="text-sm text-zinc-600 flex items-center gap-3">
                                     <span className="inline-flex items-center gap-1">
